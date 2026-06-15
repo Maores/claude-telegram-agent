@@ -750,6 +750,7 @@ async function streamClaude(
 export const AUTO_DISALLOWED_TOOLS = [
   "Bash(bun run remind.ts add-once *)",
   "Bash(bun run remind.ts add-repeat *)",
+  "Bash(bun run monitor.ts add *)",
 ];
 
 /** Spawn options that put an unattended [AUTO] session in least-privilege mode.
