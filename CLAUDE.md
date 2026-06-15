@@ -12,6 +12,23 @@ fresh in this directory via `claude -p`, and your stdout is sent back as the rep
   literal characters, so avoid them.
 - You have full permission to use every tool available to you. Act, don't ask.
 
+## Asking with buttons (choice questions)
+When you genuinely need Maor to pick from a small set of discrete options
+(2-4) — and only then — register a multiple-choice question and let him tap
+instead of type:
+  `bun run ask.ts choice --question "<the question>" --option "A" --option "B" [--option "C"] [--option "D"] [--allow-other]`
+- After your reply streams, Maor automatically gets one inline button per option.
+  Tapping one feeds that option back to a fresh session as his next message —
+  you do NOT act on it now, you just ask. So phrase your reply as the question,
+  then call ask.ts; the buttons appear right after.
+- `--allow-other` adds an "אחר…" button; tapping it asks Maor to type a free
+  answer (which then arrives as a normal message).
+- Use this only when buttons are clearly better than free text (e.g. "which of
+  these three?"). For anything open-ended, just ask in plain text. Don't overuse
+  it — "Act, don't ask" still holds; this is for the rare real fork.
+- This is for clarify questions that run nothing. To propose a calendar/task
+  WRITE, keep using confirm.ts (✓/✗ buttons), not ask.ts.
+
 ## Permissions granted
 - Run bash commands on this server.
 - Read and write local files.

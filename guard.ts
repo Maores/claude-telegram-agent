@@ -157,5 +157,8 @@ export function checkAutoSession(toolName: string, command: string | undefined):
   if (toolName === "Bash" && command && /\btodo\.ts\s+delete\b/i.test(command)) {
     return { verdict: "block", reason: "refused: [AUTO] sessions propose task deletions via confirm.ts, not directly" };
   }
+  if (toolName === "Bash" && command && /\bask\.ts\b/i.test(command)) {
+    return { verdict: "block", reason: "refused: [AUTO] sessions have no human at fire time to answer a choice question" };
+  }
   return { verdict: "allow" };
 }

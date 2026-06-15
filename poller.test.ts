@@ -22,6 +22,9 @@ import {
   shouldDeclineUnreadable,
   parsePaCallback,
   paKeyboard,
+  parseChCallback,
+  choiceKeyboard,
+  resolveChoiceOption,
 } from "./poller.ts";
 
 test("short text stays one chunk", () => {
@@ -364,4 +367,52 @@ test("paKeyboard carries the proposal id in both buttons", () => {
   const flat = kb.inline_keyboard.flat();
   expect(flat.map((b: any) => b.callback_data)).toEqual(["pa:ok:pa123", "pa:no:pa123"]);
   expect(flat.map((b: any) => b.text)).toEqual(["✓ אשר", "✗ בטל"]);
+});
+
+// ---------------------------------------------------------------------------
+// D3 choice buttons — parse + keyboard + resolve (pure helpers)
+// ---------------------------------------------------------------------------
+
+test("parseChCallback parses an option index and the Other marker, rejects junk", () => {
+  expect(parseChCallback("ch:ch17181234567890:0")).toEqual({ id: "ch17181234567890", idx: 0 });
+  expect(parseChCallback("ch:ch17181234567890:3")).toEqual({ id: "ch17181234567890", idx: 3 });
+  expect(parseChCallback("ch:ch1:o")).toEqual({ id: "ch1", idx: "o" });
+  expect(parseChCallback("ch:ch1:")).toBeNull(); // no index
+  expect(parseChCallback("ch:ch1:x")).toBeNull(); // not a digit or 'o'
+  expect(parseChCallback("ch:ch1:1.5")).toBeNull(); // not an integer
+  expect(parseChCallback("pa:ok:pa1")).toBeNull(); // other namespace
+  expect(parseChCallback("fu:done:f1")).toBeNull();
+  expect(parseChCallback("")).toBeNull();
+});
+
+test("resolveChoiceOption returns the option text, null when out of range or Other", () => {
+  const choice = { options: ["Pizza", "Sushi", "Burgers"] };
+  expect(resolveChoiceOption(choice, 0)).toBe("Pizza");
+  expect(resolveChoiceOption(choice, 2)).toBe("Burgers");
+  expect(resolveChoiceOption(choice, 3)).toBeNull(); // out of range
+  expect(resolveChoiceOption(choice, -1)).toBeNull(); // out of range
+  expect(resolveChoiceOption(choice, "o")).toBeNull(); // Other has its own path
+});
+
+test("choiceKeyboard: one button per option (index-encoded) plus an optional Other", () => {
+  const kb: any = choiceKeyboard("ch1", ["Pizza", "Sushi", "Burgers"], false);
+  const flat = kb.inline_keyboard.flat();
+  expect(flat.map((b: any) => b.text)).toEqual(["Pizza", "Sushi", "Burgers"]);
+  expect(flat.map((b: any) => b.callback_data)).toEqual(["ch:ch1:0", "ch:ch1:1", "ch:ch1:2"]);
+});
+
+test("choiceKeyboard: appends an Other button (ch:<id>:o) when allowOther", () => {
+  const kb: any = choiceKeyboard("ch1", ["A", "B"], true);
+  const flat = kb.inline_keyboard.flat();
+  expect(flat.map((b: any) => b.callback_data)).toContain("ch:ch1:o");
+  expect(flat[flat.length - 1].callback_data).toBe("ch:ch1:o"); // Other is last
+});
+
+test("choiceKeyboard: callback_data stays within Telegram's 64-byte limit (longest id + 4 options + Other)", () => {
+  // ids are `ch` + Date.now() (13 digits) + up to 3 random digits → ≤ 18 chars.
+  const longId = "ch" + "9".repeat(16);
+  const kb: any = choiceKeyboard(longId, ["A", "B", "C", "D"], true);
+  for (const b of kb.inline_keyboard.flat()) {
+    expect(Buffer.byteLength(b.callback_data, "utf8")).toBeLessThanOrEqual(64);
+  }
 });
