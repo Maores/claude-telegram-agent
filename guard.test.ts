@@ -219,4 +219,11 @@ describe("checkAutoSession", () => {
     expect(checkAutoSession("Bash", "bun run todo.ts add --title x").verdict).toBe("allow");
     expect(checkAutoSession("Bash", "bun run todo.ts done --q x").verdict).toBe("allow");
   });
+
+  test("blocks monitor.ts add (self-replication guard) but allows read/manage verbs", () => {
+    expect(checkAutoSession("Bash", "bun run monitor.ts add --name x --type webpage --url https://e.com").verdict).toBe("block");
+    expect(checkAutoSession("Bash", "bun run monitor.ts list").verdict).toBe("allow");
+    expect(checkAutoSession("Bash", "bun run monitor.ts check m123").verdict).toBe("allow");
+    expect(checkAutoSession("Bash", "bun run monitor.ts pause m123").verdict).toBe("allow");
+  });
 });

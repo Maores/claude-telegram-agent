@@ -123,6 +123,24 @@ export function initSchema(db: Database): void {
       INSERT INTO skills_fts(skills_fts, rowid, name, description, tags)
         VALUES ('delete', old.id, old.name, old.description, old.tags);
     END;
+
+    CREATE TABLE IF NOT EXISTS monitors (
+      id                   TEXT    PRIMARY KEY,
+      chat_id              INTEGER NOT NULL,
+      name                 TEXT    NOT NULL,
+      type                 TEXT    NOT NULL,           -- 'webpage' | 'threshold'
+      url                  TEXT    NOT NULL,
+      config               TEXT,                       -- JSON (per-type knobs)
+      interval_s           INTEGER NOT NULL,
+      on_fire              TEXT    NOT NULL DEFAULT 'notify',  -- 'notify' | 'summarize'
+      last_checked_ts      INTEGER,
+      last_value           TEXT,                       -- content hash (webpage) or number (threshold)
+      last_state           TEXT,                       -- 'below' | 'above' | NULL (threshold edge state)
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      status               TEXT    NOT NULL DEFAULT 'active',  -- 'active' | 'paused' | 'disabled'
+      created_ts           INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_monitors_active ON monitors(status, last_checked_ts);
   `);
 
   // Phase 3.1 additive migration: which umbrella skill absorbed this one.
