@@ -323,6 +323,47 @@ export interface CreateTodoResult {
   list: string;
 }
 
+/** Create a new todo-capable calendar collection (Reminders list).
+ *  Uses MKCALENDAR with VTODO component. Throws if the list already exists. */
+export async function createList(listName: string): Promise<void> {
+  const existing = await listNames();
+  if (existing.map((n) => n.toLowerCase()).includes(listName.toLowerCase())) {
+    throw new Error(`list "${listName}" already exists`);
+  }
+  const c = await client();
+  const account = await (c as any).fetchAccount?.({ accountType: "caldav" }) ??
+    await (c as any).account ??
+    {};
+  // Discover homeUrl via PROPFIND if not cached
+  const homeUrl: string | undefined =
+    account.homeUrl ??
+    (await (async () => {
+      try {
+        const cals = await (c as any).fetchCalendars();
+        const sample = cals[0]?.url as string | undefined;
+        return sample ? sample.replace(/\/[^/]+\/?$/, "/") : undefined;
+      } catch {
+        return undefined;
+      }
+    })());
+  if (!homeUrl) throw new Error("could not determine CalDAV home URL");
+  const slug = encodeURIComponent(listName.replace(/\s+/g, "-"));
+  const url = homeUrl.replace(/\/?$/, "/") + slug + "/";
+  const res: any = await (c as any).makeCalendar({
+    url,
+    props: {
+      [`C:calendar-description`]: { _text: listName },
+      displayname: { _text: listName },
+      [`C:supported-calendar-component-set`]: {
+        [`C:comp`]: { _attributes: { name: "VTODO" } },
+      },
+    },
+  });
+  if (res && Array.isArray(res) && res[0]?.ok === false) {
+    throw new Error(`server rejected MKCALENDAR: ${res[0].status} ${res[0].statusText ?? ""}`.trim());
+  }
+}
+
 /** Create a todo in the named list (default "תזכורות"). */
 export async function createTodo(
   todo: NewTodo,

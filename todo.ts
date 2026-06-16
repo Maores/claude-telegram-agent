@@ -21,6 +21,7 @@ import {
   completeTodo,
   deleteTodo,
   listNames,
+  createList,
   fmtTask,
   selectTasks,
   type FoundTask,
@@ -161,8 +162,14 @@ try {
     const target = resolveTask(pool, str(f.uid), str(f.q));
     await deleteTodo(target);
     console.log(`deleted "${target.title}"${target.recurring ? " (recurring — whole series removed)" : ""}`);
+  } else if (cmd === "create-list") {
+    const f = parseFlags(rest);
+    const name = str(f.name);
+    if (!name) throw new Error('usage: todo.ts create-list --name "<list name>"');
+    await createList(name);
+    console.log(`created list "${name}"`);
   } else {
-    throw new Error("usage: todo.ts <list|lists|add|find|done|snooze|edit|delete> ...");
+    throw new Error("usage: todo.ts <list|lists|add|find|done|snooze|edit|delete|create-list> ...");
   }
 } catch (e: any) {
   console.error(`task error: ${e?.message ?? e}`);
