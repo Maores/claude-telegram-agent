@@ -114,12 +114,23 @@ chat) and the bot escalates to **Opus** only on explicit/heuristic signals — `
 - (Interview angle: considered the "smart LLM router" design and rejected it on measured-latency grounds.)
 
 ## Upcoming external changes (watch)
-- [ ] **Anthropic `claude -p` / Agent SDK usage change** (medium urgency) — Anthropic emailed Maor on
-  2026-06-16 about a change to how `claude -p` / the Agent SDK usage works; it was scheduled to activate
-  that day but was delayed. When the new date lands we must be ready: re-read the email for the exact
-  change, assess impact on the poller's `claude -p` spawns (model flags, `--output-format stream-json`
-  parsing, cost/usage accounting, any auth/limit/quota shift), and adjust before it goes live. Specifics
-  TBD — captured from Maor's recollection of the email, not yet read in full. (Added 2026-06-16.)
+- [ ] **Anthropic `claude -p` / Agent SDK billing change** (medium urgency, PAUSED) — Read the actual
+  email (Anthropic Team, 2026-06-15, sent to maorx36@gmail.com). The change: the Claude Agent SDK,
+  `claude -p`, and third-party apps built on the SDK would **stop drawing from subscription rate limits
+  and move to a dedicated monthly credit**. It was scheduled for ~2026-06-16 but is now **on hold** —
+  nothing changes for now, `claude -p` keeps working against the subscription exactly as before,
+  subscription limits unchanged. Anthropic promises **advance notice before it takes effect**. Nature of
+  the change = *billing source* (subscription → dedicated monthly credit), NOT a CLI/output-format break,
+  so the spawn/parsing code won't break; the real risk is the credit being small/exhausted, making the
+  bot's calls start to fail. When the next email lands: re-read it, reassess, and lean on the #5
+  usage-tracking work (spec `docs/superpowers/specs/2026-06-16-usage-heads-up-design.md`) — that is
+  exactly the instrumentation for a dedicated-credit budget. (Verified from the email 2026-06-16.)
+- [ ] **Find a cheap/portable AI backend the agent can fall back to** (research, on the table) — Maor
+  wants a ground-check: the whole project leans on Claude, so if the billing change lands and is costly
+  we need an alternative (Hermes-style configurable API options — e.g. OpenRouter, which Maor already
+  has, or another provider). Non-trivial: the bot hardwires `claude -p`'s agentic loop, so this means
+  abstracting the model backend behind a single adapter boundary. Brainstorm + design when we revisit;
+  tie it to the `claude -p` dependency-risk discussion. (Added 2026-06-16.)
 
 ## Bugs & risks
 - [x] **כפתורי תגובה לתזכורות לא מגיבים** — fixed in TWO parts. Part 1 (latency): the sequential loop
