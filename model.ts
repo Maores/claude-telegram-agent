@@ -31,3 +31,33 @@ export function pickModel(text: string): Routed {
 
   return { model: wantsOpus ? "opus" : "sonnet", prompt: trimmed };
 }
+
+// Dev-intent detection (agenda #4). When Maor asks the agent to build/change its
+// OWN code, the poller injects a directive that makes it interview first and then
+// recommend a model, instead of building blindly. Deliberately permissive — false
+// positives are harmless because the injected directive carries an escape clause
+// ("if this isn't a build request, just answer normally"). NOT added to
+// OPUS_KEYWORDS: the interview itself stays on the cheap default model; escalation
+// happens only when Maor taps a launch button.
+//
+// Single-word triggers are matched per-token by prefix (so "building"/"develops"
+// hit, and Hebrew "בנה" matches the token "בנה" but NOT "הבנה" = understanding);
+// multi-word phrases are matched as substrings.
+const DEV_INTENT_TOKENS = [
+  "develop", "implement", "build", "refactor", "rewrite", "debug",
+  "תבנה", "תפתח", "בנה", "יישם", "תממש", "תכתוב", "תתקן",
+];
+const DEV_INTENT_PHRASES = [
+  "add a feature", "write code", "code up", "fix the bug", "fix this bug",
+  "תוסיף פיצ'ר", "תכתוב קוד", "תקן את הבאג", "פיצ'ר חדש",
+];
+
+export function detectDevIntent(text: string): boolean {
+  const lower = (text ?? "").toLowerCase();
+  for (const p of DEV_INTENT_PHRASES) if (lower.includes(p)) return true;
+  const tokens = lower.split(/[^\p{L}\p{N}']+/u).filter(Boolean);
+  for (const t of tokens) {
+    for (const k of DEV_INTENT_TOKENS) if (t.startsWith(k)) return true;
+  }
+  return false;
+}
