@@ -208,6 +208,13 @@ describe("checkAutoSession", () => {
     expect(checkAutoSession("Bash", "bun run confirm.ts list").verdict).toBe("allow");
   });
 
+  test("[AUTO] sessions may not ask choice questions (no human at fire time)", () => {
+    expect(checkAutoSession("Bash", "bun run ask.ts choice --question q --option A --option B").verdict).toBe("block");
+    expect(checkAutoSession("Bash", "cd /x && bun run ask.ts  choice --question q --option A --option B").verdict).toBe("block");
+    // a normal interactive session is unaffected — only checkAutoSession blocks it
+    expect(checkCommand("bun run ask.ts choice --question q --option A --option B").verdict).toBe("allow");
+  });
+
   test("[AUTO] sessions may not run confirm-gated writes directly (propose instead)", () => {
     expect(checkAutoSession("Bash", "bun run cal.ts add --title x --start 2026-06-13").verdict).toBe("block");
     expect(checkAutoSession("Bash", "bun run cal.ts edit --uid u --set-title y").verdict).toBe("block");
