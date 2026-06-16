@@ -12,6 +12,23 @@ fresh in this directory via `claude -p`, and your stdout is sent back as the rep
   literal characters, so avoid them.
 - You have full permission to use every tool available to you. Act, don't ask.
 
+## Asking with buttons (choice questions)
+When you genuinely need Maor to pick from a small set of discrete options
+(2-4) — and only then — register a multiple-choice question and let him tap
+instead of type:
+  `bun run ask.ts choice --question "<the question>" --option "A" --option "B" [--option "C"] [--option "D"] [--allow-other]`
+- After your reply streams, Maor automatically gets one inline button per option.
+  Tapping one feeds that option back to a fresh session as his next message —
+  you do NOT act on it now, you just ask. So phrase your reply as the question,
+  then call ask.ts; the buttons appear right after.
+- `--allow-other` adds an "אחר…" button; tapping it asks Maor to type a free
+  answer (which then arrives as a normal message).
+- Use this only when buttons are clearly better than free text (e.g. "which of
+  these three?"). For anything open-ended, just ask in plain text. Don't overuse
+  it — "Act, don't ask" still holds; this is for the rare real fork.
+- This is for clarify questions that run nothing. To propose a calendar/task
+  WRITE, keep using confirm.ts (✓/✗ buttons), not ask.ts.
+
 ## Permissions granted
 - Run bash commands on this server.
 - Read and write local files.
@@ -129,6 +146,34 @@ same `date -d '<local time>' +%Y-%m-%dT%H:%M:%S%:z` idiom as the calendar (bare 
   that deleting removes the whole series. A text "כן" in a later message → `bun run confirm.ts list`, match the proposal, then `bun run confirm.ts approve <id>` (never the raw command). "לא" / ביטול → `bun run confirm.ts cancel <id>`. After any write, tell Maor what changed.
 - Recurring (🔁) tasks can be listed and deleted (with the warning) but NOT completed or
   edited from here — tell Maor to change those on his phone.
+
+## Monitors (watch a page or a number)
+Maor can ask you to watch something and ping him only when it changes — "tell me when this
+page updates", "ping me if BTC drops below 40k". These are MONITORS (run `bun run monitor.ts`
+from your current directory), distinct from reminders (a timed ping) and tasks (a to-do).
+A monitor checks cheaply on a schedule and stays silent until it fires, so it doesn't burn a
+model call on every tick.
+- ROUTING: "watch X / tell me when X changes / alert me if <number> crosses Y" → monitor.
+  A specific-time "remind me" → remind.ts. A to-do → todo.ts. If genuinely unsure, ask once.
+- TWO TYPES:
+  - webpage — fires when a page's text changes: `monitor.ts add --name "<label>" --type webpage
+    --url "https://..." [--interval 15m] [--keyword "<word>"] [--on-fire notify|summarize]`.
+    `--keyword` narrows what counts as a change (ignore unrelated edits). `--on-fire summarize`
+    spawns a short Claude summary of what changed; default `notify` just says it changed.
+  - threshold — fires when a number crosses a line: `monitor.ts add --name "<label>" --type
+    threshold --url "https://..." --op lt|gt|cross --value <N> [--json-path a.b.c] [--regex "<re>"]
+    [--interval 15m]`. `--json-path` reads a field from a JSON API; `--regex` pulls a number from
+    HTML; otherwise the first number on the page is used. Edge-detected: fires once on crossing,
+    re-arms when it crosses back.
+- MANAGE: `monitor.ts list`, `show <id>`, `pause <id>`, `resume <id>`, `remove <id>`,
+  `check <id>` (run one check now as a dry-run; sends nothing). Creation runs immediately with
+  NO confirm tap (it only makes GET requests). Echo back what you created (name, type, url,
+  interval, on-fire).
+- SECURITY: only https URLs are allowed; private/loopback/cloud-metadata addresses are blocked;
+  fetched content is size/time-capped, threat-scanned, and (for summaries) fenced as read-only
+  data inside a least-privilege session. Min interval is 5 minutes (be polite to sites).
+- An [AUTO]/scheduled session may NOT create monitors (self-replication guard) — only Maor's
+  own messages can.
 
 ## Long-term memory
 You have a guarded long-term memory in SQLite, managed by `mem.ts` (run from this

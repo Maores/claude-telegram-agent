@@ -20,6 +20,16 @@ test("openDb creates the schema and is idempotent", () => {
   db.close();
 });
 
+test("monitors table exists and initSchema is idempotent", () => {
+  const db = openDb(":memory:");
+  expect(() => initSchema(db)).not.toThrow(); // idempotent re-run
+  const row = db
+    .query("SELECT name FROM sqlite_master WHERE type='table' AND name='monitors'")
+    .get();
+  expect(row).toBeTruthy();
+  db.close();
+});
+
 test("insertMessage + recentMessages returns last N oldest→newest, active only", () => {
   const db = openDb(":memory:");
   const base = 1_700_000_000;
