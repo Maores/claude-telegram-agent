@@ -1051,6 +1051,14 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
     return;
   }
 
+  // Only fu-callbacks remain here (pa handled+returned above, and the guard at
+  // the top already rejected the both-null case). Re-assert it so TypeScript
+  // narrows `parsed` to non-null for the rest of the function. Runtime no-op.
+  if (!parsed) {
+    await ack();
+    return;
+  }
+
   const nowS = Math.floor(Date.now() / 1000);
   if (parsed.action === "done") {
     const f = resolveFollowup(parsed.id, "done");
