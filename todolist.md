@@ -113,6 +113,14 @@ chat) and the bot escalates to **Opus** only on explicit/heuristic signals — `
 - Result: noticeably faster default replies and lighter quota use. `model.ts` is unit-tested.
 - (Interview angle: considered the "smart LLM router" design and rejected it on measured-latency grounds.)
 
+## Upcoming external changes (watch)
+- [ ] **Anthropic `claude -p` / Agent SDK usage change** (medium urgency) — Anthropic emailed Maor on
+  2026-06-16 about a change to how `claude -p` / the Agent SDK usage works; it was scheduled to activate
+  that day but was delayed. When the new date lands we must be ready: re-read the email for the exact
+  change, assess impact on the poller's `claude -p` spawns (model flags, `--output-format stream-json`
+  parsing, cost/usage accounting, any auth/limit/quota shift), and adjust before it goes live. Specifics
+  TBD — captured from Maor's recollection of the email, not yet read in full. (Added 2026-06-16.)
+
 ## Bugs & risks
 - [x] **כפתורי תגובה לתזכורות לא מגיבים** — fixed in TWO parts. Part 1 (latency): the sequential loop
   blocked callback ACKs behind whole claude turns — fixed by the non-blocking dispatch loop (PR #18,
