@@ -95,7 +95,7 @@ Notes:
   point at the real `bun` (confirm with `which bun`; it's usually
   `~/.bun/bin/bun`) and at the absolute hook path. Adjust both if the repo or
   user lives elsewhere.
-- **Restart required.** The poller must be restarted (tmux `bot` → `start.sh`)
+- **Restart required.** Restart the poller (`sudo systemctl restart telegram-agent`)
   for the new spawns to pick up the settings.
 - **Verify after wiring:** in the chat, ask the bot to run `rm -rf /tmp/x`
   (should succeed) and `rm -rf /` (should be refused with the guard reason). Also
