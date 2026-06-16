@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { checkCommand, checkAutoSession } from "./guard";
+import { checkCommand, checkAutoSession, checkFileWrite } from "./guard";
 
 // ---------------------------------------------------------------------------
 // checkCommand — hardline catastrophic-command blocklist (fail closed)
@@ -233,4 +233,55 @@ describe("checkAutoSession", () => {
     expect(checkAutoSession("Bash", "bun run monitor.ts check m123").verdict).toBe("allow");
     expect(checkAutoSession("Bash", "bun run monitor.ts pause m123").verdict).toBe("allow");
   });
+});
+
+// ---------------------------------------------------------------------------
+// checkFileWrite — block the Edit/Write tools from touching the safety files
+// (the bash floor never sees tool-based file writes; this closes that hole).
+// ---------------------------------------------------------------------------
+
+describe("checkFileWrite", () => {
+  const PROTECTED: Array<[string, string]> = [
+    ["Edit", "guard.ts"],
+    ["Edit", "./guard.ts"],
+    ["Edit", "/home/claudebot/claude-bot/guard.ts"],
+    ["Write", "guard.ts"],
+    ["MultiEdit", "guard.ts"],
+    ["NotebookEdit", "guard.ts"],
+    ["Write", "hooks/pretooluse-guard.ts"],
+    ["Edit", "hooks/some-other-hook.ts"],
+    ["MultiEdit", "/home/claudebot/claude-bot/hooks/pretooluse-guard.ts"],
+    ["Edit", "/home/claudebot/.claude/channels/telegram/.env"],
+    ["Write", "~/.claude/channels/telegram/.env"],
+  ];
+  for (const [tool, path] of PROTECTED) {
+    test(`blocks ${tool} -> ${path}`, () => {
+      const r = checkFileWrite(tool, path);
+      expect(r.verdict).toBe("block");
+      expect(typeof r.reason).toBe("string");
+    });
+  }
+
+  const ALLOWED: Array<[string, string | undefined]> = [
+    // editing ordinary code is fine — the bot keeps self-improving
+    ["Edit", "poller.ts"],
+    ["Write", "tasks.ts"],
+    ["Edit", "/home/claudebot/claude-bot/poller.ts"],
+    ["Edit", "docs/x.md"],
+    ["MultiEdit", "selfdev.ts"],
+    // similar-but-not-protected names must NOT be flagged
+    ["Edit", "myguard.ts"],
+    ["Edit", "guard.test.ts"],
+    ["Edit", "src/guards/guard.ts.bak"],
+    // non-edit tools are handled by the bash path, not here
+    ["Bash", "guard.ts"],
+    ["Read", "guard.ts"],
+    // no file path → nothing to match
+    ["Edit", undefined],
+  ];
+  for (const [tool, path] of ALLOWED) {
+    test(`allows ${tool} -> ${path ?? "(no path)"}`, () => {
+      expect(checkFileWrite(tool, path).verdict).toBe("allow");
+    });
+  }
 });

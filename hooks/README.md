@@ -11,7 +11,7 @@ Claude Code runs the script once before each tool call it's registered for. The
 script reads the hook payload from stdin, applies the guard, and exits `2` to
 block (printing the reason to stderr, which Claude sees) or `0` to allow.
 
-It enforces two layers:
+It enforces three layers:
 
 1. **Hardline floor** — `guard.checkCommand` runs on every `Bash` command in
    every session, even full-permission ones. It refuses only the unambiguously
@@ -28,6 +28,13 @@ It enforces two layers:
    schedule reminders (`remind.ts add*` — a self-replication guard) or create
    Gmail drafts (`create_draft`, matched on the action suffix so the
    per-deployment MCP server id doesn't matter).
+
+3. **Protected-file edits** — `guard.checkFileWrite` runs on the file-editing
+   tools (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`) in every session and refuses
+   writes to the safety files themselves — `guard.ts`, the hook files, and the
+   telegram `.env`. The bash floor (layer 1) only sees shell commands, so this is
+   the layer that stops the bot from disabling its own guard via the Edit tool.
+   Every other file stays editable, so the bot keeps improving its own code.
 
 **Fail-closed:** if a guard rule throws on a real tool call, the hook denies
 rather than allows. A payload it can't parse at all is passed through (exit 0)
@@ -62,7 +69,7 @@ already carries the `permissions` block):
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|create_draft",
+        "matcher": "Bash|Edit|Write|MultiEdit|create_draft",
         "hooks": [
           {
             "type": "command",
@@ -77,19 +84,23 @@ already carries the `permissions` block):
 
 Notes:
 
-- **`matcher`** is a regex against the tool name. `Bash|create_draft` fires the
-  hook for every `Bash` command (the hardline floor + the `[AUTO]` reminder
-  block) and for Gmail's `create_draft` (the `[AUTO]` draft block), and for
-  nothing else — so unrelated tools (`Read`, `Grep`, …) keep zero overhead. If
-  you don't use `[AUTO]` Gmail at all, `"Bash"` alone is enough for the floor.
+- **`matcher`** is a regex against the tool name. `Bash|Edit|Write|MultiEdit|create_draft`
+  fires the hook for every `Bash` command (the hardline floor + the `[AUTO]` reminder
+  block), for the file-editing tools (the protected-file block), and for Gmail's
+  `create_draft` (the `[AUTO]` draft block), and for nothing else — so unrelated
+  tools (`Read`, `Grep`, …) keep zero overhead. The `Edit|Write|MultiEdit` part is
+  REQUIRED for the protected-file layer (`checkFileWrite`) to fire; with just
+  `"Bash"` the bot could still edit `guard.ts` through the Edit tool.
 - **Absolute paths.** Hook commands don't inherit the interactive `PATH`, so
   point at the real `bun` (confirm with `which bun`; it's usually
   `~/.bun/bin/bun`) and at the absolute hook path. Adjust both if the repo or
   user lives elsewhere.
-- **Restart required.** The poller must be restarted (tmux `bot` → `start.sh`)
+- **Restart required.** Restart the poller (`sudo systemctl restart telegram-agent`)
   for the new spawns to pick up the settings.
 - **Verify after wiring:** in the chat, ask the bot to run `rm -rf /tmp/x`
-  (should succeed) and `rm -rf /` (should be refused with the guard reason).
+  (should succeed) and `rm -rf /` (should be refused with the guard reason). Also
+  confirm the protected-file layer: ask it to edit `guard.ts` (refused) and to edit
+  an ordinary file like `tasks.ts` (allowed).
 
 ## Tests
 
