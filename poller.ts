@@ -27,6 +27,7 @@ import { getDb, insertMessage, recentMessages, searchMessages, renderRecall, imp
 import { coreMemoryBlock, importMemoryMd } from "./memory";
 import { skillsIndexBlock } from "./skills";
 import { dueMonitors, performCheck, recordCheck, FAILURE_LIMIT, type Monitor, type CheckOutcome } from "./monitors";
+import { recordUsage, windowSpendUsd, shouldWarn, limitHitReply } from "./usage";
 import { scanThreats } from "./threats";
 import { redact } from "./redact";
 import { resolveBackend, transcribeVoice, shouldEchoTranscript, VOICE_MAX_SEC } from "./transcribe";
@@ -712,6 +713,13 @@ export interface SpawnOpts {
   renderPrefix?: string;
 }
 
+// Usage heads-up config (agenda #5). Self-set proxy — the real plan quota is not
+// queryable. Defaults are conservative guesses, tune once real data exists.
+const USAGE_WARN_USD = Number(process.env.USAGE_WARN_USD) || 5;
+const USAGE_WINDOW_S = Number(process.env.USAGE_WINDOW_S) || 18000; // 5h rolling window
+// Edge-detect state: in-memory (resets on restart, like the review cooldown).
+let usageWarnArmed = true;
+
 /** Run `claude -p` in streaming mode and render the reply to Telegram live.
  *  Returns the final answer text. */
 async function streamClaude(
@@ -782,6 +790,38 @@ async function streamClaude(
 
   const code = await proc.exited;
   const final = parser.finalText();
+
+  // Record this call's usage (agenda #5). Synchronous + fail-safe; the heads-up
+  // ping is fire-and-forget so it never adds latency or blocks the reply path.
+  try {
+    const u = parser.usage();
+    if (u.costUsd != null || u.inputTokens != null || u.outputTokens != null) {
+      const db = getDb();
+      const nowS = Math.floor(Date.now() / 1000);
+      const kind = opts.env?.CLAUDE_AUTO_SESSION === "1" ? "auto" : "interactive";
+      recordUsage(db, {
+        ts: nowS,
+        chatId,
+        model,
+        kind,
+        costUsd: u.costUsd,
+        inputTokens: u.inputTokens,
+        outputTokens: u.outputTokens,
+      });
+      const spend = windowSpendUsd(db, nowS - USAGE_WINDOW_S);
+      const decision = shouldWarn(spend, USAGE_WARN_USD, usageWarnArmed);
+      usageWarnArmed = decision.armed;
+      if (decision.warn) {
+        const hours = Math.round(USAGE_WINDOW_S / 3600);
+        void tg("sendMessage", {
+          chat_id: chatId,
+          text: `שים לב: ב-${hours} השעות האחרונות הסוכן צרך בערך ${spend.toFixed(2)} דולר (מעל הסף שהגדרת, ${USAGE_WARN_USD} דולר). זה אומדן עלות, לא המכסה האמיתית.`,
+        }).catch(() => {});
+      }
+    }
+  } catch (e: any) {
+    console.error(`[ERR] usage: ${e?.message ?? e}`);
+  }
 
   if (flight.stopped) {
     await renderer.render(prefix + (final ? final + "\n\n" : "") + "נעצר ✋").catch(() => {});
@@ -1085,10 +1125,12 @@ async function handleMessage(msg: TgMessage) {
     // …existing error path unchanged…
     console.error(`[ERR] handling message from ${fromId}: ${e?.message ?? e}`);
     void setReaction(chatId, msg.message_id, outcomeReaction(false));
+    // If this looks like a usage-limit failure, say so clearly instead of the generic error (#5).
+    const limitMsg = limitHitReply(e?.message);
     await sendReply(
       chatId,
       placeholderId,
-      "⚠️ Sorry, something went wrong handling that. Please try again.",
+      limitMsg ?? "⚠️ Sorry, something went wrong handling that. Please try again.",
     ).catch(() => {});
   } finally {
     // The saved file is transient — Claude has read it by now, so don't let

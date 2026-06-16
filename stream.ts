@@ -37,6 +37,11 @@ export class StreamParser {
   text = "";
   done = false;
   private result: string | null = null;
+  // Usage from the terminal result event (agenda #5). Null when claude -p doesn't
+  // report them or the format changes — callers must treat these as optional.
+  costUsd: number | null = null;
+  inputTokens: number | null = null;
+  outputTokens: number | null = null;
 
   /** Feed one NDJSON line. Malformed/unknown lines are ignored. */
   push(line: string): void {
@@ -51,6 +56,12 @@ export class StreamParser {
 
     if (o.type === "result") {
       if (typeof o.result === "string") this.result = o.result;
+      if (typeof o.total_cost_usd === "number") this.costUsd = o.total_cost_usd;
+      const u = o.usage;
+      if (u && typeof u === "object") {
+        if (typeof u.input_tokens === "number") this.inputTokens = u.input_tokens;
+        if (typeof u.output_tokens === "number") this.outputTokens = u.output_tokens;
+      }
       this.done = true;
       this.status = null;
       return;
@@ -82,6 +93,11 @@ export class StreamParser {
   finalText(): string {
     const t = this.text.trim();
     return t || (this.result ?? "").trim();
+  }
+
+  /** Cost + token usage from the result event, or nulls if not reported. */
+  usage(): { costUsd: number | null; inputTokens: number | null; outputTokens: number | null } {
+    return { costUsd: this.costUsd, inputTokens: this.inputTokens, outputTokens: this.outputTokens };
   }
 
   state(): RenderState {

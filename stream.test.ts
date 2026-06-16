@@ -38,6 +38,25 @@ test("result marks done and supplies a final-text fallback", () => {
   expect(p.finalText()).toBe("final answer");
 });
 
+test("captures cost + token usage from the result event (#5)", () => {
+  const p = new StreamParser();
+  p.push(
+    JSON.stringify({
+      type: "result",
+      result: "ok",
+      total_cost_usd: 0.0123,
+      usage: { input_tokens: 1500, output_tokens: 200 },
+    }),
+  );
+  expect(p.usage()).toEqual({ costUsd: 0.0123, inputTokens: 1500, outputTokens: 200 });
+});
+
+test("usage stays null when the result event omits cost/usage (fail-safe)", () => {
+  const p = new StreamParser();
+  p.push(JSON.stringify({ type: "result", result: "ok" }));
+  expect(p.usage()).toEqual({ costUsd: null, inputTokens: null, outputTokens: null });
+});
+
 test("finalText prefers streamed text over the result event", () => {
   const p = new StreamParser();
   p.push(textDelta("streamed answer"));
