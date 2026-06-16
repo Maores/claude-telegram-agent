@@ -165,3 +165,43 @@ export function checkAutoSession(toolName: string, command: string | undefined):
   }
   return { verdict: "allow" };
 }
+
+// The file-writing tools. The bash floor (self-tamper/telegram-env-tamper) only
+// sees shell commands; these tools edit files directly and the bash guard never
+// sees them, so they need their own check. Tolerate a namespaced prefix.
+const EDIT_TOOL = /(?:^|__)(?:Edit|Write|MultiEdit|NotebookEdit)$/i;
+
+/**
+ * Is `p` one of the safety files that must never be edited by the bot — guard.ts,
+ * a hook file, or the telegram .env? Matched on the path's tail so absolute
+ * (`/home/claudebot/claude-bot/guard.ts`), relative (`./guard.ts`), and bare
+ * (`guard.ts`) forms all hit, while a merely similar name (`myguard.ts`,
+ * `guard.test.ts`) does not.
+ */
+function isProtectedFile(p: string): boolean {
+  const s = p.replace(/\\/g, "/");
+  return (
+    /(?:^|\/)guard\.ts$/.test(s) ||
+    /(?:^|\/)hooks\/[\w.-]+\.ts$/.test(s) ||
+    /(?:^|\/)\.claude\/channels\/telegram\/\.env$/.test(s)
+  );
+}
+
+/**
+ * Block the file-editing TOOLS (Edit/Write/MultiEdit/NotebookEdit) from writing
+ * the safety files — guard.ts, the hook files, the telegram .env. This closes the
+ * same hole the bash `self-tamper`/`telegram-env-tamper` rules cover for shell
+ * commands, for the editing tools the bash guard never sees. EVERY other file
+ * stays editable, so the bot keeps its (useful) ability to improve its own code.
+ */
+export function checkFileWrite(toolName: string, filePath: string | undefined): GuardVerdict {
+  if (!filePath || !EDIT_TOOL.test(toolName)) return { verdict: "allow" };
+  if (isProtectedFile(filePath)) {
+    return {
+      verdict: "block",
+      reason:
+        "refused: editing guard.ts, the hook files, or the telegram .env would disable the safety policy",
+    };
+  }
+  return { verdict: "allow" };
+}

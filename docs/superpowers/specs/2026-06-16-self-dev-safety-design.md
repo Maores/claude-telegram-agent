@@ -149,6 +149,11 @@ All pure functions, mirroring `guard.test.ts` table style:
 
 ## Integration points
 
+- **Hook matcher (REQUIRED for mechanism c):** the PreToolUse hook is registered in the droplet's
+  `.claude/settings.json` with a `matcher` that today is `Bash|create_draft` — so the hook never
+  fires for the editing tools and `checkFileWrite` would be inert. The matcher MUST be broadened to
+  `Bash|Edit|Write|MultiEdit|create_draft` and the poller restarted. Documented in
+  `hooks/README.md`; applied on the droplet at deploy.
 - **Deploy procedure:** after this lands, deploys use `deploy.sh`. Update `DEPLOY.md` and the
   `live-deploy-access` memory.
 - **#4 (dev-intent):** a launched build should land as a PR — same discipline this spec encodes.

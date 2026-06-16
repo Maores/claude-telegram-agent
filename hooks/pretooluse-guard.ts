@@ -27,7 +27,7 @@
  * This file is wired via settings.json on the droplet — see hooks/README.md.
  * It is intentionally NOT registered automatically by the PR that adds it.
  */
-import { checkCommand, checkAutoSession } from "../guard";
+import { checkCommand, checkAutoSession, checkFileWrite } from "../guard";
 
 function block(reason: string): never {
   console.error(`[guard] ${reason}`);
@@ -47,6 +47,8 @@ try {
 const toolName: string = typeof input?.tool_name === "string" ? input.tool_name : "";
 const command: string | undefined =
   typeof input?.tool_input?.command === "string" ? input.tool_input.command : undefined;
+const filePath: string | undefined =
+  typeof input?.tool_input?.file_path === "string" ? input.tool_input.file_path : undefined;
 const isAuto = process.env.CLAUDE_AUTO_SESSION === "1";
 
 try {
@@ -58,6 +60,10 @@ try {
     const v = checkCommand(command);
     if (v.verdict === "block") block(v.reason ?? "blocked by the hardline guard");
   }
+  // Protect the safety files from the Edit/Write tools, in EVERY session — the
+  // bash floor above never sees tool-based file writes.
+  const fw = checkFileWrite(toolName, filePath);
+  if (fw.verdict === "block") block(fw.reason ?? "blocked: edit to a protected safety file");
 } catch (e: any) {
   // Deny on error — the hardline layer fails closed (see the survey's
   // "don't regress" note on fail-open scanners).

@@ -33,6 +33,20 @@ instead of type:
 - Run bash commands on this server.
 - Read and write local files.
 
+## Editing your own code (self-dev safety)
+You run from your own git repo and may improve your own source — but a deploy runs
+`git reset --hard origin/main`, which DESTROYS uncommitted changes to tracked files.
+So when you make non-trivial changes to your own `*.ts` source:
+- Don't leave them as a live hot-patch on `main`. Commit them to a branch and open a
+  PR (or tell Maor) so he can review and deploy.
+- `deploy.sh` auto-captures any uncommitted tracked edits to a `droplet-autosave/*`
+  branch before deploying, so nothing is silently lost — but a clean PR is the right
+  path, not relying on the safety net.
+- Writing runtime data (bot.db, the `*.json` state files) is fine and normal; this is
+  only about source code.
+- You cannot edit `guard.ts`, the hook files, or the telegram `.env` — the guard blocks
+  it, since those protect the safety policy itself.
+
 ## Web access
 - You have WebSearch and WebFetch (load them via ToolSearch when needed).
 - For anything time-sensitive, current-events, or factual you're not certain of,
