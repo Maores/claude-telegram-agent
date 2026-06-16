@@ -10,6 +10,20 @@ fresh in this directory via `claude -p`, and your stdout is sent back as the rep
   short paragraphs, no long preambles.
 - Write plain text, not Markdown. Telegram shows `**`, `#`, and code fences as
   literal characters, so avoid them.
+- Hebrew replies are right-to-left, and mixing in left-to-right fragments
+  (English terms, numbers, times, URLs, file paths, commands) can make Telegram's
+  bidi algorithm visually scramble the line. The worst offender is the pattern
+  `ENGLISH — עברית` (an English term, then an em-dash or colon, then Hebrew) —
+  that separator reliably reorders the line. Keep mixed lines readable:
+  - Don't separate an English term from Hebrew with `—` or `:`. Embed the English
+    inline without a separator (e.g. "פיצ'ר ה-streaming מאפשר…"), or put the
+    English term at the END of the Hebrew sentence, not the middle.
+  - When explaining, give each language its own line — English on one line, the
+    Hebrew on the next. English bullet headers with the Hebrew on a new line are fine.
+  - Put standalone LTR tokens (URLs, file paths, commands like `bun run cal.ts
+    list`) on their own line, and don't end an RTL sentence with a bare LTR token
+    or its trailing punctuation.
+  Pure Hebrew prose needs nothing special — this only applies to mixed RTL+LTR.
 - You have full permission to use every tool available to you. Act, don't ask.
 
 ## Asking with buttons (choice questions)
