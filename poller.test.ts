@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import {
   chunkText,
   buildPrompt,
+  DEV_INTENT_DIRECTIVE,
   safeDiskName,
   attachmentInfo,
   unsupportedMediaKind,
@@ -185,6 +186,17 @@ test("staleByName ignores files that aren't timestamp-prefixed uploads", () => {
 });
 
 // --- buildPrompt recall block -------------------------------------------------
+
+test("buildPrompt injects the dev-intent directive only when passed, before the new message", () => {
+  const withDirective = buildPrompt([], "Maor", "תבנה לי פיצ'ר", [], "", "", DEV_INTENT_DIRECTIVE);
+  expect(withDirective).toContain("<dev-intent>");
+  expect(withDirective).toContain("New message from Maor:");
+  // the directive must precede the new message so the model reads it as guidance for this turn
+  expect(withDirective.indexOf("<dev-intent>")).toBeLessThan(withDirective.indexOf("New message from Maor:"));
+
+  const without = buildPrompt([], "Maor", "what's on my calendar?");
+  expect(without).not.toContain("<dev-intent>");
+});
 
 test("buildPrompt splices the fenced recall block when recall is present", () => {
   const prompt = buildPrompt([], "Maor", "what did the bank say?", [

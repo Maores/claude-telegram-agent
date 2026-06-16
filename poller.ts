@@ -21,7 +21,7 @@ import { popDue, addOnce, addFollowup, getFollowup, resolveFollowup, rebindFollo
 import { takePending, consumeAction, validateArgv, pruneActions, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
 import { StreamParser, displayText } from "./stream.ts";
-import { pickModel } from "./model.ts";
+import { pickModel, detectDevIntent } from "./model.ts";
 import { upcomingEvents, nudgeKey, loadNotified, saveNotified, pruneNotified } from "./calendar.ts";
 import { getDb, insertMessage, recentMessages, searchMessages, renderRecall, importHistoryJson, type RecallHit } from "./db";
 import { coreMemoryBlock, importMemoryMd } from "./memory";
@@ -587,6 +587,27 @@ function loadMemory(): string {
   }
 }
 
+/** Injected by the interactive path when detectDevIntent fires on a typed
+ *  message (agenda #4): makes the agent interview Maor and recommend a model +
+ *  effort instead of building blindly. Carried INLINE (not stored as a skill)
+ *  because skills are FTS-surfaced against the user's input and would not
+ *  reliably appear — the same finding that drove agenda #3.1. The escape clause
+ *  absorbs false positives from the deliberately-permissive detector. */
+export const DEV_INTENT_DIRECTIVE = [
+  "<dev-intent>",
+  "This message looks like a request to build or change THIS agent's own code (a develop/implement/build request). Before writing any code, run the dev-intent playbook:",
+  "1. Ask Maor 1-3 SHORT clarifying questions, one at a time — scope, acceptance criteria, any hard constraint. Use `bun run ask.ts choice ...` buttons when the answer is a small discrete set; plain text otherwise.",
+  "2. When you know enough, judge the task size and RECOMMEND a model + effort tier, then offer tap-to-launch buttons via ask.ts whose option TEXT encodes the model:",
+  "   - deep build -> option beginning `/opus ` then the concrete build instruction (add a 'think hard' cue)",
+  "   - standard build -> option beginning `/opus ` then the instruction",
+  "   - quick/small -> option with just the instruction (no prefix -> fast default model)",
+  "   - a cancel option (בטל)",
+  "   Tapping a button sends that text as the next turn; it routes through model selection and sees this whole conversation in its history.",
+  "3. Do NOT start building in THIS turn. When the build runs, it goes on a branch and opens a PR (per the self-dev rules), never a live hot-patch on main.",
+  "If this is NOT actually a request to change the codebase, ignore this entirely and just answer normally.",
+  "</dev-intent>",
+].join("\n");
+
 export function buildPrompt(
   history: HistoryItem[],
   name: string,
@@ -594,6 +615,7 @@ export function buildPrompt(
   recall: RecallHit[] = [],
   memory = "",
   skills = "",
+  devDirective = "",
 ): string {
   const lines: string[] = [];
   if (memory) {
@@ -613,6 +635,9 @@ export function buildPrompt(
       lines.push(`${m.role === "user" ? name : "Assistant"}: ${m.content}`);
     }
     lines.push("");
+  }
+  if (devDirective) {
+    lines.push(devDirective, "");
   }
   lines.push(`New message from ${name}:`, text);
   return lines.join("\n");
@@ -1005,13 +1030,18 @@ async function handleMessage(msg: TgMessage) {
       console.error(`[ERR] skills: ${e?.message ?? e}`);
     }
 
+    // Dev-intent (#4): on a typed build request, inject a directive that makes the
+    // agent interview + recommend a model instead of building blindly. Only on this
+    // typed-message path — NOT on choice taps, where a tapped launch button must
+    // build, not re-trigger the interview.
+    const devDirective = detectDevIntent(userMsg || historyNote) ? DEV_INTENT_DIRECTIVE : "";
     const echoPrefix =
       voiceText !== null && shouldEchoTranscript(voiceConfidence) ? `🎤 «${userMsg}»\n\n` : "";
     const turnId = newTurnId();
     const baseOpts = echoPrefix ? { renderPrefix: echoPrefix } : {};
     const answer =
       (await streamClaude(
-        buildPrompt(history, name, messageForClaude, recall, loadMemory(), skills),
+        buildPrompt(history, name, messageForClaude, recall, loadMemory(), skills, devDirective),
         chatId,
         placeholderId,
         model,

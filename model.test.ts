@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { pickModel } from "./model.ts";
+import { pickModel, detectDevIntent } from "./model.ts";
 
 test("defaults to sonnet for ordinary messages", () => {
   expect(pickModel("what's 2+2?").model).toBe("sonnet");
@@ -40,4 +40,35 @@ test("a long but ordinary message stays on sonnet", () => {
 
 test("surrounding whitespace is handled", () => {
   expect(pickModel("   /opus   hello world  ").prompt).toBe("hello world");
+});
+
+// detectDevIntent — fires the interview directive for build requests (agenda #4)
+test("detectDevIntent fires on English build requests", () => {
+  expect(detectDevIntent("develop a /usage command for the bot")).toBe(true);
+  expect(detectDevIntent("can you implement rate limiting?")).toBe(true);
+  expect(detectDevIntent("let's build a new feature")).toBe(true);
+  expect(detectDevIntent("refactor the poller")).toBe(true);
+  expect(detectDevIntent("add a feature that summarizes emails")).toBe(true);
+  expect(detectDevIntent("write code to parse the feed")).toBe(true);
+  // inflections match via per-token prefix
+  expect(detectDevIntent("I'm thinking about building a dashboard")).toBe(true);
+  expect(detectDevIntent("implementing the new flow")).toBe(true);
+});
+
+test("detectDevIntent fires on Hebrew build requests", () => {
+  expect(detectDevIntent("תבנה לי פיצ'ר שמסכם מיילים")).toBe(true);
+  expect(detectDevIntent("תפתח פונקציה חדשה")).toBe(true);
+  expect(detectDevIntent("בנה את זה")).toBe(true);
+  expect(detectDevIntent("תוסיף פיצ'ר חדש")).toBe(true);
+  expect(detectDevIntent("תכתוב קוד שיעשה את זה")).toBe(true);
+});
+
+test("detectDevIntent does NOT fire on ordinary messages", () => {
+  expect(detectDevIntent("what's on my calendar today?")).toBe(false);
+  expect(detectDevIntent("remind me at 6 to call the bank")).toBe(false);
+  expect(detectDevIntent("summarize my latest email")).toBe(false);
+  expect(detectDevIntent("create an event tomorrow at 3pm")).toBe(false); // "create" is not a trigger (calendar uses it)
+  // Hebrew "הבנה" (understanding) must NOT match the "בנה" token
+  expect(detectDevIntent("יש לי הבנה טובה של החומר")).toBe(false);
+  expect(detectDevIntent("")).toBe(false);
 });
