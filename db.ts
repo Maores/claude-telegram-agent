@@ -141,6 +141,18 @@ export function initSchema(db: Database): void {
       created_ts           INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_monitors_active ON monitors(status, last_checked_ts);
+
+    CREATE TABLE IF NOT EXISTS usage_log (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts            INTEGER NOT NULL,            -- unix seconds
+      chat_id       TEXT    NOT NULL,
+      model         TEXT    NOT NULL,            -- 'sonnet' | 'opus' | …
+      kind          TEXT    NOT NULL,            -- 'interactive' | 'auto'
+      cost_usd      REAL,                        -- nullable: capture may fail or format may change
+      input_tokens  INTEGER,
+      output_tokens INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_log_ts ON usage_log(ts);
   `);
 
   // Phase 3.1 additive migration: which umbrella skill absorbed this one.
