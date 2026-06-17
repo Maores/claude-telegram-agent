@@ -17,6 +17,7 @@ import {
   fuKeyboard,
   snoozeKeyboard,
   snoozeTarget,
+  replyContextLine,
   voiceInfo,
   voicePromptText,
   voiceHistoryNote,
@@ -196,6 +197,63 @@ test("buildPrompt injects the dev-intent directive only when passed, before the 
 
   const without = buildPrompt([], "Maor", "what's on my calendar?");
   expect(without).not.toContain("<dev-intent>");
+});
+
+// --- replyContextLine: native Telegram reply context -------------------------
+
+test("replyContextLine quotes the user's text, labeled by author", () => {
+  const line = replyContextLine(
+    { message_id: 1, chat: { id: 1 }, from: { id: 7 }, text: "מה השעה" } as any, 999, "Maor",
+  );
+  expect(line).toBe("Maor is replying to an earlier message (sent by Maor): «מה השעה»");
+});
+
+test("replyContextLine labels the assistant when the quoted message is the bot's", () => {
+  const line = replyContextLine(
+    { message_id: 1, chat: { id: 1 }, from: { id: 999 }, text: "התשובה שלי" } as any, 999, "Maor",
+  );
+  expect(line).toBe("Maor is replying to an earlier message (sent by the assistant): «התשובה שלי»");
+});
+
+test("replyContextLine falls back to the caption when there is no text", () => {
+  const line = replyContextLine({ from: { id: 7 }, caption: "כיתוב" } as any, 999, "Maor");
+  expect(line).toContain("«כיתוב»");
+});
+
+test("replyContextLine shows a media marker when the quoted message has no text/caption", () => {
+  expect(replyContextLine({ from: { id: 7 }, photo: [{}] } as any, 999, "Maor")).toContain("[תמונה]");
+  expect(replyContextLine({ from: { id: 7 }, document: {} } as any, 999, "Maor")).toContain("[קובץ]");
+  expect(replyContextLine({ from: { id: 7 }, voice: {} } as any, 999, "Maor")).toContain("[הודעה קולית]");
+  expect(replyContextLine({ from: { id: 7 }, video: {} } as any, 999, "Maor")).toContain("[וידאו]");
+  expect(replyContextLine({ from: { id: 7 }, audio: {} } as any, 999, "Maor")).toContain("[אודיו]");
+  expect(replyContextLine({ from: { id: 7 }, sticker: {} } as any, 999, "Maor")).toContain("[GIF/מדבקה]");
+});
+
+test("replyContextLine uses a generic marker when nothing is recognized", () => {
+  expect(replyContextLine({ from: { id: 7 } } as any, 999, "Maor")).toContain("[הודעה]");
+});
+
+test("replyContextLine truncates a long quote", () => {
+  const line = replyContextLine({ from: { id: 7 }, text: "א".repeat(600) } as any, 999, "Maor")!;
+  expect(line).toContain("…");
+  expect(line.length).toBeLessThan(570);
+});
+
+test("replyContextLine returns null when there is no reply", () => {
+  expect(replyContextLine(undefined, 999, "Maor")).toBeNull();
+});
+
+test("buildPrompt injects reply context before the new message when provided", () => {
+  const ctx = "Maor is replying to an earlier message (sent by the assistant): «foo»";
+  const p = buildPrompt([], "Maor", "expand on this", [], "", "", "", ctx);
+  expect(p).toContain(ctx);
+  expect(p.indexOf("replying to an earlier message")).toBeLessThan(p.indexOf("New message from Maor:"));
+});
+
+test("buildPrompt omits reply context when empty", () => {
+  const p = buildPrompt([], "Maor", "hi", [], "", "", "", "");
+  expect(p).not.toContain("replying to an earlier message");
+  expect(p).toContain("New message from Maor:\nhi");
 });
 
 test("buildPrompt splices the fenced recall block when recall is present", () => {
