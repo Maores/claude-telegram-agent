@@ -113,6 +113,7 @@ interface TgMessage {
   audio?: TgFile;
   animation?: TgFile;
   sticker?: TgFile;
+  reply_to_message?: TgMessage; // the message a native Telegram reply quotes
 }
 interface TgUpdate {
   update_id: number;
@@ -207,6 +208,9 @@ const REACTION_FAIL = "👎"; // something went wrong
 
 /** The bot's @username, learned at startup; used to recognize `/stop@thisbot`. */
 let botUsername = "";
+/** The bot's numeric user id, learned at startup; used to label whether a quoted
+ *  reply was the assistant's own message. 0 until getMe succeeds. */
+let botUserId = 0;
 
 /** A claude child currently running for a chat, plus whether /stop killed it
  *  (so the turn ends with "נעצר ✋" instead of the generic error reply). */
@@ -634,6 +638,35 @@ export const DEV_INTENT_DIRECTIVE = [
   "</dev-intent>",
 ].join("\n");
 
+const REPLY_QUOTE_MAX = 500;
+
+/** A short Hebrew marker for the kind of media a text-less quoted message holds. */
+function replyMediaMarker(m: TgMessage): string {
+  if (m.photo) return "[תמונה]";
+  if (m.document) return "[קובץ]";
+  if (m.voice) return "[הודעה קולית]";
+  if (m.video || m.video_note) return "[וידאו]";
+  if (m.audio) return "[אודיו]";
+  if (m.animation || m.sticker) return "[GIF/מדבקה]";
+  return "[הודעה]";
+}
+
+/** A one-line prompt note describing the message a native Telegram reply quotes,
+ *  or null when there's no reply. Labels the author (the assistant vs the user) and
+ *  quotes the text/caption (truncated), or a media marker when there's no text. */
+export function replyContextLine(
+  replyTo: TgMessage | undefined,
+  botUserId: number,
+  name: string,
+): string | null {
+  if (!replyTo) return null;
+  const author = botUserId && replyTo.from?.id === botUserId ? "the assistant" : name;
+  let content = (replyTo.text ?? replyTo.caption ?? "").trim();
+  if (!content) content = replyMediaMarker(replyTo);
+  else if (content.length > REPLY_QUOTE_MAX) content = content.slice(0, REPLY_QUOTE_MAX) + "…";
+  return `${name} is replying to an earlier message (sent by ${author}): «${content}»`;
+}
+
 export function buildPrompt(
   history: HistoryItem[],
   name: string,
@@ -642,6 +675,7 @@ export function buildPrompt(
   memory = "",
   skills = "",
   devDirective = "",
+  replyContext = "",
 ): string {
   const lines: string[] = [];
   if (memory) {
@@ -664,6 +698,9 @@ export function buildPrompt(
   }
   if (devDirective) {
     lines.push(devDirective, "");
+  }
+  if (replyContext) {
+    lines.push(replyContext, "");
   }
   lines.push(`New message from ${name}:`, text);
   return lines.join("\n");
@@ -1100,13 +1137,15 @@ async function handleMessage(msg: TgMessage) {
     // typed-message path — NOT on choice taps, where a tapped launch button must
     // build, not re-trigger the interview.
     const devDirective = detectDevIntent(userMsg || historyNote) ? DEV_INTENT_DIRECTIVE : "";
+    // Native Telegram reply (#308): tell the model which earlier message Maor quoted.
+    const replyContext = replyContextLine(msg.reply_to_message, botUserId, name) ?? "";
     const echoPrefix =
       voiceText !== null && shouldEchoTranscript(voiceConfidence) ? `🎤 «${userMsg}»\n\n` : "";
     const turnId = newTurnId();
     const baseOpts = echoPrefix ? { renderPrefix: echoPrefix } : {};
     const answer =
       (await streamClaude(
-        buildPrompt(history, name, messageForClaude, recall, loadMemory(), skills, devDirective),
+        buildPrompt(history, name, messageForClaude, recall, loadMemory(), skills, devDirective, replyContext),
         chatId,
         placeholderId,
         model,
@@ -1820,6 +1859,7 @@ async function main() {
     process.exit(1);
   }
   botUsername = me.username ?? "";
+  botUserId = me.id ?? 0;
   console.log(`[BOT] Poller started as @${me.username}`);
 
   setInterval(() => {
