@@ -254,6 +254,26 @@ export function resolveFollowup(id: string, status: "done" | "snoozed"): Followu
   });
 }
 
+/** Reverse a snooze: snoozed → pending, resetting the fire time to nowEpoch (so
+ *  the "still relevant?" nudge timer restarts from the undo, not the stale original
+ *  time) and clearing any prior nudge. Returns the follow-up, or null if it's
+ *  missing or not currently snoozed (nothing to undo). */
+export function revertFollowup(
+  id: string,
+  nowEpoch = Math.floor(Date.now() / 1000),
+): Followup | null {
+  return withFileLock(followupsPath(), () => {
+    const list = loadFollowups();
+    const f = list.find((x) => x.id === id);
+    if (!f || f.status !== "snoozed") return null;
+    f.status = "pending";
+    f.firedAt = nowEpoch;
+    f.nudged = false;
+    saveFollowups(list);
+    return f;
+  });
+}
+
 /** Point the follow-up at a new message (the nudge takes over the buttons). */
 export function rebindFollowup(id: string, newMessageId: number) {
   withFileLock(followupsPath(), () => {
