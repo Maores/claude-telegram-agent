@@ -14,8 +14,10 @@ import {
   isStopCommand,
   outcomeReaction,
   parseFuCallback,
+  parseFuuCallback,
   fuKeyboard,
   snoozeKeyboard,
+  undoKeyboard,
   snoozeTarget,
   voiceInfo,
   voicePromptText,
@@ -302,6 +304,21 @@ test("fuKeyboard / snoozeKeyboard carry the follow-up id in callback_data", () =
   expect(sk.inline_keyboard.flat().map((b: any) => b.callback_data)).toEqual([
     "fu:s1h:f7", "fu:seve:f7", "fu:stom:f7",
   ]);
+});
+
+test("parseFuuCallback parses undo data and rejects junk", () => {
+  expect(parseFuuCallback("fuu:f3:r12")).toEqual({ fuId: "f3", reminderId: "r12" });
+  expect(parseFuuCallback("fuu:f3")).toBeNull(); // missing reminder id
+  expect(parseFuuCallback("fuu::r1")).toBeNull(); // empty follow-up id
+  expect(parseFuuCallback("")).toBeNull();
+  // the fuu:/fu: namespaces must stay disjoint — neither parser claims the other's data
+  expect(parseFuuCallback("fu:done:f3")).toBeNull();
+  expect(parseFuCallback("fuu:f3:r12")).toBeNull();
+});
+
+test("undoKeyboard carries both the follow-up id and the new reminder id", () => {
+  const kb = undoKeyboard("f7", "r14") as any;
+  expect(kb.inline_keyboard.flat().map((b: any) => b.callback_data)).toEqual(["fuu:f7:r14"]);
 });
 
 test("snoozeTarget: +1h, evening-rolls-to-tomorrow, tomorrow-morning", () => {

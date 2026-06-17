@@ -121,7 +121,7 @@ test("popDue leaves future reminders untouched", () => {
 // --- follow-up lifecycle (Phase 5) ----------------------------------------
 
 import {
-  addFollowup, getFollowup, resolveFollowup, rebindFollowup,
+  addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup,
   markNudged, dueNudges, pruneFollowups, loadFollowups, type Followup,
 } from "./reminders.ts";
 
@@ -148,6 +148,37 @@ test("resolveFollowup marks done/snoozed once; second resolve returns null", () 
   expect(resolveFollowup(f.id, "done")!.status).toBe("done");
   expect(resolveFollowup(f.id, "snoozed")).toBeNull(); // already resolved
   expect(getFollowup(f.id)!.status).toBe("done");
+});
+
+test("revertFollowup turns a snoozed follow-up back to pending and resets the timer", () => {
+  freshFollowupFile();
+  const f = addFollowup(1, "x", 5, T0);
+  resolveFollowup(f.id, "snoozed");
+  const r = revertFollowup(f.id, T0 + 10_000);
+  expect(r!.status).toBe("pending");
+  expect(r!.firedAt).toBe(T0 + 10_000); // reset to "now" so no instant nudge
+  expect(r!.nudged).toBe(false);
+  expect(getFollowup(f.id)!.status).toBe("pending");
+});
+
+test("revertFollowup returns null for a missing id or a non-snoozed follow-up", () => {
+  freshFollowupFile();
+  expect(revertFollowup("nope", T0)).toBeNull();
+  const f = addFollowup(1, "x", 5, T0);
+  expect(revertFollowup(f.id, T0)).toBeNull(); // pending, nothing to revert
+  resolveFollowup(f.id, "done");
+  expect(revertFollowup(f.id, T0)).toBeNull(); // done, not a snooze
+});
+
+test("revertFollowup clears a prior nudge so the cycle restarts from now", () => {
+  freshFollowupFile();
+  const f = addFollowup(1, "x", 5, T0);
+  markNudged(f.id);
+  resolveFollowup(f.id, "snoozed");
+  revertFollowup(f.id, T0 + 100);
+  // pending again, un-nudged, timer reset → not due until an hour after the revert
+  expect(dueNudges(T0 + 100 + 3599).length).toBe(0);
+  expect(dueNudges(T0 + 100 + 3600).map((d) => d.id)).toEqual([f.id]);
 });
 
 test("dueNudges returns pending follow-ups older than the age, once only", () => {

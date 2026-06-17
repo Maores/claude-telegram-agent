@@ -17,7 +17,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
-import { popDue, addOnce, addFollowup, getFollowup, resolveFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt } from "./reminders.ts";
+import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt } from "./reminders.ts";
 import { takePending, consumeAction, validateArgv, pruneActions, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
 import { StreamParser, displayText } from "./stream.ts";
@@ -296,6 +296,31 @@ export function snoozeKeyboard(id: string): unknown {
       { text: "+1 שעה", callback_data: `fu:s1h:${id}` },
       { text: "הערב 20:00", callback_data: `fu:seve:${id}` },
       { text: "מחר 09:00", callback_data: `fu:stom:${id}` },
+    ]],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Inline-button callbacks: undo a snooze
+// callback_data protocol (≤64 bytes): "fuu:<followupId>:<reminderId>"
+// Disjoint from the fu: namespace — parseFuCallback's verb alternation never
+// matches the "uu:" prefix — but parsed first in handleCallback to be safe.
+// ---------------------------------------------------------------------------
+
+export interface FuuCallback {
+  fuId: string;
+  reminderId: string;
+}
+
+export function parseFuuCallback(data: string): FuuCallback | null {
+  const m = /^fuu:([\w-]+):([\w-]+)$/.exec(data ?? "");
+  return m ? { fuId: m[1], reminderId: m[2] } : null;
+}
+
+export function undoKeyboard(fuId: string, reminderId: string): unknown {
+  return {
+    inline_keyboard: [[
+      { text: "↩️ בטל דחייה", callback_data: `fuu:${fuId}:${reminderId}` },
     ]],
   };
 }
@@ -1145,9 +1170,10 @@ async function handleMessage(msg: TgMessage) {
 async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   const pa = parsePaCallback(cq.data ?? "");
   const ch = pa ? null : parseChCallback(cq.data ?? "");
-  const parsed = pa || ch ? null : parseFuCallback(cq.data ?? "");
+  const fuu = pa || ch ? null : parseFuuCallback(cq.data ?? "");
+  const parsed = pa || ch || fuu ? null : parseFuCallback(cq.data ?? "");
   console.log(
-    `[CB] ${pa ? `pa:${pa.action}:${pa.id}` : ch ? `ch:${ch.id}:${ch.idx}` : parsed ? `${parsed.action}:${parsed.id}` : `?:${(cq.data ?? "").slice(0, 24)}`} from ${cq.from.id}`,
+    `[CB] ${pa ? `pa:${pa.action}:${pa.id}` : ch ? `ch:${ch.id}:${ch.idx}` : fuu ? `undo:${fuu.fuId}` : parsed ? `${parsed.action}:${parsed.id}` : `?:${(cq.data ?? "").slice(0, 24)}`} from ${cq.from.id}`,
   );
   const ack = (text?: string) =>
     tg("answerCallbackQuery", { callback_query_id: cq.id, ...(text ? { text } : {}) }).catch(() => {});
@@ -1157,7 +1183,7 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   }
   const chatId = cq.message?.chat.id;
   const messageId = cq.message?.message_id;
-  if (chatId == null || messageId == null || (!pa && !ch && !parsed)) {
+  if (chatId == null || messageId == null || (!pa && !ch && !fuu && !parsed)) {
     await ack(); // unknown namespace — ignore
     return;
   }
@@ -1167,6 +1193,10 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   }
   if (ch) {
     await handleChCallback(cq, ch, chatId, messageId, ack);
+    return;
+  }
+  if (fuu) {
+    await handleFuuCallback(cq, fuu, chatId, messageId, ack);
     return;
   }
   // Only fu-callbacks remain here (pa/ch handled+returned above, and the top
@@ -1212,14 +1242,45 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
     }
     await ack();
     const t = snoozeTarget(parsed.action, nowS);
-    addOnce(f.chatId, t, f.text);
+    const nr = addOnce(f.chatId, t, f.text);
     await tg("editMessageText", {
       chat_id: chatId,
       message_id: messageId,
       text: `${cq.message?.text ?? `⏰ ${f.text}`} — נדחה ל־${fmt(t)}`,
+      reply_markup: undoKeyboard(f.id, nr.id), // one-tap undo while the new reminder still exists
     }).catch(() => {});
-    console.log(`[REMIND] snoozed fu ${f.id} to ${fmt(t)}`);
+    console.log(`[REMIND] snoozed fu ${f.id} to ${fmt(t)} (r=${nr.id})`);
   }
+}
+
+/** Undo a snooze: cancel the reminder the snooze created and restore the original
+ *  ⏰ reminder message + done/snooze buttons. Stale (the snoozed reminder already
+ *  fired) → "כבר טופל", no revert; the natural expiry needs no timer. */
+async function handleFuuCallback(
+  cq: NonNullable<TgUpdate["callback_query"]>,
+  parsed: FuuCallback,
+  chatId: number,
+  messageId: number,
+  ack: (text?: string) => Promise<unknown>,
+) {
+  const nowS = Math.floor(Date.now() / 1000);
+  if (!cancel(chatId, parsed.reminderId)) {
+    console.log(`[CB] stale undo ${parsed.fuId} (reminder ${parsed.reminderId} gone)`);
+    await ack("כבר טופל");
+    return;
+  }
+  const f = revertFollowup(parsed.fuId, nowS);
+  await ack("בוטל ✓");
+  // f is reliably present (we just cancelled a still-pending snoozed reminder);
+  // the split fallback only guards a pruned/raced follow-up.
+  const text = f ? `⏰ Reminder: ${f.text}` : (cq.message?.text ?? "⏰ Reminder").split(" — נדחה")[0];
+  await tg("editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    reply_markup: fuKeyboard(parsed.fuId),
+  }).catch(() => {});
+  console.log(`[REMIND] undo snooze ${parsed.fuId} (cancelled ${parsed.reminderId})`);
 }
 
 /** Send one ✓/✗ message per proposal the just-finished turn registered. */
