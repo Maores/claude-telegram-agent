@@ -23,7 +23,12 @@ fresh in this directory via `claude -p`, and your stdout is sent back as the rep
   - Put standalone LTR tokens (URLs, file paths, commands like `bun run cal.ts
     list`) on their own line, and don't end an RTL sentence with a bare LTR token
     or its trailing punctuation.
-  Pure Hebrew prose needs nothing special — this only applies to mixed RTL+LTR.
+  - When in doubt, default to writing the whole reply in Hebrew with short
+    English terms embedded inline, and never use an em-dash or a colon as the
+    separator between a Hebrew fragment and an English one.
+  Pure Hebrew prose needs nothing special; this only applies to mixed RTL+LTR.
+  (These BiDi rules are kept here in CLAUDE.md in full, not only in the
+  `hebrew-bidi-formatting` skill, so they load automatically every session.)
 - You have full permission to use every tool available to you. Act, don't ask.
 
 ## Asking with buttons (choice questions)
