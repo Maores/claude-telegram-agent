@@ -64,7 +64,6 @@ const CAL_CHECK_MS = Number(process.env.CAL_CHECK_MS ?? 300_000); // how often t
 // Attachments
 export const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES ?? 20 * 1024 * 1024); // Telegram getFile caps bot downloads at ~20MB
 const DOWNLOAD_TIMEOUT_MS = Number(process.env.DOWNLOAD_TIMEOUT_MS ?? 60_000); // give up on a stuck file download
-const UPLOAD_MAX_AGE_MS = Number(process.env.UPLOAD_MAX_AGE_MS ?? 24 * 3600_000); // startup sweep removes orphans older than this
 const UPLOADS_MAX_BYTES = Number(process.env.UPLOADS_MAX_BYTES ?? 500 * 1024 * 1024); // evict oldest files when uploads/ exceeds this
 
 // ---------------------------------------------------------------------------
@@ -565,68 +564,71 @@ function cleanupFile(path: string | undefined) {
   }
 }
 
-/** Evict the oldest timestamp-prefixed files in uploads/ until total size is under the cap. */
-function evictUploadsToFit() {
-  if (!existsSync(UPLOADS_DIR)) return;
+/** Pick which uploads to evict so their total size fits the cap: oldest first,
+ *  and the newest file is always kept even if it alone exceeds the cap (it's
+ *  the one the current message likely refers to). Pure; the fs wrapper below
+ *  applies it. */
+export function pickEvictions<T extends { ts: number; size: number }>(
+  entries: T[],
+  maxBytes: number,
+): T[] {
+  let total = entries.reduce((s, e) => s + e.size, 0);
+  if (total <= maxBytes) return [];
+  const oldestFirst = [...entries].sort((a, b) => a.ts - b.ts);
+  const evict: T[] = [];
+  for (let i = 0; i < oldestFirst.length - 1 && total > maxBytes; i++) {
+    evict.push(oldestFirst[i]);
+    total -= oldestFirst[i].size;
+  }
+  return evict;
+}
+
+/** Prompt block for persisted uploads: newest first, capped so months of
+ *  accumulated files can't bloat every prompt. Pure; recentUploadsBlock()
+ *  feeds it from disk. */
+export function uploadsBlock(entries: { path: string; ts: number }[], cap = 12): string {
+  if (!entries.length) return "";
+  const newestFirst = [...entries].sort((a, b) => b.ts - a.ts);
+  const shown = newestFirst.slice(0, cap);
+  const lines = shown.map(
+    (e) => `  ${e.path}  (uploaded ${new Date(e.ts).toISOString().slice(0, 16).replace("T", " ")}Z)`,
+  );
+  const extra = newestFirst.length - shown.length;
+  if (extra > 0) lines.push(`  (+${extra} older file${extra === 1 ? "" : "s"} not listed)`);
+  return `Previously uploaded files still on disk (newest first; open by path when relevant):\n${lines.join("\n")}`;
+}
+
+/** List the uploads/ entries we own (timestamp-prefixed), with size and timestamp. */
+function listUploadEntries(): { name: string; path: string; ts: number; size: number }[] {
+  if (!existsSync(UPLOADS_DIR)) return [];
   const entries: { name: string; path: string; ts: number; size: number }[] = [];
   for (const name of readdirSync(UPLOADS_DIR)) {
     const m = /^(\d+)-/.exec(name);
     if (!m) continue;
     const path = join(UPLOADS_DIR, name);
     try {
-      const stat = statSync(path);
-      entries.push({ name, path, ts: Number(m[1]), size: stat.size });
+      entries.push({ name, path, ts: Number(m[1]), size: statSync(path).size });
     } catch {}
   }
-  let total = entries.reduce((s, e) => s + e.size, 0);
-  if (total <= UPLOADS_MAX_BYTES) return;
-  entries.sort((a, b) => a.ts - b.ts);
-  for (const entry of entries) {
-    if (total <= UPLOADS_MAX_BYTES) break;
+  return entries;
+}
+
+/** Evict the oldest uploads until uploads/ fits UPLOADS_MAX_BYTES. Runs after
+ *  every download and once at startup. There is deliberately no age-based
+ *  sweep: persisted files must survive restarts, so size is the only eviction
+ *  policy. */
+function evictUploadsToFit() {
+  for (const e of pickEvictions(listUploadEntries(), UPLOADS_MAX_BYTES)) {
     try {
-      rmSync(entry.path, { force: true });
-      total -= entry.size;
-      console.log(`[UPLOADS] evicted ${entry.name} (${(entry.size / 1024).toFixed(0)}KB)`);
+      rmSync(e.path, { force: true });
+      console.log(`[UPLOADS] evicted ${e.name} (${(e.size / 1024).toFixed(0)}KB)`);
     } catch {}
   }
 }
 
-/** Build a prompt block listing files currently in uploads/, newest first. */
+/** Uploads block for the prompt, read fresh from disk each message. */
 function recentUploadsBlock(): string {
-  if (!existsSync(UPLOADS_DIR)) return "";
-  const entries: { name: string; ts: number }[] = [];
-  for (const name of readdirSync(UPLOADS_DIR)) {
-    const m = /^(\d+)-/.exec(name);
-    if (!m) continue;
-    entries.push({ name, ts: Number(m[1]) });
-  }
-  if (!entries.length) return "";
-  entries.sort((a, b) => b.ts - a.ts);
-  const lines = entries.map((e) => `  ${join(UPLOADS_DIR, e.name)}`);
-  return `Previously uploaded files still on disk:\n${lines.join("\n")}`;
-}
-
-/** True if an uploads/ entry is one of our timestamp-prefixed files and older
- *  than maxAgeMs. Names that don't match the pattern are left untouched. */
-export function staleByName(filename: string, now: number, maxAgeMs: number): boolean {
-  const m = /^(\d+)-/.exec(filename);
-  if (!m) return false;
-  return now - Number(m[1]) > maxAgeMs;
-}
-
-/** Sweep orphaned uploads left behind by a crash mid-handling (runs at startup). */
-function sweepUploads(maxAgeMs = UPLOAD_MAX_AGE_MS) {
-  if (!existsSync(UPLOADS_DIR)) return;
-  const now = Date.now();
-  let removed = 0;
-  for (const name of readdirSync(UPLOADS_DIR)) {
-    if (!staleByName(name, now, maxAgeMs)) continue;
-    try {
-      rmSync(join(UPLOADS_DIR, name), { force: true });
-      removed++;
-    } catch {}
-  }
-  if (removed) console.log(`[UPLOADS] swept ${removed} stale file(s)`);
+  return uploadsBlock(listUploadEntries());
 }
 
 // ---------------------------------------------------------------------------
@@ -1895,7 +1897,7 @@ async function main() {
   } catch (e: any) {
     console.error(`[ERR] memory import: ${e?.message ?? e}`);
   }
-  sweepUploads();
+  evictUploadsToFit();
 
   let me: any;
   try {

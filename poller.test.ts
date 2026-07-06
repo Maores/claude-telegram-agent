@@ -7,7 +7,8 @@ import {
   attachmentInfo,
   unsupportedMediaKind,
   isTooLarge,
-  staleByName,
+  pickEvictions,
+  uploadsBlock,
   MAX_FILE_BYTES,
   autoSessionSpawn,
   AUTO_DISALLOWED_TOOLS,
@@ -170,22 +171,78 @@ test("isTooLarge is true above the cap and false at or below it", () => {
   expect(isTooLarge(1024)).toBe(false);
 });
 
-// --- staleByName: startup sweep of orphaned uploads ---------------------------
+// --- pickEvictions: size-capped uploads/ retention -----------------------------
 
-test("staleByName flags an upload older than the max age", () => {
-  const now = 1_000_000_000_000;
-  const oldName = `${now - 48 * 3600_000}-pic.jpg`;
-  expect(staleByName(oldName, now, 24 * 3600_000)).toBe(true);
+test("pickEvictions keeps everything under the cap", () => {
+  const entries = [
+    { name: "a", ts: 1, size: 100 },
+    { name: "b", ts: 2, size: 100 },
+  ];
+  expect(pickEvictions(entries, 500)).toEqual([]);
 });
 
-test("staleByName keeps a recent upload", () => {
-  const now = 1_000_000_000_000;
-  const freshName = `${now - 60_000}-pic.jpg`;
-  expect(staleByName(freshName, now, 24 * 3600_000)).toBe(false);
+test("pickEvictions is a no-op exactly at the cap", () => {
+  const entries = [{ name: "a", ts: 1, size: 500 }];
+  expect(pickEvictions(entries, 500)).toEqual([]);
 });
 
-test("staleByName ignores files that aren't timestamp-prefixed uploads", () => {
-  expect(staleByName(".gitkeep", 1_000_000_000_000, 1000)).toBe(false);
+test("pickEvictions drops oldest files first until the total fits", () => {
+  const entries = [
+    { name: "new", ts: 30, size: 300 },
+    { name: "old", ts: 10, size: 300 },
+    { name: "mid", ts: 20, size: 300 },
+  ];
+  const evicted = pickEvictions(entries, 600).map((e) => e.name);
+  expect(evicted).toEqual(["old"]);
+});
+
+test("pickEvictions never evicts the newest file even when it alone exceeds the cap", () => {
+  const entries = [
+    { name: "old", ts: 10, size: 100 },
+    { name: "huge", ts: 20, size: 900 },
+  ];
+  const evicted = pickEvictions(entries, 500).map((e) => e.name);
+  expect(evicted).toEqual(["old"]);
+});
+
+// --- uploadsBlock: prompt block of persisted uploads ----------------------------
+
+test("uploadsBlock is empty when no uploads exist", () => {
+  expect(uploadsBlock([])).toBe("");
+});
+
+test("uploadsBlock lists paths newest first with an upload date", () => {
+  const b = uploadsBlock([
+    { path: "/up/1751000000000-old.pdf", ts: 1751000000000 },
+    { path: "/up/1751800000000-new.md", ts: 1751800000000 },
+  ]);
+  const lines = b.split("\n");
+  expect(lines[0]).toContain("Previously uploaded files still on disk");
+  expect(lines[1]).toContain("/up/1751800000000-new.md");
+  expect(lines[2]).toContain("/up/1751000000000-old.pdf");
+  expect(lines[1]).toMatch(/uploaded \d{4}-\d{2}-\d{2} \d{2}:\d{2}Z/);
+});
+
+test("uploadsBlock caps the listing and counts the rest", () => {
+  const entries = Array.from({ length: 15 }, (_, i) => ({ path: `/up/${i}`, ts: i }));
+  const b = uploadsBlock(entries, 12);
+  expect(b).toContain("/up/3  (");
+  expect(b).not.toContain("/up/2  (");
+  expect(b).toContain("(+3 older files not listed)");
+});
+
+// --- buildPrompt uploaded-files block -------------------------------------------
+
+test("buildPrompt injects the uploads block before the conversation history", () => {
+  const block = "Previously uploaded files still on disk (newest first; open by path when relevant):\n  /up/1-a.md";
+  const p = buildPrompt([{ role: "user", content: "hi" }], "Maor", "continue", [], "", "", "", "", block);
+  expect(p).toContain("/up/1-a.md");
+  expect(p.indexOf("Previously uploaded")).toBeLessThan(p.indexOf("Recent conversation"));
+});
+
+test("buildPrompt omits the uploads block when empty", () => {
+  const p = buildPrompt([], "Maor", "hi", [], "", "", "", "", "");
+  expect(p).not.toContain("Previously uploaded");
 });
 
 // --- buildPrompt recall block -------------------------------------------------
