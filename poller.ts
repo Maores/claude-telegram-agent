@@ -14,7 +14,7 @@
  * Runs on Bun. Zero npm dependencies.
  */
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt } from "./reminders.ts";
@@ -64,7 +64,7 @@ const CAL_CHECK_MS = Number(process.env.CAL_CHECK_MS ?? 300_000); // how often t
 // Attachments
 export const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES ?? 20 * 1024 * 1024); // Telegram getFile caps bot downloads at ~20MB
 const DOWNLOAD_TIMEOUT_MS = Number(process.env.DOWNLOAD_TIMEOUT_MS ?? 60_000); // give up on a stuck file download
-const UPLOAD_MAX_AGE_MS = Number(process.env.UPLOAD_MAX_AGE_MS ?? 24 * 3600_000); // startup sweep removes orphans older than this
+const UPLOADS_MAX_BYTES = Number(process.env.UPLOADS_MAX_BYTES ?? 500 * 1024 * 1024); // evict oldest files when uploads/ exceeds this
 
 // ---------------------------------------------------------------------------
 // Types
@@ -554,7 +554,7 @@ async function downloadFile(fileId: string, preferredName?: string): Promise<str
   return dest;
 }
 
-/** Best-effort delete of a downloaded upload once we're done answering. */
+/** Best-effort delete of a file. Used for transient audio after transcription. */
 function cleanupFile(path: string | undefined) {
   if (!path) return;
   try {
@@ -564,27 +564,71 @@ function cleanupFile(path: string | undefined) {
   }
 }
 
-/** True if an uploads/ entry is one of our timestamp-prefixed files and older
- *  than maxAgeMs. Names that don't match the pattern are left untouched. */
-export function staleByName(filename: string, now: number, maxAgeMs: number): boolean {
-  const m = /^(\d+)-/.exec(filename);
-  if (!m) return false;
-  return now - Number(m[1]) > maxAgeMs;
+/** Pick which uploads to evict so their total size fits the cap: oldest first,
+ *  and the newest file is always kept even if it alone exceeds the cap (it's
+ *  the one the current message likely refers to). Pure; the fs wrapper below
+ *  applies it. */
+export function pickEvictions<T extends { ts: number; size: number }>(
+  entries: T[],
+  maxBytes: number,
+): T[] {
+  let total = entries.reduce((s, e) => s + e.size, 0);
+  if (total <= maxBytes) return [];
+  const oldestFirst = [...entries].sort((a, b) => a.ts - b.ts);
+  const evict: T[] = [];
+  for (let i = 0; i < oldestFirst.length - 1 && total > maxBytes; i++) {
+    evict.push(oldestFirst[i]);
+    total -= oldestFirst[i].size;
+  }
+  return evict;
 }
 
-/** Sweep orphaned uploads left behind by a crash mid-handling (runs at startup). */
-function sweepUploads(maxAgeMs = UPLOAD_MAX_AGE_MS) {
-  if (!existsSync(UPLOADS_DIR)) return;
-  const now = Date.now();
-  let removed = 0;
+/** Prompt block for persisted uploads: newest first, capped so months of
+ *  accumulated files can't bloat every prompt. Pure; recentUploadsBlock()
+ *  feeds it from disk. */
+export function uploadsBlock(entries: { path: string; ts: number }[], cap = 12): string {
+  if (!entries.length) return "";
+  const newestFirst = [...entries].sort((a, b) => b.ts - a.ts);
+  const shown = newestFirst.slice(0, cap);
+  const lines = shown.map(
+    (e) => `  ${e.path}  (uploaded ${new Date(e.ts).toISOString().slice(0, 16).replace("T", " ")}Z)`,
+  );
+  const extra = newestFirst.length - shown.length;
+  if (extra > 0) lines.push(`  (+${extra} older file${extra === 1 ? "" : "s"} not listed)`);
+  return `Previously uploaded files still on disk (newest first; open by path when relevant):\n${lines.join("\n")}`;
+}
+
+/** List the uploads/ entries we own (timestamp-prefixed), with size and timestamp. */
+function listUploadEntries(): { name: string; path: string; ts: number; size: number }[] {
+  if (!existsSync(UPLOADS_DIR)) return [];
+  const entries: { name: string; path: string; ts: number; size: number }[] = [];
   for (const name of readdirSync(UPLOADS_DIR)) {
-    if (!staleByName(name, now, maxAgeMs)) continue;
+    const m = /^(\d+)-/.exec(name);
+    if (!m) continue;
+    const path = join(UPLOADS_DIR, name);
     try {
-      rmSync(join(UPLOADS_DIR, name), { force: true });
-      removed++;
+      entries.push({ name, path, ts: Number(m[1]), size: statSync(path).size });
     } catch {}
   }
-  if (removed) console.log(`[UPLOADS] swept ${removed} stale file(s)`);
+  return entries;
+}
+
+/** Evict the oldest uploads until uploads/ fits UPLOADS_MAX_BYTES. Runs after
+ *  every download and once at startup. There is deliberately no age-based
+ *  sweep: persisted files must survive restarts, so size is the only eviction
+ *  policy. */
+function evictUploadsToFit() {
+  for (const e of pickEvictions(listUploadEntries(), UPLOADS_MAX_BYTES)) {
+    try {
+      rmSync(e.path, { force: true });
+      console.log(`[UPLOADS] evicted ${e.name} (${(e.size / 1024).toFixed(0)}KB)`);
+    } catch {}
+  }
+}
+
+/** Uploads block for the prompt, read fresh from disk each message. */
+function recentUploadsBlock(): string {
+  return uploadsBlock(listUploadEntries());
 }
 
 // ---------------------------------------------------------------------------
@@ -676,6 +720,7 @@ export function buildPrompt(
   skills = "",
   devDirective = "",
   replyContext = "",
+  uploadedFiles = "",
 ): string {
   const lines: string[] = [];
   if (memory) {
@@ -688,6 +733,9 @@ export function buildPrompt(
   }
   if (skills) {
     lines.push(skills, "");
+  }
+  if (uploadedFiles) {
+    lines.push(uploadedFiles, "");
   }
   if (history.length) {
     lines.push("Recent conversation (for context):");
@@ -1056,6 +1104,7 @@ async function handleMessage(msg: TgMessage) {
   if (info) {
     try {
       attachment = { path: await downloadFile(info.fileId, info.name), kind: info.kind };
+      evictUploadsToFit();
     } catch (e: any) {
       console.error(`[ERR] download attachment from ${fromId}: ${e?.message ?? e}`);
       await tg("sendMessage", {
@@ -1145,7 +1194,7 @@ async function handleMessage(msg: TgMessage) {
     const baseOpts = echoPrefix ? { renderPrefix: echoPrefix } : {};
     const answer =
       (await streamClaude(
-        buildPrompt(history, name, messageForClaude, recall, loadMemory(), skills, devDirective, replyContext),
+        buildPrompt(history, name, messageForClaude, recall, loadMemory(), skills, devDirective, replyContext, recentUploadsBlock()),
         chatId,
         placeholderId,
         model,
@@ -1197,9 +1246,8 @@ async function handleMessage(msg: TgMessage) {
       limitMsg ?? "⚠️ Sorry, something went wrong handling that. Please try again.",
     ).catch(() => {});
   } finally {
-    // The saved file is transient — Claude has read it by now, so don't let
-    // uploads/ grow without bound.
-    cleanupFile(attachment?.path);
+    // Documents and images are kept on disk for future sessions.
+    // Audio transcripts are deleted immediately (they've already been transcribed).
   }
 }
 
@@ -1849,7 +1897,7 @@ async function main() {
   } catch (e: any) {
     console.error(`[ERR] memory import: ${e?.message ?? e}`);
   }
-  sweepUploads();
+  evictUploadsToFit();
 
   let me: any;
   try {
