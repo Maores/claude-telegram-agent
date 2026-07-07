@@ -5,15 +5,18 @@
     "category": "hash-map",
     "title": "Two Sum",
     "difficulty": "easy",
-    "prompt": "Solve: Two Sum\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target. You may assume exactly one solution exists, and you may not use the same element twice.\n\nExample 1:\n  Input: nums = [2,7,11,15], target = 9\n  Output: [0,1]\n  Explanation: nums[0] + nums[1] = 2 + 7 = 9\n\nExample 2:\n  Input: nums = [3,2,4], target = 6\n  Output: [1,2]\n\nExample 3:\n  Input: nums = [3,3], target = 6\n  Output: [0,1]\n\nConstraints: 2 <= nums.length <= 10^4, -10^9 <= nums[i] <= 10^9, exactly one valid answer exists.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "One pass with a hash map from value to index: for each number, check if target minus it was already seen; if yes return the two indices, otherwise store it. O(n) time, O(n) space.",
     "hint": "Brute force is O(n^2), can you trade space for time? || Store numbers you have already seen with their index || For each x, look up target-x in a hash map",
     "time_complexity": "O(n)",
     "space_complexity": "O(n)",
     "leetcode_url": "https://leetcode.com/problems/two-sum/",
-    "lc_description": "Given an array of integers and a target, return indices of the two numbers that add up to the target.",
     "source": "Blind 75",
-    "tags": ["blind75", "arrays", "hash-map"]
+    "tags": [
+      "blind75",
+      "arrays",
+      "hash-map"
+    ]
   },
   {
     "id": "algo-blind75-2",
@@ -21,15 +24,18 @@
     "category": "greedy",
     "title": "Best Time to Buy and Sell Stock",
     "difficulty": "easy",
-    "prompt": "Solve: Best Time to Buy and Sell Stock\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "You are given an array prices where prices[i] is the price of a stock on day i. You want to maximize profit by choosing one day to buy and a later day to sell. Return the maximum profit, or 0 if no profit is possible.\n\nExample 1:\n  Input: prices = [7,1,5,3,6,4]\n  Output: 5\n  Explanation: Buy day 2 (price=1), sell day 5 (price=6), profit = 5.\n\nExample 2:\n  Input: prices = [7,6,4,3,1]\n  Output: 0\n  Explanation: Prices only fall; no profit possible.\n\nConstraints: 1 <= prices.length <= 10^5, 0 <= prices[i] <= 10^4.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Single pass tracking the minimum price so far; at each day compute price minus min-so-far and keep the best profit. O(n) time, O(1) space.",
     "hint": "You must buy before you sell || Track the cheapest price seen so far || Best profit ending today = today's price minus min so far",
     "time_complexity": "O(n)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/best-time-to-buy-and-sell-stock/",
-    "lc_description": "Given daily stock prices, choose one day to buy and a later day to sell to maximize profit.",
     "source": "Blind 75",
-    "tags": ["blind75", "arrays", "greedy"]
+    "tags": [
+      "blind75",
+      "arrays",
+      "greedy"
+    ]
   },
   {
     "id": "algo-blind75-3",
@@ -37,15 +43,18 @@
     "category": "hash-set",
     "title": "Contains Duplicate",
     "difficulty": "easy",
-    "prompt": "Solve: Contains Duplicate\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given an integer array nums, return true if any value appears at least twice, and false if every element is distinct.\n\nExample 1:\n  Input: nums = [1,2,3,1]\n  Output: true\n\nExample 2:\n  Input: nums = [1,2,3,4]\n  Output: false\n\nExample 3:\n  Input: nums = [1,1,1,3,3,4,3,2,4,2]\n  Output: true\n\nConstraints: 1 <= nums.length <= 10^5, -10^9 <= nums[i] <= 10^9.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Insert into a hash set while scanning; if an element is already present return true. O(n) time, O(n) space. Sorting gives O(n log n) time with O(1) extra space as an alternative.",
     "hint": "What data structure gives O(1) membership checks? || Compare set size to array length || Sorting is a valid space-time trade",
     "time_complexity": "O(n)",
     "space_complexity": "O(n)",
     "leetcode_url": "https://leetcode.com/problems/contains-duplicate/",
-    "lc_description": "Return true if any value appears at least twice in the array.",
     "source": "Blind 75",
-    "tags": ["blind75", "arrays", "hash-set"]
+    "tags": [
+      "blind75",
+      "arrays",
+      "hash-set"
+    ]
   },
   {
     "id": "algo-blind75-4",
@@ -53,15 +62,18 @@
     "category": "prefix-product",
     "title": "Product of Array Except Self",
     "difficulty": "medium",
-    "prompt": "Solve: Product of Array Except Self (no division allowed)\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given an integer array nums, return an array answer where answer[i] equals the product of all elements of nums except nums[i]. You must run in O(n) time and may NOT use the division operator.\n\nExample 1:\n  Input: nums = [1,2,3,4]\n  Output: [24,12,8,6]\n\nExample 2:\n  Input: nums = [-1,1,0,-3,3]\n  Output: [0,-9,0,9,0]\n\nConstraints: 2 <= nums.length <= 10^5, -30 <= nums[i] <= 30. Division is forbidden. O(n) time required. The output array is not considered extra space.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Two passes: left-to-right storing prefix products, then right-to-left multiplying by suffix products carried in a variable. Output array does not count as extra space, so O(n) time, O(1) extra space.",
     "hint": "Division is forbidden, think prefix and suffix || answer[i] = product of everything left of i times everything right of i || Reuse the output array for prefixes, carry the suffix in one variable",
     "time_complexity": "O(n)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/product-of-array-except-self/",
-    "lc_description": "Return an array where each element is the product of all other elements, without using division.",
     "source": "Blind 75",
-    "tags": ["blind75", "arrays", "prefix"]
+    "tags": [
+      "blind75",
+      "arrays",
+      "prefix"
+    ]
   },
   {
     "id": "algo-blind75-5",
@@ -69,15 +81,18 @@
     "category": "kadane",
     "title": "Maximum Subarray",
     "difficulty": "medium",
-    "prompt": "Solve: Maximum Subarray\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given an integer array nums, find the contiguous subarray with the largest sum and return that sum. A subarray must contain at least one element.\n\nExample 1:\n  Input: nums = [-2,1,-3,4,-1,2,1,-5,4]\n  Output: 6\n  Explanation: Subarray [4,-1,2,1] has sum 6.\n\nExample 2:\n  Input: nums = [1]\n  Output: 1\n\nExample 3:\n  Input: nums = [5,4,-1,7,8]\n  Output: 23\n\nConstraints: 1 <= nums.length <= 10^5, -10^4 <= nums[i] <= 10^4.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Kadane's algorithm: running sum that resets to the current element whenever it would drop below it (i.e. best ending here = max(x, best+x)), tracking the global max. O(n) time, O(1) space.",
     "hint": "A negative running sum never helps the future || best sum ending at i depends only on best ending at i-1 || Kadane: cur = max(x, cur + x)",
     "time_complexity": "O(n)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/maximum-subarray/",
-    "lc_description": "Find the contiguous subarray with the largest sum.",
     "source": "Blind 75",
-    "tags": ["blind75", "dp", "kadane"]
+    "tags": [
+      "blind75",
+      "dp",
+      "kadane"
+    ]
   },
   {
     "id": "algo-blind75-6",
@@ -85,15 +100,18 @@
     "category": "intervals",
     "title": "Merge Intervals",
     "difficulty": "medium",
-    "prompt": "Solve: Merge Intervals\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given an array of intervals where intervals[i] = [start_i, end_i], merge all overlapping intervals and return the non-overlapping result.\n\nExample 1:\n  Input: intervals = [[1,3],[2,6],[8,10],[15,18]]\n  Output: [[1,6],[8,10],[15,18]]\n  Explanation: [1,3] and [2,6] overlap, merged to [1,6].\n\nExample 2:\n  Input: intervals = [[1,4],[4,5]]\n  Output: [[1,5]]\n  Explanation: Intervals touching at 4 are considered overlapping.\n\nConstraints: 1 <= intervals.length <= 10^4, 0 <= start_i <= end_i <= 10^4.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Sort by start, then sweep once keeping the current merged interval; overlap when next.start <= cur.end, extend the end, otherwise push and restart. O(n log n) time for the sort, O(n) output.",
     "hint": "Unsorted intervals are hard to reason about || Sort by start point || Overlap test: next start <= current end",
     "time_complexity": "O(n log n)",
     "space_complexity": "O(n)",
     "leetcode_url": "https://leetcode.com/problems/merge-intervals/",
-    "lc_description": "Merge all overlapping intervals and return the non-overlapping result.",
     "source": "Blind 75",
-    "tags": ["blind75", "intervals", "sorting"]
+    "tags": [
+      "blind75",
+      "intervals",
+      "sorting"
+    ]
   },
   {
     "id": "algo-blind75-7",
@@ -101,15 +119,18 @@
     "category": "two-pointers",
     "title": "3Sum",
     "difficulty": "medium",
-    "prompt": "Solve: 3Sum (all unique triplets summing to zero)\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given an integer array nums, return all unique triplets [nums[i], nums[j], nums[k]] where i, j, k are distinct indices and nums[i] + nums[j] + nums[k] == 0. The result must not contain duplicate triplets.\n\nExample 1:\n  Input: nums = [-1,0,1,2,-1,-4]\n  Output: [[-1,-1,2],[-1,0,1]]\n\nExample 2:\n  Input: nums = [0,1,1]\n  Output: []\n\nExample 3:\n  Input: nums = [0,0,0]\n  Output: [[0,0,0]]\n\nConstraints: 3 <= nums.length <= 3000, -10^5 <= nums[i] <= 10^5.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Sort, fix the first element, then two-pointer scan the remainder for pairs summing to its negation, skipping duplicates at all three positions. O(n^2) time, O(1) extra space beyond output.",
     "hint": "Sort first, duplicates become adjacent || Fix one number, the problem becomes Two Sum on a sorted array || Two pointers from both ends, skip repeated values",
     "time_complexity": "O(n^2)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/3sum/",
-    "lc_description": "Find all unique triplets in the array that sum to zero.",
     "source": "Blind 75",
-    "tags": ["blind75", "two-pointers", "sorting"]
+    "tags": [
+      "blind75",
+      "two-pointers",
+      "sorting"
+    ]
   },
   {
     "id": "algo-blind75-8",
@@ -117,15 +138,18 @@
     "category": "two-pointers",
     "title": "Container With Most Water",
     "difficulty": "medium",
-    "prompt": "Solve: Container With Most Water\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "You are given an integer array height of length n. There are n vertical lines; line i has endpoints (i, 0) and (i, height[i]). Find two lines that together with the x-axis form a container holding the most water. Return the maximum area.\n\nExample 1:\n  Input: height = [1,8,6,2,5,4,8,3,7]\n  Output: 49\n  Explanation: Lines at index 1 (h=8) and index 8 (h=7): width=7, height=min(8,7)=7, area=49.\n\nExample 2:\n  Input: height = [1,1]\n  Output: 1\n\nConstraints: 2 <= n <= 10^5, 0 <= height[i] <= 10^4.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Two pointers at both ends; compute area, then move the pointer at the shorter line inward, because keeping it can never improve the area. O(n) time, O(1) space.",
     "hint": "Start with the widest container || Which side limits the area? || Moving the taller side can only shrink or keep width with same height cap, so move the shorter",
     "time_complexity": "O(n)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/container-with-most-water/",
-    "lc_description": "Given line heights, choose two lines forming a container that holds the most water.",
     "source": "Blind 75",
-    "tags": ["blind75", "two-pointers", "greedy"]
+    "tags": [
+      "blind75",
+      "two-pointers",
+      "greedy"
+    ]
   },
   {
     "id": "algo-blind75-9",
@@ -133,15 +157,18 @@
     "category": "stack",
     "title": "Valid Parentheses",
     "difficulty": "easy",
-    "prompt": "Solve: Valid Parentheses\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given a string s containing only '(', ')', '{', '}', '[', ']', determine if it is valid. A string is valid if every open bracket is closed by the same type of bracket in the correct order, and every close bracket has a matching open bracket.\n\nExample 1:\n  Input: s = \"()\"\n  Output: true\n\nExample 2:\n  Input: s = \"()[]{}\"\n  Output: true\n\nExample 3:\n  Input: s = \"(]\"\n  Output: false\n\nExample 4:\n  Input: s = \"([)]\"\n  Output: false\n\nConstraints: 1 <= s.length <= 10^4, s contains only parenthesis characters.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Scan with a stack: push openers, on a closer check it matches the stack top and pop; valid iff no mismatch and the stack ends empty. O(n) time, O(n) space.",
     "hint": "Last opened must be first closed || That order is exactly a stack || Map each closer to its expected opener",
     "time_complexity": "O(n)",
     "space_complexity": "O(n)",
     "leetcode_url": "https://leetcode.com/problems/valid-parentheses/",
-    "lc_description": "Check whether a string of three bracket kinds is properly nested and closed.",
     "source": "Blind 75",
-    "tags": ["blind75", "stack", "strings"]
+    "tags": [
+      "blind75",
+      "stack",
+      "strings"
+    ]
   },
   {
     "id": "algo-blind75-10",
@@ -149,15 +176,18 @@
     "category": "hash-map",
     "title": "Valid Anagram",
     "difficulty": "easy",
-    "prompt": "Solve: Valid Anagram\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given two strings s and t, return true if t is an anagram of s, and false otherwise. An anagram uses exactly the same letters with the same counts, in any order.\n\nExample 1:\n  Input: s = \"anagram\", t = \"nagaram\"\n  Output: true\n\nExample 2:\n  Input: s = \"rat\", t = \"car\"\n  Output: false\n\nConstraints: 1 <= s.length, t.length <= 5*10^4. s and t consist of lowercase English letters.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Count character frequencies of one string in a map or fixed 26-slot array and decrement with the other; anagram iff all counts return to zero and lengths match. O(n) time, O(1) space for a fixed alphabet.",
     "hint": "Anagrams have identical character counts || A 26-entry array beats sorting || Length check first is a cheap early exit",
     "time_complexity": "O(n)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/valid-anagram/",
-    "lc_description": "Determine whether one string is an anagram of another.",
     "source": "Blind 75",
-    "tags": ["blind75", "strings", "hash-map"]
+    "tags": [
+      "blind75",
+      "strings",
+      "hash-map"
+    ]
   },
   {
     "id": "algo-blind75-11",
@@ -165,15 +195,18 @@
     "category": "sliding-window",
     "title": "Longest Substring Without Repeating Characters",
     "difficulty": "medium",
-    "prompt": "Solve: Longest Substring Without Repeating Characters\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given a string s, find the length of the longest substring that contains no repeating characters.\n\nExample 1:\n  Input: s = \"abcabcbb\"\n  Output: 3\n  Explanation: \"abc\" has length 3.\n\nExample 2:\n  Input: s = \"bbbbb\"\n  Output: 1\n  Explanation: \"b\".\n\nExample 3:\n  Input: s = \"pwwkew\"\n  Output: 3\n  Explanation: \"wke\" is length 3. Note: \"pwke\" is a subsequence, not a substring.\n\nConstraints: 0 <= s.length <= 5*10^4. s consists of English letters, digits, symbols, and spaces.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Sliding window with a map of last-seen positions: extend the right edge, and when a repeat appears jump the left edge past its previous occurrence, tracking the max window. O(n) time, O(min(n, alphabet)) space.",
     "hint": "Think of a window that stays duplicate-free || When you hit a repeated char, where must the window start move? || Remember each character's last index to jump, not crawl",
     "time_complexity": "O(n)",
     "space_complexity": "O(min(n, a))",
     "leetcode_url": "https://leetcode.com/problems/longest-substring-without-repeating-characters/",
-    "lc_description": "Find the length of the longest substring with all distinct characters.",
     "source": "Blind 75",
-    "tags": ["blind75", "sliding-window", "strings"]
+    "tags": [
+      "blind75",
+      "sliding-window",
+      "strings"
+    ]
   },
   {
     "id": "algo-blind75-12",
@@ -181,15 +214,18 @@
     "category": "dp-strings",
     "title": "Longest Palindromic Substring",
     "difficulty": "medium",
-    "prompt": "Solve: Longest Palindromic Substring\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given a string s, return the longest substring of s that is a palindrome. A palindrome reads the same forwards and backwards. If there are multiple answers of the same maximum length, return any one.\n\nExample 1:\n  Input: s = \"babad\"\n  Output: \"bab\" (or \"aba\" — both are valid)\n\nExample 2:\n  Input: s = \"cbbd\"\n  Output: \"bb\"\n\nExample 3:\n  Input: s = \"racecar\"\n  Output: \"racecar\"\n\nConstraints: 1 <= s.length <= 1000. s consists of digits and lowercase English letters.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Expand around each center (2n-1 centers, odd and even), keeping the longest palindrome found. O(n^2) time, O(1) space, and it is simpler than the DP table version.",
     "hint": "Every palindrome has a center || There are 2n-1 possible centers, including between characters || Expand outward while the two ends match",
     "time_complexity": "O(n^2)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/longest-palindromic-substring/",
-    "lc_description": "Return the longest substring that reads the same forwards and backwards.",
     "source": "Blind 75",
-    "tags": ["blind75", "strings", "expand-center"]
+    "tags": [
+      "blind75",
+      "strings",
+      "expand-center"
+    ]
   },
   {
     "id": "algo-blind75-13",
@@ -197,15 +233,17 @@
     "category": "linked-list",
     "title": "Reverse Linked List",
     "difficulty": "easy",
-    "prompt": "Solve: Reverse Linked List\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given the head of a singly linked list, reverse the list and return the new head.\n\nExample 1:\n  Input: head = [1,2,3,4,5]\n  Output: [5,4,3,2,1]\n\nExample 2:\n  Input: head = [1,2]\n  Output: [2,1]\n\nExample 3:\n  Input: head = []\n  Output: []\n\nConstraints: Number of nodes is in [0, 5000], -5000 <= Node.val <= 5000.\nFollow-up: Can you do it both iteratively (O(1) space) and recursively?\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Iterate with three pointers (prev, cur, next): repoint cur.next to prev and advance all three; prev is the new head at the end. O(n) time, O(1) space. Recursion works but costs O(n) stack.",
     "hint": "You only need to flip each next pointer || Keep prev and next so nothing gets lost || Iterative version needs O(1) space",
     "time_complexity": "O(n)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/reverse-linked-list/",
-    "lc_description": "Reverse a singly linked list and return the new head.",
     "source": "Blind 75",
-    "tags": ["blind75", "linked-list"]
+    "tags": [
+      "blind75",
+      "linked-list"
+    ]
   },
   {
     "id": "algo-blind75-14",
@@ -213,15 +251,17 @@
     "category": "linked-list",
     "title": "Merge Two Sorted Lists",
     "difficulty": "easy",
-    "prompt": "Solve: Merge Two Sorted Lists\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "You are given the heads of two sorted linked lists list1 and list2. Merge them into one sorted list by splicing together their nodes. Return the head of the merged list.\n\nExample 1:\n  Input: list1 = [1,2,4], list2 = [1,3,4]\n  Output: [1,1,2,3,4,4]\n\nExample 2:\n  Input: list1 = [], list2 = []\n  Output: []\n\nExample 3:\n  Input: list1 = [], list2 = [0]\n  Output: [0]\n\nConstraints: Number of nodes in each list is in [0, 50], -100 <= Node.val <= 100. Both lists are sorted in non-decreasing order.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Use a dummy head and a tail pointer; repeatedly attach the smaller of the two current nodes, then attach whatever list remains. O(n+m) time, O(1) space.",
     "hint": "A dummy head removes edge cases || Compare heads, attach the smaller, advance that list || One list may run out first",
     "time_complexity": "O(n+m)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/merge-two-sorted-lists/",
-    "lc_description": "Merge two sorted linked lists into one sorted list.",
     "source": "Blind 75",
-    "tags": ["blind75", "linked-list"]
+    "tags": [
+      "blind75",
+      "linked-list"
+    ]
   },
   {
     "id": "algo-blind75-15",
@@ -229,15 +269,18 @@
     "category": "linked-list",
     "title": "Linked List Cycle",
     "difficulty": "easy",
-    "prompt": "Solve: Linked List Cycle\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given the head of a linked list, determine if it contains a cycle. A cycle exists if some node can be reached again by following next pointers. Return true if there is a cycle, false otherwise.\n\nExample 1:\n  Input: head = [3,2,0,-4], tail connects back to node at index 1\n  Output: true\n\nExample 2:\n  Input: head = [1,2], tail connects to index 0\n  Output: true\n\nExample 3:\n  Input: head = [1], no cycle\n  Output: false\n\nConstraints: Number of nodes in [0, 10^4], -10^5 <= Node.val <= 10^5.\nFollow-up: Can you solve it in O(1) memory?\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Floyd's tortoise and hare: slow moves one step, fast two; if they ever meet there is a cycle, if fast hits null there is none. O(n) time, O(1) space.",
     "hint": "A hash set of visited nodes works but costs memory || Two runners at different speeds || In a cycle the fast one laps the slow one",
     "time_complexity": "O(n)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/linked-list-cycle/",
-    "lc_description": "Detect whether a linked list contains a cycle.",
     "source": "Blind 75",
-    "tags": ["blind75", "linked-list", "two-pointers"]
+    "tags": [
+      "blind75",
+      "linked-list",
+      "two-pointers"
+    ]
   },
   {
     "id": "algo-blind75-16",
@@ -245,15 +288,18 @@
     "category": "linked-list",
     "title": "Remove Nth Node From End of List",
     "difficulty": "medium",
-    "prompt": "Solve: Remove Nth Node From End of List (one pass)\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given the head of a linked list, remove the n-th node from the end of the list and return its head. Do it in a single pass.\n\nExample 1:\n  Input: head = [1,2,3,4,5], n = 2\n  Output: [1,2,3,5]\n  Explanation: The 2nd node from end is 4; remove it.\n\nExample 2:\n  Input: head = [1], n = 1\n  Output: []\n\nExample 3:\n  Input: head = [1,2], n = 1\n  Output: [1]\n\nConstraints: Number of nodes is sz where 1 <= sz <= 30, 0 <= Node.val <= 100, 1 <= n <= sz.\n\nDescribe your approach in plain English using a single pass, then give time and space complexity.",
     "answer": "Two pointers with an n-node gap starting from a dummy head: advance the leader n+1 steps, then move both until the leader hits null; the follower sits just before the node to remove. O(n) time, O(1) space.",
     "hint": "Counting the length first needs two passes || Keep two pointers exactly n apart || Start from a dummy node so removing the head is not special",
     "time_complexity": "O(n)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/remove-nth-node-from-end-of-list/",
-    "lc_description": "Remove the n-th node counting from the end of the list in a single pass.",
     "source": "Blind 75",
-    "tags": ["blind75", "linked-list", "two-pointers"]
+    "tags": [
+      "blind75",
+      "linked-list",
+      "two-pointers"
+    ]
   },
   {
     "id": "algo-blind75-17",
@@ -261,15 +307,18 @@
     "category": "tree",
     "title": "Invert Binary Tree",
     "difficulty": "easy",
-    "prompt": "Solve: Invert Binary Tree\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given the root of a binary tree, invert the tree (mirror it left-to-right) and return its root.\n\nExample 1:\n  Input:\n       4\n      / \\\n     2   7\n    / \\ / \\\n   1  3 6  9\n  Output:\n       4\n      / \\\n     7   2\n    / \\ / \\\n   9  6 3  1\n\nExample 2:\n  Input: root = [2,1,3]\n  Output: [2,3,1]\n\nConstraints: Number of nodes in [0, 100], -100 <= Node.val <= 100.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Recursively swap left and right children at every node (or do it iteratively with a queue/stack). O(n) time, O(h) space for the recursion stack.",
     "hint": "What does inverting mean for a single node? || Swap children, then recurse into them || BFS with a queue also works",
     "time_complexity": "O(n)",
     "space_complexity": "O(h)",
     "leetcode_url": "https://leetcode.com/problems/invert-binary-tree/",
-    "lc_description": "Mirror a binary tree by swapping every left and right subtree.",
     "source": "Blind 75",
-    "tags": ["blind75", "tree", "recursion"]
+    "tags": [
+      "blind75",
+      "tree",
+      "recursion"
+    ]
   },
   {
     "id": "algo-blind75-18",
@@ -277,15 +326,18 @@
     "category": "tree",
     "title": "Maximum Depth of Binary Tree",
     "difficulty": "easy",
-    "prompt": "Solve: Maximum Depth of Binary Tree\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given the root of a binary tree, return its maximum depth — the number of nodes along the longest path from root down to the farthest leaf.\n\nExample 1:\n  Input:\n       3\n      / \\\n     9  20\n        / \\\n       15   7\n  Output: 3\n\nExample 2:\n  Input: root = [1,null,2]\n  Output: 2\n\nConstraints: Number of nodes in [0, 10^4], -100 <= Node.val <= 100.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Recursion: depth = 1 + max(depth(left), depth(right)), null gives 0. O(n) time, O(h) stack space. BFS counting levels is the iterative equivalent.",
     "hint": "Define depth in terms of the children || Empty tree is depth 0 || Level-order traversal counts levels too",
     "time_complexity": "O(n)",
     "space_complexity": "O(h)",
     "leetcode_url": "https://leetcode.com/problems/maximum-depth-of-binary-tree/",
-    "lc_description": "Return the number of nodes on the longest root-to-leaf path.",
     "source": "Blind 75",
-    "tags": ["blind75", "tree", "recursion"]
+    "tags": [
+      "blind75",
+      "tree",
+      "recursion"
+    ]
   },
   {
     "id": "algo-blind75-19",
@@ -293,15 +345,18 @@
     "category": "tree",
     "title": "Same Tree",
     "difficulty": "easy",
-    "prompt": "Solve: Same Tree\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given the roots of two binary trees p and q, check whether they are structurally identical with equal node values at every position.\n\nExample 1:\n  Input: p = [1,2,3], q = [1,2,3]\n  Output: true\n\nExample 2:\n  Input: p = [1,2], q = [1,null,2]\n  Output: false\n\nExample 3:\n  Input: p = [1,2,1], q = [1,1,2]\n  Output: false\n\nConstraints: Number of nodes in [0, 100], -10^4 <= Node.val <= 10^4.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Recursive structural comparison: both null is true, one null or different values is false, otherwise recurse on both pairs of children. O(n) time, O(h) space.",
     "hint": "Compare node by node || Base cases: both empty, or exactly one empty || Values equal AND left subtrees equal AND right subtrees equal",
     "time_complexity": "O(n)",
     "space_complexity": "O(h)",
     "leetcode_url": "https://leetcode.com/problems/same-tree/",
-    "lc_description": "Check whether two binary trees are structurally identical with equal values.",
     "source": "Blind 75",
-    "tags": ["blind75", "tree", "recursion"]
+    "tags": [
+      "blind75",
+      "tree",
+      "recursion"
+    ]
   },
   {
     "id": "algo-blind75-20",
@@ -309,15 +364,18 @@
     "category": "tree-bfs",
     "title": "Binary Tree Level Order Traversal",
     "difficulty": "medium",
-    "prompt": "Solve: Binary Tree Level Order Traversal\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given the root of a binary tree, return its level-order traversal — values grouped level by level from left to right — as a list of lists.\n\nExample 1:\n  Input:\n       3\n      / \\\n     9  20\n        / \\\n       15   7\n  Output: [[3],[9,20],[15,7]]\n\nExample 2:\n  Input: root = [1]\n  Output: [[1]]\n\nExample 3:\n  Input: root = []\n  Output: []\n\nConstraints: Number of nodes in [0, 2000], -1000 <= Node.val <= 1000.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "BFS with a queue; snapshot the queue length at each round to emit one list per level. O(n) time, O(n) space for the queue.",
     "hint": "Which traversal visits nodes level by level? || A queue drives BFS || Freeze the queue size to know where a level ends",
     "time_complexity": "O(n)",
     "space_complexity": "O(n)",
     "leetcode_url": "https://leetcode.com/problems/binary-tree-level-order-traversal/",
-    "lc_description": "Return the tree's node values grouped by level, top to bottom.",
     "source": "Blind 75",
-    "tags": ["blind75", "tree", "bfs"]
+    "tags": [
+      "blind75",
+      "tree",
+      "bfs"
+    ]
   },
   {
     "id": "algo-blind75-21",
@@ -325,15 +383,18 @@
     "category": "tree-bst",
     "title": "Validate Binary Search Tree",
     "difficulty": "medium",
-    "prompt": "Solve: Validate Binary Search Tree\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given the root of a binary tree, determine if it is a valid Binary Search Tree. A valid BST requires: every node in the left subtree has a key strictly less than the node; every node in the right subtree has a key strictly greater; and both subtrees are also valid BSTs.\n\nExample 1:\n  Input: root = [2,1,3]\n  Output: true\n\nExample 2:\n  Input: root = [5,1,4,null,null,3,6]\n  Output: false\n  Explanation: Right child is 4, which is less than the root 5.\n\nExample 3 (classic trap):\n  Input: root = [5,4,6,null,null,3,7]\n  Output: false\n  Explanation: Node 3 is in the right subtree of 5 but is smaller than 5.\n\nConstraints: Number of nodes in [1, 10^4], -2^31 <= Node.val <= 2^31-1.\n\nDescribe your approach in plain English (explain the common single-parent-only trap), then give time and space complexity.",
     "answer": "Recurse with an allowed (min, max) range that tightens at each step: left child must be below the node value, right above, ranges inherited from ancestors. Alternatively check that in-order traversal is strictly increasing. O(n) time, O(h) space.",
     "hint": "Comparing only with the direct parent is the classic trap || Every ancestor constrains the node, pass a range down || In-order traversal of a BST is sorted",
     "time_complexity": "O(n)",
     "space_complexity": "O(h)",
     "leetcode_url": "https://leetcode.com/problems/validate-binary-search-tree/",
-    "lc_description": "Determine whether a binary tree satisfies the BST ordering property.",
     "source": "Blind 75",
-    "tags": ["blind75", "tree", "bst"]
+    "tags": [
+      "blind75",
+      "tree",
+      "bst"
+    ]
   },
   {
     "id": "algo-blind75-22",
@@ -341,15 +402,18 @@
     "category": "tree-bst",
     "title": "Lowest Common Ancestor of a BST",
     "difficulty": "medium",
-    "prompt": "Solve: Lowest Common Ancestor of a Binary Search Tree\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given a binary search tree and two node values p and q, find their lowest common ancestor (LCA). The LCA is the deepest node that has both p and q as descendants (a node is a descendant of itself).\n\nExample 1:\n  Input: root = [6,2,8,0,4,7,9,null,null,3,5], p = 2, q = 8\n  Output: 6\n  Explanation: 6 is the root and ancestor of both 2 and 8.\n\nExample 2:\n  Input: (same tree), p = 2, q = 4\n  Output: 2\n  Explanation: 2 is an ancestor of 4, so 2 is the LCA.\n\nExample 3:\n  Input: (same tree), p = 3, q = 5\n  Output: 4\n\nConstraints: Number of nodes in [2, 10^5], -10^9 <= Node.val <= 10^9, all values unique, p != q, both exist in the BST.\n\nDescribe your approach using BST ordering in plain English, then give time and space complexity.",
     "answer": "Walk from the root using BST order: if both targets are smaller go left, both bigger go right, otherwise the current node is the split point and the LCA. O(h) time, O(1) space iteratively.",
     "hint": "Use the ordering, not a generic LCA algorithm || Where do the two values split into different subtrees? || Iterative walk needs no stack",
     "time_complexity": "O(h)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/lowest-common-ancestor-of-a-binary-search-tree/",
-    "lc_description": "Find the lowest node that has both given BST nodes as descendants.",
     "source": "Blind 75",
-    "tags": ["blind75", "tree", "bst"]
+    "tags": [
+      "blind75",
+      "tree",
+      "bst"
+    ]
   },
   {
     "id": "algo-blind75-23",
@@ -357,15 +421,17 @@
     "category": "linear-dp",
     "title": "Climbing Stairs",
     "difficulty": "easy",
-    "prompt": "Solve: Climbing Stairs\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "You are climbing a staircase with n steps. Each time you can climb 1 or 2 steps. In how many distinct ways can you reach the top?\n\nExample 1:\n  Input: n = 2\n  Output: 2\n  Explanation: Two ways: (1+1) or (2).\n\nExample 2:\n  Input: n = 3\n  Output: 3\n  Explanation: Three ways: (1+1+1), (1+2), (2+1).\n\nExample 3:\n  Input: n = 5\n  Output: 8\n\nConstraints: 1 <= n <= 45.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Ways(n) = Ways(n-1) + Ways(n-2), i.e. Fibonacci; keep just the last two values while iterating. O(n) time, O(1) space.",
     "hint": "The last move was either 1 or 2 steps || That gives a recurrence over n-1 and n-2 || You only ever need two previous values",
     "time_complexity": "O(n)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/climbing-stairs/",
-    "lc_description": "Count distinct ways to climb n stairs taking 1 or 2 steps at a time.",
     "source": "Blind 75",
-    "tags": ["blind75", "dp"]
+    "tags": [
+      "blind75",
+      "dp"
+    ]
   },
   {
     "id": "algo-blind75-24",
@@ -373,15 +439,18 @@
     "category": "linear-dp",
     "title": "House Robber",
     "difficulty": "medium",
-    "prompt": "Solve: House Robber\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "You are a robber planning to rob houses along a street. Adjacent houses have connected alarms — robbing two adjacent houses alerts the police. Given an integer array nums where nums[i] is the money in house i, return the maximum amount you can rob tonight without alerting the police.\n\nExample 1:\n  Input: nums = [1,2,3,1]\n  Output: 4\n  Explanation: Rob house 1 (1) + house 3 (3) = 4.\n\nExample 2:\n  Input: nums = [2,7,9,3,1]\n  Output: 12\n  Explanation: Rob houses 1, 3, 5: 2+9+1 = 12.\n\nExample 3:\n  Input: nums = [2,1,1,2]\n  Output: 4\n\nConstraints: 1 <= nums.length <= 100, 0 <= nums[i] <= 400.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "DP over the choice at each house: rob(i) = max(rob(i-1), rob(i-2) + value(i)); keep two rolling values. O(n) time, O(1) space.",
     "hint": "Adjacent houses cannot both be robbed || Best up to house i depends on i-1 and i-2 || rob[i] = max(rob[i-1], rob[i-2] + nums[i])",
     "time_complexity": "O(n)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/house-robber/",
-    "lc_description": "Maximize loot from a row of houses where robbing two adjacent houses is forbidden.",
     "source": "Blind 75",
-    "tags": ["blind75", "dp", "linear-dp"]
+    "tags": [
+      "blind75",
+      "dp",
+      "linear-dp"
+    ]
   },
   {
     "id": "algo-blind75-25",
@@ -389,15 +458,17 @@
     "category": "dp",
     "title": "Coin Change",
     "difficulty": "medium",
-    "prompt": "Solve: Coin Change (fewest coins to reach an amount)\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "You are given an integer array coins of coin denominations and an integer amount. Return the fewest number of coins needed to make up that amount. If it cannot be made by any combination, return -1. You may use each denomination an unlimited number of times.\n\nExample 1:\n  Input: coins = [1,5,6,9], amount = 11\n  Output: 2\n  Explanation: 5 + 6 = 11.\n\nExample 2:\n  Input: coins = [2], amount = 3\n  Output: -1\n\nExample 3:\n  Input: coins = [1], amount = 0\n  Output: 0\n\nExample 4:\n  Input: coins = [1,2,5], amount = 11\n  Output: 3\n  Explanation: 5 + 5 + 1 = 11. (Note: greedy with [1,5,6,9] and amount=11 gives 6+1+1+1+1+1=6, which is wrong — that's why greedy fails.)\n\nConstraints: 1 <= coins.length <= 12, 1 <= coins[i] <= 2^31-1, 0 <= amount <= 10^4.\n\nDescribe your approach in plain English (and explain why greedy fails), then give time and space complexity.",
     "answer": "Bottom-up DP over amounts 1..target: dp[a] = 1 + min(dp[a - coin]) over all coins, infinity when unreachable, answer dp[target] or -1. O(amount * coins) time, O(amount) space.",
     "hint": "Greedy fails for coin systems like 1,3,4 || Define dp[a] = fewest coins to make amount a || Each coin gives a candidate dp[a-c] + 1",
     "time_complexity": "O(amount * coins)",
     "space_complexity": "O(amount)",
     "leetcode_url": "https://leetcode.com/problems/coin-change/",
-    "lc_description": "Given coin denominations, find the minimum number of coins that sum to a target amount, or -1.",
     "source": "Blind 75",
-    "tags": ["blind75", "dp"]
+    "tags": [
+      "blind75",
+      "dp"
+    ]
   },
   {
     "id": "algo-blind75-26",
@@ -405,15 +476,18 @@
     "category": "dp",
     "title": "Longest Increasing Subsequence",
     "difficulty": "medium",
-    "prompt": "Solve: Longest Increasing Subsequence\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given an integer array nums, return the length of the longest strictly increasing subsequence. A subsequence is formed by deleting some or no elements without changing the relative order of the remaining elements.\n\nExample 1:\n  Input: nums = [10,9,2,5,3,7,101,18]\n  Output: 4\n  Explanation: [2,3,7,101] or [2,5,7,101] — both have length 4.\n\nExample 2:\n  Input: nums = [0,1,0,3,2,3]\n  Output: 4\n\nExample 3:\n  Input: nums = [7,7,7,7,7]\n  Output: 1\n\nConstraints: 1 <= nums.length <= 2500, -10^4 <= nums[i] <= 10^4.\nFollow-up: Can you do it in O(n log n)?\n\nDescribe your approach in plain English (both O(n^2) DP and O(n log n) if possible), then give time and space complexity.",
     "answer": "Classic DP: dp[i] = longest LIS ending at i via any smaller earlier element, O(n^2). The optimal version keeps a tails array where binary search replaces the first element >= x, giving O(n log n) time, O(n) space.",
     "hint": "Start with dp ending-at-i in O(n^2) || Can you keep the best possible tail for each length? || Binary search that tails array",
     "time_complexity": "O(n log n)",
     "space_complexity": "O(n)",
     "leetcode_url": "https://leetcode.com/problems/longest-increasing-subsequence/",
-    "lc_description": "Find the length of the longest strictly increasing subsequence.",
     "source": "Blind 75",
-    "tags": ["blind75", "dp", "binary-search"]
+    "tags": [
+      "blind75",
+      "dp",
+      "binary-search"
+    ]
   },
   {
     "id": "algo-blind75-27",
@@ -421,15 +495,18 @@
     "category": "dp-strings",
     "title": "Word Break",
     "difficulty": "medium",
-    "prompt": "Solve: Word Break\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given a string s and a dictionary of strings wordDict, return true if s can be segmented into a space-separated sequence of one or more dictionary words. Each word in the dictionary may be reused.\n\nExample 1:\n  Input: s = \"leetcode\", wordDict = [\"leet\",\"code\"]\n  Output: true\n  Explanation: \"leet\" + \"code\".\n\nExample 2:\n  Input: s = \"applepenapple\", wordDict = [\"apple\",\"pen\"]\n  Output: true\n  Explanation: \"apple\" + \"pen\" + \"apple\".\n\nExample 3:\n  Input: s = \"catsandog\", wordDict = [\"cats\",\"dog\",\"sand\",\"and\",\"cat\"]\n  Output: false\n\nConstraints: 1 <= s.length <= 300, 1 <= wordDict.length <= 1000, 1 <= wordDict[i].length <= 20. All strings consist of lowercase English letters. All wordDict entries are unique.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "DP over prefixes: dp[i] is true when some j < i has dp[j] true and s[j..i) in the dictionary set. O(n^2 * word-lookup) time with a hash set, O(n) space.",
     "hint": "Can the first k characters be segmented? || A prefix is breakable if it ends with a dictionary word after a breakable smaller prefix || Put the dictionary in a set for O(1) lookups",
     "time_complexity": "O(n^2)",
     "space_complexity": "O(n)",
     "leetcode_url": "https://leetcode.com/problems/word-break/",
-    "lc_description": "Decide whether a string can be split entirely into dictionary words.",
     "source": "Blind 75",
-    "tags": ["blind75", "dp", "strings"]
+    "tags": [
+      "blind75",
+      "dp",
+      "strings"
+    ]
   },
   {
     "id": "algo-blind75-28",
@@ -437,15 +514,19 @@
     "category": "graph",
     "title": "Number of Islands",
     "difficulty": "medium",
-    "prompt": "Solve: Number of Islands\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "Given an m x n 2D binary grid where '1' represents land and '0' represents water, return the number of islands. An island is surrounded by water and is formed by connecting adjacent land cells horizontally or vertically.\n\nExample 1:\n  Input:\n  [[\"1\",\"1\",\"1\",\"1\",\"0\"],\n   [\"1\",\"1\",\"0\",\"1\",\"0\"],\n   [\"1\",\"1\",\"0\",\"0\",\"0\"],\n   [\"0\",\"0\",\"0\",\"0\",\"0\"]]\n  Output: 1\n\nExample 2:\n  Input:\n  [[\"1\",\"1\",\"0\",\"0\",\"0\"],\n   [\"1\",\"1\",\"0\",\"0\",\"0\"],\n   [\"0\",\"0\",\"1\",\"0\",\"0\"],\n   [\"0\",\"0\",\"0\",\"1\",\"1\"]]\n  Output: 3\n\nConstraints: m == grid.length, n == grid[i].length, 1 <= m, n <= 300. grid[i][j] is '0' or '1'.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Scan the grid; every time you hit unvisited land, increment the count and flood-fill (DFS/BFS) to sink the whole island. O(rows * cols) time, O(rows * cols) worst-case stack/queue.",
     "hint": "Each island is a connected component || Flood fill marks a whole component visited || Count how many fills you start",
     "time_complexity": "O(m*n)",
     "space_complexity": "O(m*n)",
     "leetcode_url": "https://leetcode.com/problems/number-of-islands/",
-    "lc_description": "Count connected groups of land cells in a binary grid.",
     "source": "Blind 75",
-    "tags": ["blind75", "graph", "bfs", "dfs"]
+    "tags": [
+      "blind75",
+      "graph",
+      "bfs",
+      "dfs"
+    ]
   },
   {
     "id": "algo-blind75-29",
@@ -453,15 +534,18 @@
     "category": "graph-topo",
     "title": "Course Schedule",
     "difficulty": "medium",
-    "prompt": "Solve: Course Schedule (can all courses be finished?)\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "There are numCourses courses labeled 0 to numCourses-1. You are given a list prerequisites where prerequisites[i] = [a, b] means you must take course b before course a. Return true if you can finish all courses.\n\nExample 1:\n  Input: numCourses = 2, prerequisites = [[1,0]]\n  Output: true\n  Explanation: Take course 0 first, then course 1.\n\nExample 2:\n  Input: numCourses = 2, prerequisites = [[1,0],[0,1]]\n  Output: false\n  Explanation: Course 0 requires 1 and course 1 requires 0 — circular.\n\nExample 3:\n  Input: numCourses = 4, prerequisites = [[1,0],[2,0],[3,1],[3,2]]\n  Output: true\n\nConstraints: 1 <= numCourses <= 2000, 0 <= prerequisites.length <= 5000, prerequisites[i].length == 2, no self-loops.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Model prerequisites as a directed graph and detect a cycle: Kahn's topological sort (repeatedly remove zero in-degree nodes) finishes all nodes iff there is no cycle. O(V+E) time and space.",
     "hint": "When is finishing impossible? || A cycle of prerequisites can never be satisfied || Kahn's algorithm or DFS coloring detects cycles",
     "time_complexity": "O(V+E)",
     "space_complexity": "O(V+E)",
     "leetcode_url": "https://leetcode.com/problems/course-schedule/",
-    "lc_description": "Given prerequisite pairs, determine whether all courses can be completed.",
     "source": "Blind 75",
-    "tags": ["blind75", "graph", "topological-sort"]
+    "tags": [
+      "blind75",
+      "graph",
+      "topological-sort"
+    ]
   },
   {
     "id": "algo-blind75-30",
@@ -469,15 +553,17 @@
     "category": "binary-search",
     "title": "Search in Rotated Sorted Array",
     "difficulty": "medium",
-    "prompt": "Solve: Search in Rotated Sorted Array\n\nDescribe your approach in plain English, then give time and space complexity.",
+    "prompt": "A sorted array of unique integers was rotated at some unknown pivot. For example [0,1,2,4,5,6,7] might become [4,5,6,7,0,1,2]. Given the rotated array nums and an integer target, return the index of target if it exists, or -1. You must achieve O(log n) runtime.\n\nExample 1:\n  Input: nums = [4,5,6,7,0,1,2], target = 0\n  Output: 4\n\nExample 2:\n  Input: nums = [4,5,6,7,0,1,2], target = 3\n  Output: -1\n\nExample 3:\n  Input: nums = [1], target = 0\n  Output: -1\n\nExample 4:\n  Input: nums = [3,1], target = 1\n  Output: 1\n\nConstraints: 1 <= nums.length <= 5000, -10^4 <= nums[i] <= 10^4, all values unique, -10^4 <= target <= 10^4.\n\nDescribe your approach in plain English, then give time and space complexity.",
     "answer": "Modified binary search: at each step one half is guaranteed sorted; check whether the target lies in that sorted half and discard the other. O(log n) time, O(1) space.",
     "hint": "Plain binary search almost works || At every mid, one side is still sorted || Test target against the sorted side's endpoints",
     "time_complexity": "O(log n)",
     "space_complexity": "O(1)",
     "leetcode_url": "https://leetcode.com/problems/search-in-rotated-sorted-array/",
-    "lc_description": "Search for a target in a sorted array that was rotated at an unknown pivot.",
     "source": "Blind 75",
-    "tags": ["blind75", "binary-search"]
+    "tags": [
+      "blind75",
+      "binary-search"
+    ]
   },
   {
     "id": "concept-1",
@@ -489,7 +575,10 @@
     "answer": "Big-O bounds how runtime or memory grows with input size, ignoring constants and lower-order terms. Order: O(1) < O(log n) < O(n) < O(n log n) < O(n^2) < O(2^n). It describes asymptotic growth, so for small inputs a worse Big-O can still be faster in practice.",
     "hint": "It is about growth, not absolute speed || Constants are ignored || Logarithms grow slower than any polynomial",
     "source": "starter-set",
-    "tags": ["complexity", "fundamentals"]
+    "tags": [
+      "complexity",
+      "fundamentals"
+    ]
   },
   {
     "id": "concept-2",
@@ -501,7 +590,10 @@
     "answer": "A hash function maps a key to a bucket index in an array, so lookup is a hash plus an array access. Collisions happen when two keys map to one bucket; handled by chaining (a list per bucket) or open addressing (probing for the next free slot). With a bad hash or extreme load factor everything lands in few buckets and operations degrade toward O(n); resizing keeps the load factor bounded.",
     "hint": "Key to index via a hash function || Two keys can share a bucket || Chaining vs probing; load factor matters",
     "source": "starter-set",
-    "tags": ["data-structures", "hash-table"]
+    "tags": [
+      "data-structures",
+      "hash-table"
+    ]
   },
   {
     "id": "concept-3",
@@ -513,7 +605,10 @@
     "answer": "Arrays: O(1) random access, contiguous cache-friendly memory, but O(n) middle insert/delete and costly resizes. Linked lists: O(1) insert/delete at a known node, no resize, but O(n) access and poor cache locality. Pick a list when you hold references into the middle and mutate a lot (LRU queues, adjacency), otherwise arrays usually win in practice.",
     "hint": "Contiguous memory vs scattered nodes || What does the CPU cache prefer? || O(1) insert only if you already hold the node",
     "source": "starter-set",
-    "tags": ["data-structures", "fundamentals"]
+    "tags": [
+      "data-structures",
+      "fundamentals"
+    ]
   },
   {
     "id": "concept-4",
@@ -525,7 +620,10 @@
     "answer": "BFS uses a queue, explores level by level, and finds shortest paths in unweighted graphs; memory can blow up on wide graphs. DFS uses a stack or recursion, goes deep first, fits cycle detection, topological sort, and backtracking; memory scales with depth. Choose by what you need: nearest-first (BFS) vs structural exploration (DFS).",
     "hint": "Queue vs stack || Which one guarantees fewest edges to a target? || Think about wide vs deep graphs",
     "source": "starter-set",
-    "tags": ["algorithms", "graph"]
+    "tags": [
+      "algorithms",
+      "graph"
+    ]
   },
   {
     "id": "concept-5",
@@ -537,7 +635,10 @@
     "answer": "Relational: fixed schema, ACID transactions, joins, strong consistency, scale-up first (read replicas and sharding come with effort). NoSQL (document/KV/wide-column): flexible schema, horizontal scaling by design, often eventual consistency and no joins. Financial ledgers and anything with cross-entity invariants favor SQL; massive-scale session stores, activity feeds, or schema-fluid product data favor NoSQL.",
     "hint": "Think transactions and joins || Which scales horizontally by default? || Match the guarantee to the business rule",
     "source": "starter-set",
-    "tags": ["databases", "system-design"]
+    "tags": [
+      "databases",
+      "system-design"
+    ]
   },
   {
     "id": "concept-6",
@@ -549,7 +650,10 @@
     "answer": "An index is an auxiliary ordered structure (usually a B-tree) mapping column values to rows, turning full scans into O(log n) descents. It accelerates WHERE, JOIN, and ORDER BY on the indexed columns. Costs: every write must update each index, extra storage, and the planner may still ignore unhelpful ones; index the columns your real queries filter on.",
     "hint": "Like a sorted phone book beside the table || Trees keep it balanced under writes || Reads get faster, writes get slower",
     "source": "starter-set",
-    "tags": ["databases", "performance"]
+    "tags": [
+      "databases",
+      "performance"
+    ]
   },
   {
     "id": "concept-7",
@@ -561,7 +665,10 @@
     "answer": "Atomicity: debit and credit happen entirely or not at all. Consistency: constraints hold before and after (no negative balance if forbidden). Isolation: concurrent transfers behave as if serialized, no half-seen states. Durability: once committed, the transfer survives a crash (WAL/fsync). Together they let you reason about money movement as one safe unit.",
     "hint": "Four letters, four failure modes prevented || What if the process dies between debit and credit? || Isolation is about concurrent readers",
     "source": "starter-set",
-    "tags": ["databases", "transactions"]
+    "tags": [
+      "databases",
+      "transactions"
+    ]
   },
   {
     "id": "concept-8",
@@ -573,7 +680,10 @@
     "answer": "TCP gives ordered, reliable, congestion-controlled byte streams at the cost of handshakes, ACKs, and head-of-line blocking; HTTP APIs and file transfer ride on it. UDP is fire-and-forget datagrams with minimal latency; games, voice/video, and DNS prefer it because a late retransmitted packet is worth less than a fresh one, and the application adds only the reliability it needs (like QUIC does).",
     "hint": "Reliability is not free || What happens to real-time audio when a packet is retransmitted? || QUIC builds on one of them",
     "source": "starter-set",
-    "tags": ["networking", "fundamentals"]
+    "tags": [
+      "networking",
+      "fundamentals"
+    ]
   },
   {
     "id": "concept-9",
@@ -585,7 +695,11 @@
     "answer": "DNS resolves the hostname to an IP (cache, resolver, authoritative). TCP three-way handshake opens the connection. TLS handshake: client hello with supported ciphers, server certificate, key exchange establishing symmetric session keys, certificate validated against trusted CAs. Then encrypted HTTP request/response flows; keep-alive or HTTP/2 multiplexing reuses the connection.",
     "hint": "Four layers of setup in order || Who proves the server identity, and to whom? || Symmetric keys do the bulk encryption",
     "source": "starter-set",
-    "tags": ["networking", "security", "http"]
+    "tags": [
+      "networking",
+      "security",
+      "http"
+    ]
   },
   {
     "id": "concept-10",
@@ -597,7 +711,11 @@
     "answer": "GET reads, POST creates (not idempotent), PUT replaces (idempotent), PATCH partially updates (not guaranteed idempotent), DELETE removes (idempotent). Idempotent means repeating the call leaves the same end state, so clients and proxies can retry safely on timeouts. Payment-style POSTs get idempotency keys to fake it.",
     "hint": "Which verb can you safely fire twice? || Timeouts force retries || Idempotency keys exist for a reason",
     "source": "starter-set",
-    "tags": ["api", "http", "rest"]
+    "tags": [
+      "api",
+      "http",
+      "rest"
+    ]
   },
   {
     "id": "concept-11",
@@ -609,7 +727,10 @@
     "answer": "A process has its own address space; threads share their process's memory. Threads are cheap to create and communicate through shared memory but one bad write can corrupt them all and they need synchronization. Processes are isolated and crash-independent but pay IPC and context-switch overhead. Use threads for parallel work in one app, processes for isolation boundaries.",
     "hint": "Who shares memory with whom? || Crash blast radius || Synchronization is the tax on sharing",
     "source": "starter-set",
-    "tags": ["os", "concurrency"]
+    "tags": [
+      "os",
+      "concurrency"
+    ]
   },
   {
     "id": "concept-12",
@@ -621,7 +742,10 @@
     "answer": "A race is when correctness depends on the timing of concurrent operations, like two threads doing read-modify-write on one counter and losing an update. A mutex serializes the critical section so only one thread mutates at a time. Deadlock: thread A holds lock 1 and waits for 2 while B holds 2 and waits for 1; prevented by consistent lock ordering, timeouts, or avoiding multiple locks.",
     "hint": "Read-modify-write is the classic victim || A lock makes the sequence atomic in effect || Two locks acquired in opposite orders",
     "source": "starter-set",
-    "tags": ["concurrency", "os"]
+    "tags": [
+      "concurrency",
+      "os"
+    ]
   },
   {
     "id": "concept-13",
@@ -633,7 +757,10 @@
     "answer": "Caching keeps hot data close to save latency and load. Cache-aside: app checks cache, on miss reads DB and fills the cache. Write-through: writes go through the cache to the DB, keeping them in sync at write cost. TTLs bound staleness when explicit invalidation is impractical. The hard part is invalidation: keeping cached copies consistent with the source of truth without stampedes or stale reads.",
     "hint": "Latency and load, two reasons || Who fills the cache on a miss? || The famous two hard things in CS",
     "source": "starter-set",
-    "tags": ["caching", "system-design"]
+    "tags": [
+      "caching",
+      "system-design"
+    ]
   },
   {
     "id": "concept-14",
@@ -645,7 +772,11 @@
     "answer": "In a distributed system, when a network partition happens you must choose between consistency (every read sees the latest write, so some nodes refuse to answer) and availability (every node answers, possibly with stale data). Partition tolerance is not optional in real networks, so the real menu is CP vs AP per operation. 'CA' only exists while there is no partition, which you cannot guarantee.",
     "hint": "The choice only bites during a partition || Refuse to answer, or answer possibly stale || Is P ever optional on a real network?",
     "source": "starter-set",
-    "tags": ["distributed", "system-design", "cap"]
+    "tags": [
+      "distributed",
+      "system-design",
+      "cap"
+    ]
   },
   {
     "id": "concept-15",
@@ -657,7 +788,11 @@
     "answer": "Queues decouple producers from consumers in time and availability: the producer does not wait for or know about the consumer. They buffer spikes so downstream services process at their own pace, and enable fan-out and retries. Most systems give at-least-once delivery, so duplicates are possible and consumers must be idempotent; exactly-once is expensive and rare in practice.",
     "hint": "What if the consumer is down for an hour? || Spikes vs steady processing rate || At-least-once implies what about duplicates?",
     "source": "starter-set",
-    "tags": ["distributed", "messaging", "system-design"]
+    "tags": [
+      "distributed",
+      "messaging",
+      "system-design"
+    ]
   },
   {
     "id": "behavioral-1",
@@ -668,7 +803,10 @@
     "answer": "A strong answer has a present-past-future arc: who you are professionally now (student/role + focus), two concrete past highlights with impact (projects, numbers, technologies), and why this role is the natural next step. It stays professional, under two minutes, and plants hooks the interviewer will ask about.",
     "hint": "Present, past, future structure || Two concrete highlights beat ten vague ones || End at why THIS role",
     "source": "tech-interview-handbook style",
-    "tags": ["behavioral", "intro"]
+    "tags": [
+      "behavioral",
+      "intro"
+    ]
   },
   {
     "id": "behavioral-2",
@@ -679,7 +817,11 @@
     "answer": "Strong STAR answer: a specific technical or priority disagreement (S/T), what YOU did: listening, understanding their constraint, bringing data or a prototype, finding the shared goal (A), and a concrete resolution plus what it did to the relationship and the project (R). Red flags: blaming, 'we just compromised' with no detail, or a conflict where you learned nothing.",
     "hint": "Pick a real, specific disagreement || Your actions, not the team's || End with resolution AND lesson",
     "source": "tech-interview-handbook style",
-    "tags": ["behavioral", "conflict", "star"]
+    "tags": [
+      "behavioral",
+      "conflict",
+      "star"
+    ]
   },
   {
     "id": "behavioral-3",
@@ -690,7 +832,11 @@
     "answer": "Strong answer: concrete problem with real constraints (S/T), a debugging or design process shown step by step: hypotheses, experiments, dead ends included (A), and a measurable outcome plus what you now do differently (R). Depth on one problem beats breadth; the interviewer wants to see HOW you think when stuck.",
     "hint": "One problem, deep || Show the process including dead ends || Quantify the outcome",
     "source": "tech-interview-handbook style",
-    "tags": ["behavioral", "technical", "star"]
+    "tags": [
+      "behavioral",
+      "technical",
+      "star"
+    ]
   },
   {
     "id": "behavioral-4",
@@ -701,7 +847,11 @@
     "answer": "Strong answer: a genuine failure with real stakes, owned in first person without excuse-making (S/T/A), the immediate fix AND the systemic change you made so it cannot recur, like tests, checklists, communication habits (R). The lesson should be specific and verifiable, not 'I learned to be more careful'.",
     "hint": "Own it, no excuses || Immediate fix vs systemic fix || The lesson must be concrete",
     "source": "tech-interview-handbook style",
-    "tags": ["behavioral", "failure", "star"]
+    "tags": [
+      "behavioral",
+      "failure",
+      "star"
+    ]
   },
   {
     "id": "behavioral-5",
@@ -712,7 +862,11 @@
     "answer": "Strong answer: a real crunch with competing demands (S/T), explicit prioritization criteria: impact, risk, dependencies, plus proactive communication about what would slip (A), delivered the critical path and renegotiated the rest openly (R). Saying what you consciously dropped, and telling stakeholders early, is the senior signal.",
     "hint": "Name the prioritization criteria || Communicating slippage early is the skill || What did you consciously NOT do?",
     "source": "tech-interview-handbook style",
-    "tags": ["behavioral", "prioritization", "star"]
+    "tags": [
+      "behavioral",
+      "prioritization",
+      "star"
+    ]
   },
   {
     "id": "behavioral-6",
@@ -723,7 +877,11 @@
     "answer": "Strong answer: specific critical feedback quoted honestly (S), initial reaction acknowledged like feeling defensive, then seeking to understand with examples (T/A), and a concrete behavior change with evidence it stuck, ideally confirmed by the same person later (R). Shows coachability, the actual trait being probed.",
     "hint": "Quote the feedback honestly || Defensiveness admitted is credibility || Prove the change stuck",
     "source": "tech-interview-handbook style",
-    "tags": ["behavioral", "feedback", "star"]
+    "tags": [
+      "behavioral",
+      "feedback",
+      "star"
+    ]
   },
   {
     "id": "behavioral-7",
@@ -734,7 +892,11 @@
     "answer": "Strong answer: a gap you noticed and chose to own (S/T), influence through evidence, prototypes, or aligning people's incentives rather than title (A), and adoption with measurable effect (R). Initiative plus follow-through is the point; 'I suggested it in a meeting' is too thin.",
     "hint": "You saw the gap first || Influence = evidence + incentives || Did people actually adopt it?",
     "source": "tech-interview-handbook style",
-    "tags": ["behavioral", "leadership", "star"]
+    "tags": [
+      "behavioral",
+      "leadership",
+      "star"
+    ]
   },
   {
     "id": "behavioral-8",
@@ -745,7 +907,11 @@
     "answer": "Strong answer: state the decision and your specific concern (S/T), how you argued it: privately first, with data and trade-offs, proposing an experiment or reversible path (A), and either changed the decision or committed fully to it once heard, 'disagree and commit', with the outcome tracked honestly (R).",
     "hint": "Data over opinions || Private before public || Disagree and commit is a valid ending",
     "source": "tech-interview-handbook style",
-    "tags": ["behavioral", "conflict", "star"]
+    "tags": [
+      "behavioral",
+      "conflict",
+      "star"
+    ]
   },
   {
     "id": "behavioral-9",
@@ -756,7 +922,11 @@
     "answer": "Strong answer: real deadline forcing fast ramp-up (S/T), a deliberate learning strategy: docs skimmed for the mental model, a spike project, finding the expert, learning just enough to be dangerous then iterating (A), and shipping plus how deep you eventually went (R). Strategy over heroics.",
     "hint": "Show a learning METHOD || Spike first, depth later || What did you ship at the end?",
     "source": "tech-interview-handbook style",
-    "tags": ["behavioral", "learning", "star"]
+    "tags": [
+      "behavioral",
+      "learning",
+      "star"
+    ]
   },
   {
     "id": "behavioral-10",
@@ -767,7 +937,11 @@
     "answer": "Strong answer: something broken or risky that was nobody's job (S), why you decided it was yours anyway (T), concrete extra work: fixing, documenting, alerting, automating (A), and impact on the team or product with numbers where possible (R). Ownership means caring about the outcome, not the task boundary.",
     "hint": "Nobody asked, that is the point || Outcome over task boundary || Quantify the impact",
     "source": "tech-interview-handbook style",
-    "tags": ["behavioral", "ownership", "star"]
+    "tags": [
+      "behavioral",
+      "ownership",
+      "star"
+    ]
   },
   {
     "id": "sysdesign-1",
@@ -779,7 +953,10 @@
     "answer": "API: POST /shorten and GET /{code} returning 301/302. Codes: base62 over a counter (or K-sorted IDs) at 7 chars, or hash-with-collision-retry; pre-generated key ranges per node avoid a single counter bottleneck. Storage: key-value (code to long URL + metadata), tiny rows, easily sharded by code. Reads dominate, so cache hot codes (CDN/Redis) and use 301 vs 302 depending on whether you need click analytics. Add rate limiting, spam scanning, and TTL/custom aliases as extensions.",
     "hint": "Reads outnumber writes massively || How do two servers avoid generating the same code? || 301 vs 302 changes your analytics",
     "source": "starter-set",
-    "tags": ["system-design", "classic"]
+    "tags": [
+      "system-design",
+      "classic"
+    ]
   },
   {
     "id": "sysdesign-2",
@@ -791,7 +968,10 @@
     "answer": "Token bucket: each key holds tokens refilled at rate r up to burst b, O(1) memory, allows controlled bursts; sliding window log/counter is stricter but heavier or approximate. Distributed state: centralize counters in Redis with atomic Lua/INCR+EXPIRE, or shard keys to gateway instances by consistent hashing; local-only counters undercount when traffic spreads. Return 429 with Retry-After. Trade-offs: accuracy vs latency added per request, and failure mode when the limiter store is down (fail open vs closed).",
     "hint": "Bursts are a feature, not a bug || Many gateways, one counter, where? || What happens when Redis is down?",
     "source": "starter-set",
-    "tags": ["system-design", "rate-limiting"]
+    "tags": [
+      "system-design",
+      "rate-limiting"
+    ]
   },
   {
     "id": "sysdesign-3",
@@ -803,7 +983,11 @@
     "answer": "Clients hold persistent WebSocket connections to chat servers; a session/presence service maps user to server. Sender writes the message durably (per-conversation log, e.g. Cassandra-style wide rows keyed by conversation with time-ordered message IDs), then pushes to the recipient's connection; offline recipients get it on reconnect by syncing from their last-acked message ID, plus a push notification to wake the app. Per-conversation sequence numbers give ordering; delivery/read receipts are small state updates flowing the same path.",
     "hint": "Persistent connections, not polling || Durable write BEFORE delivery attempt || Last-acked message id drives offline sync",
     "source": "starter-set",
-    "tags": ["system-design", "chat", "websocket"]
+    "tags": [
+      "system-design",
+      "chat",
+      "websocket"
+    ]
   },
   {
     "id": "sysdesign-4",
@@ -815,7 +999,11 @@
     "answer": "Fan-out on write: on post, push the item into each follower's precomputed feed list (fast reads, heavy writes, terrible for celebrities with millions of followers). Fan-out on read: assemble at request time from followed users' recent posts (cheap writes, expensive reads). Hybrid wins: push for normal users, pull for celebrity content merged at read. Feeds live in Redis-style lists per user; posts themselves in a post store, media on a CDN. Ranking is a separate scoring pass over candidates before render.",
     "hint": "Push vs pull is the core trade-off || What breaks with 50M followers? || Hybrid: push for most, pull for stars",
     "source": "starter-set",
-    "tags": ["system-design", "feed", "caching"]
+    "tags": [
+      "system-design",
+      "feed",
+      "caching"
+    ]
   },
   {
     "id": "sysdesign-5",
@@ -827,7 +1015,11 @@
     "answer": "Producers publish notification events to a queue; workers per channel render templates, check user preferences and rate caps (quiet hours, opt-outs, dedup), then call providers (APNs/FCM, SMS, email) with retries and exponential backoff. At-least-once end to end with idempotency keys so retries do not double-send. Provider outages: circuit breakers and fallback providers per channel. Track delivery status events for observability and user-facing history.",
     "hint": "A queue decouples producers from channels || Preferences and dedup before providers || Idempotency keys tame at-least-once",
     "source": "starter-set",
-    "tags": ["system-design", "messaging", "queues"]
+    "tags": [
+      "system-design",
+      "messaging",
+      "queues"
+    ]
   },
   {
     "id": "diagram-scale-strategies",
@@ -838,7 +1030,11 @@
     "prompt": "Study the diagram: 8 must-know strategies to scale a system. For each, note when you would reach for it and its main trade-off.",
     "answer": "Core toolkit: stateless services (prerequisite for horizontal scaling), horizontal scaling behind load balancers, caching to cut latency and DB load, CDN for static and edge content, sharding/partitioning data, async processing via queues, read replicas and DB scaling, and monitoring/autoscaling to react to load. Each buys capacity at the price of complexity, consistency, or operational burden; order matters, statelessness usually comes first.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["system-design", "scalability", "diagram"],
+    "tags": [
+      "system-design",
+      "scalability",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0013-8-must-know-strategies-to-scale-your-system.png"
   },
   {
@@ -850,7 +1046,11 @@
     "prompt": "Study the diagram: 10 system design trade-offs you cannot ignore. Try to recall the two sides of each before reading the explanation.",
     "answer": "Classic tensions: latency vs throughput, consistency vs availability (CAP), SQL vs NoSQL, vertical vs horizontal scaling, sync vs async, normalization vs denormalization, monolith vs microservices, stateful vs stateless, push vs pull, and cost vs performance. Interview gold: never present one side as free, name what you pay and why it is worth it here.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["system-design", "trade-offs", "diagram"],
+    "tags": [
+      "system-design",
+      "trade-offs",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0026-10-system-design-trade-offs-you-cannot-ignore.png"
   },
   {
@@ -862,7 +1062,12 @@
     "prompt": "Study the diagram: the database scaling cheatsheet. In what order would you apply these techniques to a struggling relational database?",
     "answer": "Sensible escalation: good indexes and query optimization first, then caching in front (cut read load), connection pooling, vertical scaling while cheap, read replicas for read-heavy traffic, denormalization or materialized views for hot queries, and only then sharding, which is powerful but complicates joins, transactions, and operations. Sharding last is the classic advice because it is the hardest to undo.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["system-design", "databases", "scalability", "diagram"],
+    "tags": [
+      "system-design",
+      "databases",
+      "scalability",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0161-database-scaling-cheatsheet.png"
   },
   {
@@ -874,7 +1079,11 @@
     "prompt": "Study the diagram: 9 best practices for building microservices. Which of these have you actually applied, and which would you push back on for a small team?",
     "answer": "Recurring practices: one service per bounded context, own database per service (no shared DB), async messaging where coupling hurts, API gateway at the edge, centralized logging/tracing and health checks, containerization with orchestration, CI/CD per service, and designing for failure with retries, timeouts, and circuit breakers. For a small team the honest answer is often: start modular-monolith, adopt these once team count, not traffic, forces it.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["system-design", "microservices", "diagram"],
+    "tags": [
+      "system-design",
+      "microservices",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0019-9-best-practices-for-building-microservices.png"
   },
   {
@@ -886,7 +1095,11 @@
     "prompt": "Study the diagram: 10 key data structures we use every day. For each, name one real system feature built on it.",
     "answer": "Typical mapping: lists (feeds), stacks (undo, call stack), queues (job processing), hash tables (caches, indexes), trees (file systems, DOM), skip lists (Redis sorted sets), graphs (social networks, routing), suffix trees (text search), R-trees (geo queries), and vectors/matrices (ML features). Knowing the structure-to-feature mapping is what interviewers probe.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["data-structures", "fundamentals", "diagram"],
+    "tags": [
+      "data-structures",
+      "fundamentals",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0024-10-data-structures-used-in-daily-life.png"
   },
   {
@@ -898,7 +1111,11 @@
     "prompt": "Study the diagram: the key object-oriented design patterns. Pick three you have used and recall their intent in one line each.",
     "answer": "The usual suspects by family: creational (Singleton, Factory, Builder, Prototype), structural (Adapter, Decorator, Facade, Proxy, Composite), behavioral (Observer, Strategy, Command, Iterator, State, Template Method). Interview framing: patterns are shared vocabulary for recurring designs; name the problem each solves, not just the shape.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["design-patterns", "oop", "diagram"],
+    "tags": [
+      "design-patterns",
+      "oop",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0032-oo-patterns-you-should-know.png"
   },
   {
@@ -910,7 +1127,11 @@
     "prompt": "Study the diagram: 8 data structures that power your databases. Which structure backs which kind of database, and why?",
     "answer": "Key mappings: B-trees/B+trees (relational indexes, ordered range scans), LSM trees + SSTables (write-heavy stores like Cassandra/RocksDB), hash indexes (exact-match KV), skip lists (Redis sorted sets), inverted indexes (search engines), suffix trees (text matching), R-trees (spatial), and bloom filters (cheap 'definitely not here' checks in front of disk reads). The B-tree vs LSM trade-off (read-optimized vs write-optimized) is a favorite interview thread.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["databases", "data-structures", "diagram"],
+    "tags": [
+      "databases",
+      "data-structures",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0181-eight-ds-db.jpg"
   },
   {
@@ -922,7 +1143,11 @@
     "prompt": "Study the diagram: 9 best practices for developing microservices (the development-side view). How do these differ from the architectural best practices?",
     "answer": "Development-side habits: separate data stores, similar maturity of code, independent deploys, single responsibility per service, contract-first APIs and versioning, backward compatibility, comprehensive monitoring, and automated pipelines. The architecture list says how services relate; this list is about how teams build and ship them without stepping on each other.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["system-design", "microservices", "diagram"],
+    "tags": [
+      "system-design",
+      "microservices",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0275-micro-best-practices.png"
   },
   {
@@ -934,7 +1159,11 @@
     "prompt": "Study the diagram: 9 Docker best practices you must know. Which ones directly shrink images, and which harden security?",
     "answer": "Image size: multi-stage builds, minimal base images (alpine/distroless), layer-aware Dockerfiles, and .dockerignore. Security: run as non-root user, scan images, pin versions instead of latest, and keep secrets out of images (env/secret stores). Operational: one process per container and proper HEALTHCHECKs. Knowing WHY each helps (cache layers, attack surface) is the differentiator.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["devops", "docker", "diagram"],
+    "tags": [
+      "devops",
+      "docker",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0016-9-docker-best-practices-you-must-know.png"
   },
   {
@@ -946,7 +1175,11 @@
     "prompt": "Study the diagram: 9 essential components of a production microservice application. Trace a request from the user to the data and back, naming each component it passes.",
     "answer": "Typical path: DNS/CDN edge, load balancer, API gateway (auth, rate limiting), the service itself discovered via service registry, synchronous calls to peers or async via message broker, cache layer, then database; wrapped by centralized logging, metrics/alerting, and CI/CD delivering it all. Being able to narrate one request through every box is exactly the interview exercise.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["system-design", "architecture", "diagram"],
+    "tags": [
+      "system-design",
+      "architecture",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0020-9-essential-components-of-production-microservice-app.png"
   },
   {
@@ -958,7 +1191,12 @@
     "prompt": "Study the diagram: a beginner's guide to CDN. Explain cache hit vs miss at the edge, and what content should NOT go through a CDN.",
     "answer": "A CDN serves content from edge servers near users: on a hit the edge answers directly (fast, origin untouched); on a miss it fetches from origin, caches per TTL/cache headers, then serves. Great for static assets, media, and cacheable API responses. Poor fits: highly personalized or rapidly changing responses and anything where staleness is unacceptable, unless you design explicit invalidation.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["networking", "cdn", "caching", "diagram"],
+    "tags": [
+      "networking",
+      "cdn",
+      "caching",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0025-a-beginner-s-guide-to-cdn.png"
   },
   {
@@ -970,7 +1208,11 @@
     "prompt": "Study the diagram: a cheatsheet on database performance. Which techniques help reads, which help writes, and which trade one for the other?",
     "answer": "Read helpers: indexing, caching, read replicas, materialized views, denormalization. Write helpers: batching, connection pooling, partitioning, async/queued writes. Double-edged: indexes speed reads but tax every write; denormalization speeds reads but complicates updates; sharding helps both but adds routing and cross-shard pain. Framing answers as 'helps X at the cost of Y' is the senior move.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["databases", "performance", "diagram"],
+    "tags": [
+      "databases",
+      "performance",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0062-a-cheatsheet-on-database-performance.png"
   },
   {
@@ -982,7 +1224,11 @@
     "prompt": "Study the diagram: a crash course in database sharding. Compare range, hash, and directory-based sharding, and name the two classic sharding pains.",
     "answer": "Range sharding: contiguous key ranges per shard, great for range scans, risks hot shards. Hash sharding: uniform spread, kills range queries; consistent hashing eases resharding. Directory-based: a lookup service maps keys to shards, flexible but adds a dependency. Classic pains: cross-shard queries/transactions, and resharding/rebalancing as data grows; plus the hotspot problem when one key dominates.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["databases", "sharding", "diagram"],
+    "tags": [
+      "databases",
+      "sharding",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0065-a-crash-course-on-database-sharding.png"
   },
   {
@@ -994,7 +1240,11 @@
     "prompt": "Study the diagram: a crash course on architectural scalability. What is the difference between scaling the app tier and scaling the data tier?",
     "answer": "App tier scales easily when stateless: add instances behind a load balancer, keep sessions external (Redis/JWT). Data tier is the hard part: replication for reads, sharding for writes, caching to protect it, and queues to smooth spikes. Most real scaling stories are about moving state OUT of the app tier and protecting the database behind layers.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["system-design", "scalability", "diagram"],
+    "tags": [
+      "system-design",
+      "scalability",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0293-a-crash-course-on-architectural-scalability.png"
   },
   {
@@ -1006,7 +1256,11 @@
     "prompt": "Study the diagram: cache systems every developer should know. List the cache layers a request can hit between the browser and the database.",
     "answer": "Layered caches: browser cache, CDN edge, load balancer/reverse proxy cache, application-level in-memory cache, distributed cache (Redis/Memcached), and finally database-internal caches (buffer pool, query cache). Each layer trades freshness for latency; a full answer names where invalidation happens at each level.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["caching", "system-design", "diagram"],
+    "tags": [
+      "caching",
+      "system-design",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0418-cache-systems-every-developer-should-know.jpeg"
   },
   {
@@ -1018,7 +1272,11 @@
     "prompt": "Study the diagram: the cache miss attack. What happens when a hot key expires under heavy traffic, and what are three defenses?",
     "answer": "When a hot key expires, thousands of concurrent requests miss together and hammer the database (stampede/thundering herd); attackers can force it by requesting keys that never exist. Defenses: request coalescing/locking so one request refills while others wait, staggered or jittered TTLs, serving stale while revalidating, and for never-exist keys: negative caching and bloom filters in front of the store.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["caching", "reliability", "diagram"],
+    "tags": [
+      "caching",
+      "reliability",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0128-cache-miss-attack.png"
   },
   {
@@ -1030,7 +1288,12 @@
     "prompt": "Study the diagram: can Kafka lose messages? Identify the three places loss can happen and the setting that prevents each.",
     "answer": "Producer side: fire-and-forget or acks=1 can drop on leader failure; use acks=all with retries and idempotent producer. Broker side: unflushed data on crash and unclean leader election; use replication factor >= 3, min.insync.replicas >= 2, unclean election disabled. Consumer side: committing offsets before processing loses messages on crash; commit after processing (at-least-once) and make handlers idempotent.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["messaging", "kafka", "reliability", "diagram"],
+    "tags": [
+      "messaging",
+      "kafka",
+      "reliability",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0130-can-kafka-lose-messages.png"
   },
   {
@@ -1042,7 +1305,11 @@
     "prompt": "Study the diagram: CAP theorem, one of the most misunderstood terms. What does the choice look like ONLY during a partition, and give one CP and one AP example.",
     "answer": "Without a partition you can have both C and A; the theorem only forces a choice when nodes cannot talk. CP systems (e.g. etcd/ZooKeeper, single-leader DBs refusing writes on minority side) reject requests to stay consistent. AP systems (e.g. Cassandra, DynamoDB-style) keep answering with possibly stale data and reconcile later. Real systems choose per operation, not globally.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["distributed", "cap", "diagram"],
+    "tags": [
+      "distributed",
+      "cap",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0131-cap-theorem.jpeg"
   },
   {
@@ -1054,7 +1321,11 @@
     "prompt": "Study the diagram: choosing the right database for a metrics collection system. What access pattern do metrics have, and why do time-series databases fit it?",
     "answer": "Metrics are write-heavy appends of timestamped values, queried as recent-window aggregations, almost never updated. Time-series DBs exploit that: time-partitioned storage, high write throughput, compression of sequential values, downsampling and retention policies built in. A general relational store can work early but pays in write amplification and painful retention management.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["databases", "time-series", "diagram"],
+    "tags": [
+      "databases",
+      "time-series",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0273-metrics-access-pattern.jpg"
   },
   {
@@ -1066,7 +1337,11 @@
     "prompt": "Study the diagram: the cloud database cheat sheet. For relational, key-value, document, graph, and time-series needs, name one managed service each.",
     "answer": "Common picks: relational (RDS/Aurora, Cloud SQL, Azure SQL), key-value (DynamoDB, ElastiCache/MemoryDB), document (MongoDB Atlas, Firestore, DocumentDB), wide-column (Cassandra/Keyspaces, Bigtable), graph (Neptune), time-series (Timestream, InfluxDB Cloud), search (OpenSearch). The interview skill is matching workload shape to category before naming vendors.",
     "source": "ByteByteGo system-design-101 (CC BY-NC-ND)",
-    "tags": ["databases", "cloud", "diagram"],
+    "tags": [
+      "databases",
+      "cloud",
+      "diagram"
+    ],
     "diagram_url": "https://assets.bytebytego.com/diagrams/0146-cloud-dbs2.png"
   }
 ]
