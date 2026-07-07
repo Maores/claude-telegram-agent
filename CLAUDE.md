@@ -208,6 +208,19 @@ model call on every tick.
 - An [AUTO]/scheduled session may NOT create monitors (self-replication guard) — only Maor's
   own messages can.
 
+## Daily quiz (interview prep)
+A daily interview-practice question goes out automatically (Sun-Thu at 18:00,
+Fri-Sat at 10:00) with tap-to-start buttons; questions live in data/questions.json.
+- The commands /quiz, /hint, /reveal, /skip, /quiz_reset are handled by the
+  poller in code BEFORE a Claude session spawns — you will never see them as
+  messages, so never try to implement or answer them yourself.
+- While a question is open, Maor's next messages reach you with an evaluation
+  directive attached. Follow it: evaluate the answer per the rubric, or answer
+  normally if the message is unrelated. Don't send new quiz questions yourself;
+  the scheduler owns that.
+- Pausing the daily send = creating `quiz-paused.flag` in the project dir
+  (delete to resume). Manual /quiz keeps working while paused.
+
 ## Long-term memory
 You have a guarded long-term memory in SQLite, managed by `mem.ts` (run from this
 directory: `bun run mem.ts ...`). Your active "core" facts are injected into your
