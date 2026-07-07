@@ -18,6 +18,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt } from "./reminders.ts";
+import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWindow, todayStr, typeForDay, pickByType, pickDiagram, pickPattern, markSeen, splitHints, formatQuestion, splitForCaption, quizStartKeyboard, quizNextKeyboard, parseQzCallback, quizEvalDirective, parseQuizCommand, shouldAttachQuizDirective, type QzCallback, type QuizCommand, type QuizState } from "./quiz";
 import { takePending, consumeAction, validateArgv, pruneActions, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
 import { StreamParser, displayText } from "./stream.ts";
@@ -1014,6 +1015,13 @@ async function handleMessage(msg: TgMessage) {
     return;
   }
 
+  // Quiz commands (/quiz, /hint, /reveal, /skip, /quiz_reset) never spawn claude.
+  const quizCmd = parseQuizCommand(msg.text ?? "", botUsername);
+  if (quizCmd) {
+    await handleQuizCommand(quizCmd, chatId);
+    return;
+  }
+
   // Voice notes (phase 6): transcribe, then treat exactly like a typed message.
   // Gates run BEFORE the download; the ack fires early because transcription
   // adds latency before the ⏳ placeholder appears.
@@ -1186,6 +1194,19 @@ async function handleMessage(msg: TgMessage) {
     // typed-message path — NOT on choice taps, where a tapped launch button must
     // build, not re-trigger the interview.
     const devDirective = detectDevIntent(userMsg || historyNote) ? DEV_INTENT_DIRECTIVE : "";
+    // Open quiz question → the evaluation directive rides this same turn (one
+    // claude call; the directive itself routes unrelated messages to normal chat).
+    let quizDirective = "";
+    try {
+      const qstate = loadQuizState();
+      if (qstate.chatId === chatId && shouldAttachQuizDirective(qstate, Math.floor(Date.now() / 1000))) {
+        const activeQ = loadQuestions().find((x) => x.id === qstate.lastQuestionId);
+        if (activeQ) quizDirective = quizEvalDirective(activeQ, qstate.hintsUsed);
+      }
+    } catch (e: any) {
+      console.error(`[ERR] quiz directive: ${e?.message ?? e}`);
+    }
+    const directive = [devDirective, quizDirective].filter(Boolean).join("\n\n");
     // Native Telegram reply (#308): tell the model which earlier message Maor quoted.
     const replyContext = replyContextLine(msg.reply_to_message, botUserId, name) ?? "";
     const echoPrefix =
@@ -1194,7 +1215,7 @@ async function handleMessage(msg: TgMessage) {
     const baseOpts = echoPrefix ? { renderPrefix: echoPrefix } : {};
     const answer =
       (await streamClaude(
-        buildPrompt(history, name, messageForClaude, recall, loadMemory(), skills, devDirective, replyContext, recentUploadsBlock()),
+        buildPrompt(history, name, messageForClaude, recall, loadMemory(), skills, directive, replyContext, recentUploadsBlock()),
         chatId,
         placeholderId,
         model,
@@ -1255,12 +1276,13 @@ async function handleMessage(msg: TgMessage) {
  *  allowlist-check, then route by namespace. Every press logs one [CB] line —
  *  silent dead buttons cost a forensic hunt on 2026-06-12. */
 async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
-  const pa = parsePaCallback(cq.data ?? "");
-  const ch = pa ? null : parseChCallback(cq.data ?? "");
-  const fuu = pa || ch ? null : parseFuuCallback(cq.data ?? "");
-  const parsed = pa || ch || fuu ? null : parseFuCallback(cq.data ?? "");
+  const qz = parseQzCallback(cq.data ?? "");
+  const pa = qz ? null : parsePaCallback(cq.data ?? "");
+  const ch = qz || pa ? null : parseChCallback(cq.data ?? "");
+  const fuu = qz || pa || ch ? null : parseFuuCallback(cq.data ?? "");
+  const parsed = qz || pa || ch || fuu ? null : parseFuCallback(cq.data ?? "");
   console.log(
-    `[CB] ${pa ? `pa:${pa.action}:${pa.id}` : ch ? `ch:${ch.id}:${ch.idx}` : fuu ? `undo:${fuu.fuId}` : parsed ? `${parsed.action}:${parsed.id}` : `?:${(cq.data ?? "").slice(0, 24)}`} from ${cq.from.id}`,
+    `[CB] ${qz ? `qz:${qz.kind}:${qz.choice}` : pa ? `pa:${pa.action}:${pa.id}` : ch ? `ch:${ch.id}:${ch.idx}` : fuu ? `undo:${fuu.fuId}` : parsed ? `${parsed.action}:${parsed.id}` : `?:${(cq.data ?? "").slice(0, 24)}`} from ${cq.from.id}`,
   );
   const ack = (text?: string) =>
     tg("answerCallbackQuery", { callback_query_id: cq.id, ...(text ? { text } : {}) }).catch(() => {});
@@ -1270,8 +1292,12 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   }
   const chatId = cq.message?.chat.id;
   const messageId = cq.message?.message_id;
-  if (chatId == null || messageId == null || (!pa && !ch && !fuu && !parsed)) {
+  if (chatId == null || messageId == null || (!qz && !pa && !ch && !fuu && !parsed)) {
     await ack(); // unknown namespace — ignore
+    return;
+  }
+  if (qz) {
+    await handleQzCallback(qz, chatId, messageId, ack);
     return;
   }
   if (pa) {
@@ -1644,6 +1670,168 @@ async function initOffset(): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// Daily quiz (interview prep) — pure logic in quiz.ts, orchestration here.
+// The 30s tick offers one question per day inside the send window; commands
+// and qz: buttons drive the rest. A quiz-paused.flag file silences auto-send.
+// ---------------------------------------------------------------------------
+
+const QUIZ_PAUSE_FLAG = join(PROJECT_DIR, "quiz-paused.flag");
+
+/** Auto-send target: the chat that last used /quiz, else the first allowlisted id. */
+function quizTargetChat(state: QuizState): number | null {
+  if (state.chatId != null) return state.chatId;
+  const first = [...loadAllowList()][0];
+  const n = Number(first);
+  return Number.isFinite(n) && n !== 0 ? n : null;
+}
+
+async function checkQuiz() {
+  try {
+    const now = new Date();
+    if (existsSync(QUIZ_PAUSE_FLAG)) return;
+    if (!inSendWindow(now)) return;
+    const state = loadQuizState();
+    if (state.lastSentDate === todayStr(now)) return;
+    const chatId = quizTargetChat(state);
+    if (chatId == null) return;
+    // Mark BEFORE sending (state-before-effect, like follow-up nudges): a
+    // missed offer beats a duplicate one, and /quiz recovers a missed day.
+    saveQuizState({ ...state, chatId, lastSentDate: todayStr(now) });
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: "🎯 שאלת התרגול היומית מוכנה. מתחילים?",
+      reply_markup: quizStartKeyboard(),
+    });
+    console.log(`[QUIZ] daily offer -> ${chatId}`);
+  } catch (e: any) {
+    console.error(`[ERR] quiz check: ${e?.message ?? e}`);
+  }
+}
+
+/** Pick and send a question now. The 7-day rotation advances only on rotation
+ *  sends; pattern/diagram extras don't burn a rotation day. */
+async function sendQuizQuestion(
+  chatId: number,
+  kind: "rotation" | "pattern" | "diagram" = "rotation",
+) {
+  const questions = loadQuestions();
+  if (!questions.length) {
+    await tg("sendMessage", { chat_id: chatId, text: "מאגר השאלות ריק (data/questions.json)." });
+    return;
+  }
+  const state = loadQuizState();
+  const picked =
+    kind === "pattern"
+      ? pickPattern(questions, state.seenIds)
+      : kind === "diagram"
+        ? pickDiagram(questions, state.seenIds)
+        : pickByType(questions, typeForDay(state.dayIndex), state.seenIds);
+  if (!picked.question) {
+    await tg("sendMessage", { chat_id: chatId, text: "לא מצאתי שאלה מתאימה במאגר." });
+    return;
+  }
+  const q = picked.question;
+  const text = formatQuestion(q);
+  if (q.diagram_url) {
+    const { caption, extra } = splitForCaption(text);
+    await tg("sendPhoto", { chat_id: chatId, photo: q.diagram_url, ...(caption ? { caption } : {}) });
+    if (extra) await sendReply(chatId, null, extra);
+    // Flashcard mode: the explanation lands right away, no answer expected.
+    await sendReply(chatId, null, q.answer);
+  } else {
+    await sendReply(chatId, null, text);
+  }
+  saveQuizState({
+    ...state,
+    chatId,
+    dayIndex: kind === "rotation" ? state.dayIndex + 1 : state.dayIndex,
+    lastQuestionId: q.id,
+    awaitingAnswer: !q.diagram_url,
+    lastSentDate: todayStr(new Date()),
+    seenIds: markSeen(picked.seen, q.id),
+    hintsUsed: 0,
+    sentAtS: Math.floor(Date.now() / 1000),
+  });
+  console.log(`[QUIZ] sent ${q.id} (${q.type}, ${kind}) -> ${chatId}`);
+}
+
+async function handleQuizCommand(cmd: QuizCommand, chatId: number) {
+  try {
+    if (cmd === "quiz") {
+      await sendQuizQuestion(chatId);
+      return;
+    }
+    if (cmd === "reset") {
+      saveQuizState({ ...defaultQuizState(), chatId });
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: "איפסתי את מצב החידון: סבב, היסטוריית שאלות ורמזים.",
+      });
+      return;
+    }
+    const state = loadQuizState();
+    const q = loadQuestions().find((x) => x.id === state.lastQuestionId);
+    if (!q) {
+      await tg("sendMessage", { chat_id: chatId, text: "אין שאלה פעילה כרגע. לשאלה חדשה:\n/quiz" });
+      return;
+    }
+    if (cmd === "hint") {
+      const hints = splitHints(q.hint).slice(0, 3);
+      if (!hints.length) {
+        await tg("sendMessage", { chat_id: chatId, text: "לשאלה הזאת אין רמזים. לחשיפת הפתרון:\n/reveal" });
+        return;
+      }
+      if (state.hintsUsed >= hints.length) {
+        await tg("sendMessage", { chat_id: chatId, text: "אין עוד רמזים. לחשיפת הפתרון:\n/reveal" });
+        return;
+      }
+      saveQuizState({ ...state, hintsUsed: state.hintsUsed + 1 });
+      await sendReply(chatId, null, `רמז ${state.hintsUsed + 1}/${hints.length}:\n${hints[state.hintsUsed]}`);
+      return;
+    }
+    if (cmd === "reveal") {
+      const lines = ["הפתרון המלא:", "", q.answer];
+      if (q.solution_code) lines.push("", q.solution_code);
+      if (q.time_complexity) lines.push("", `Time: ${q.time_complexity}`);
+      if (q.space_complexity) lines.push(`Space: ${q.space_complexity}`);
+      if (q.leetcode_url) lines.push("", q.leetcode_url);
+      saveQuizState({ ...state, awaitingAnswer: false });
+      await sendReply(chatId, null, lines.join("\n"));
+      await tg("sendMessage", { chat_id: chatId, text: "מה עכשיו?", reply_markup: quizNextKeyboard() });
+      return;
+    }
+    // skip
+    saveQuizState({ ...state, awaitingAnswer: false });
+    await tg("sendMessage", { chat_id: chatId, text: "דילגנו על השאלה. מחר מגיעה חדשה, ואפשר גם עכשיו:\n/quiz" });
+  } catch (e: any) {
+    console.error(`[ERR] quiz cmd ${cmd}: ${e?.message ?? e}`);
+  }
+}
+
+/** qz: button presses. The keyboard is cleared first so a second tap is inert. */
+async function handleQzCallback(
+  parsed: QzCallback,
+  chatId: number,
+  messageId: number,
+  ack: (text?: string) => Promise<unknown>,
+) {
+  await ack();
+  await tg("editMessageReplyMarkup", {
+    chat_id: chatId,
+    message_id: messageId,
+    reply_markup: { inline_keyboard: [] },
+  }).catch(() => {});
+  if (parsed.kind === "start") {
+    if (parsed.choice === "yes") await sendQuizQuestion(chatId);
+    else await tg("sendMessage", { chat_id: chatId, text: "סבבה, מדלגים היום. כשמתחשק:\n/quiz" });
+    return;
+  }
+  if (parsed.choice === "pattern") await sendQuizQuestion(chatId, "pattern");
+  else if (parsed.choice === "diagram") await sendQuizQuestion(chatId, "diagram");
+  else await tg("sendMessage", { chat_id: chatId, text: "מעולה. נתראה בשאלה של מחר 🎯" });
+}
+
+// ---------------------------------------------------------------------------
 // Reminder scheduler (fires due reminders on an interval)
 // ---------------------------------------------------------------------------
 
@@ -1913,6 +2101,7 @@ async function main() {
   setInterval(() => {
     void checkReminders();
     void checkMonitors();
+    void checkQuiz();
   }, 30_000);
 
   setInterval(() => {
