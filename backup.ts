@@ -104,6 +104,16 @@ export function buildManifest(repoRoot: string, home: string): ManifestEntry[] {
   return entries;
 }
 
+/** Remove a temp dir without letting cleanup failures outrank the real
+ *  outcome (Windows can hold handles briefly: EBUSY). Retries, then warns. */
+function cleanupDir(dir: string, label: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch (e) {
+    console.error(`[BACKUP] temp cleanup failed (${label}, non-fatal): ${e}`);
+  }
+}
+
 function tar(args: string[]): void {
   const p = Bun.spawnSync([TAR_BIN, ...args]);
   if (p.exitCode !== 0) {
@@ -184,7 +194,7 @@ export function run(
     );
     return out;
   } finally {
-    rmSync(stage, { recursive: true, force: true });
+    cleanupDir(stage, "run stage");
   }
 }
 
@@ -237,7 +247,7 @@ export function verify(archive: string): boolean {
     console.error(`[BACKUP] verify FAILED: ${e}`);
     return false;
   } finally {
-    rmSync(stage, { recursive: true, force: true });
+    cleanupDir(stage, "verify stage");
   }
 }
 
