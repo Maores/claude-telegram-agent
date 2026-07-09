@@ -297,6 +297,105 @@ foreground run while debugging.
 
 ---
 
+## Step 12 — Backups (server + local)
+
+The agent's accumulated state (memories, skills, chat archive, reminders,
+quiz progress, the guard-hook wiring) lives outside git. `backup.ts` snapshots
+all of it nightly: a WAL-safe `VACUUM INTO` copy of `memory/bot.db` plus the
+JSON state files, `quiz-paused.flag`, `memory/` markdown + mirror, `skills/`,
+`history/`, `data/questions.json` + `data/quiz-state.json`,
+`.claude/settings.local.json`, and the Telegram allowlist. **Deliberately
+excluded:** every `.env` (tokens are re-issuable; archives leave the box, so
+after a restore redo steps 6-8) and `uploads/` (replaceable bulk). Archives
+land in `~/backups/`, newest 14 kept, `latest.tar.gz` symlinked.
+
+Install the timer **(server)**:
+
+```bash
+sudo tee /etc/systemd/system/telegram-agent-backup.service > /dev/null << 'EOF'
+[Unit]
+Description=Nightly state backup (claude-telegram-agent)
+
+[Service]
+Type=oneshot
+User=claudebot
+WorkingDirectory=/home/claudebot/claude-bot
+Environment=TZ=Asia/Jerusalem
+ExecStart=/home/claudebot/.bun/bin/bun run backup.ts run
+EOF
+
+sudo tee /etc/systemd/system/telegram-agent-backup.timer > /dev/null << 'EOF'
+[Unit]
+Description=Nightly state backup timer (claude-telegram-agent)
+
+[Timer]
+# Timezone is pinned here: OnCalendar is evaluated by systemd itself, so the
+# service-level TZ env would not affect the firing time.
+OnCalendar=*-*-* 03:30:00 Asia/Jerusalem
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now telegram-agent-backup.timer
+systemctl list-timers telegram-agent-backup.timer   # next fire time
+```
+
+Manual run + restore drill (do this once after installing and after any
+schema change; a backup that has never been restored is a hope, not a
+backup):
+
+```bash
+cd ~/claude-bot
+bun run backup.ts run
+bun run backup.ts verify ~/backups/latest.tar.gz   # table + file counts; exits 1 on failure
+```
+
+Full restore onto a fresh droplet: finish steps 0-11 first, stop the service
+(`sudo systemctl stop telegram-agent`), extract the archive
+(`mkdir /tmp/r && tar xzf <archive> -C /tmp/r`), copy it back with the
+dot-form (plain `repo/*` globs would silently skip `.claude/`, losing the
+guard hook and allowlist):
+
+```bash
+cp -a /tmp/r/repo/. ~/claude-bot/
+cp -a /tmp/r/home/. ~/
+```
+
+then re-create the `.env` secrets (steps 6-8) and
+`sudo systemctl start telegram-agent`.
+
+Off-box copies, two independent layers:
+
+1. **DigitalOcean automated backups** (whole-disk, hands-off, priced as a
+   percentage of the droplet): enable from the DigitalOcean control panel;
+   see https://docs.digitalocean.com/products/backups/ ("How to Enable
+   Backups"). Covers total droplet loss.
+2. **Nightly pull to the local machine (local)**: `scripts/pull-backup.ps1`
+   copies the newest archive to
+   `%USERPROFILE%\OneDrive\Backups\telegram-agent` (OneDrive sync adds a free
+   cloud copy) and rotates to 14. The committed defaults are placeholders;
+   pass your target explicitly. Register it as a daily task (runs when the
+   PC is on and you're logged in):
+
+   ```powershell
+   $pwsh = (Get-Command pwsh).Source
+   $script = "<path-to-repo>\scripts\pull-backup.ps1"
+   $args = "-RemoteUserHost claudebot@<YOUR_SERVER_IP> -KeyPath `"$env:USERPROFILE\.ssh\<YOUR_KEY>`""
+   schtasks /Create /F /TN "TelegramAgent backup pull" /SC DAILY /ST 10:00 `
+     /TR "`"$pwsh`" -NoProfile -ExecutionPolicy Bypass -File `"$script`" $args"
+   ```
+
+   Run it once by hand first:
+   `pwsh -File scripts\pull-backup.ps1 -RemoteUserHost claudebot@<YOUR_SERVER_IP> -KeyPath $env:USERPROFILE\.ssh\<YOUR_KEY>`.
+   The same `bun run backup.ts verify <archive>` works on Windows (run it from
+   PowerShell) to check a pulled archive.
+
+---
+
 ## Updating the bot later (local → server)
 
 ```powershell
