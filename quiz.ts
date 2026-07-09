@@ -138,14 +138,15 @@ export function saveQuizState(state: QuizState): void {
 // Schedule
 // ---------------------------------------------------------------------------
 
-/** Guide rotation: LeetCode-heavy week with one concept/behavioral/design day. */
+/** Work-focused week (Maor, 2026-07-07): 5 of 7 days on job-interview material
+ *  (design/concept/behavioral), 2 algo days to keep LeetCode practice alive. */
 export const ROTATION: QuestionType[] = [
+  "system-design",
   "algo",
   "concept",
-  "algo",
   "behavioral",
-  "algo",
   "system-design",
+  "concept",
   "algo",
 ];
 
