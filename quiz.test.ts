@@ -73,14 +73,22 @@ test("todayStr formats as YYYY-MM-DD", () => {
 
 // --- rotation -------------------------------------------------------------------
 
-test("rotation is the 7-day cycle from the guide and wraps", () => {
-  expect(ROTATION).toEqual(["algo", "concept", "algo", "behavioral", "algo", "system-design", "algo"]);
-  expect(typeForDay(0)).toBe("algo");
-  expect(typeForDay(1)).toBe("concept");
+test("rotation is the work-focused 7-day cycle and wraps", () => {
+  expect(ROTATION).toEqual([
+    "system-design",
+    "algo",
+    "concept",
+    "behavioral",
+    "system-design",
+    "concept",
+    "algo",
+  ]);
+  expect(typeForDay(0)).toBe("system-design");
+  expect(typeForDay(1)).toBe("algo");
   expect(typeForDay(3)).toBe("behavioral");
-  expect(typeForDay(5)).toBe("system-design");
-  expect(typeForDay(7)).toBe("algo");
-  expect(typeForDay(12)).toBe("system-design");
+  expect(typeForDay(5)).toBe("concept");
+  expect(typeForDay(7)).toBe("system-design");
+  expect(typeForDay(12)).toBe("concept");
 });
 
 // --- hints -----------------------------------------------------------------------
