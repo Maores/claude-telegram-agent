@@ -22,7 +22,10 @@ New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 Get-ChildItem $Dest -Filter '*.part' -ErrorAction SilentlyContinue | Remove-Item -Force
 
 # Resolve the newest archive's real name (latest.tar.gz is a symlink to it).
-$name = ssh -o BatchMode=yes -o ConnectTimeout=15 -i $KeyPath $RemoteUserHost 'basename "$(readlink -f ~/backups/latest.tar.gz)"'
+# Keepalives matter: ConnectTimeout only covers the connect phase, and a session
+# that goes dead after that (e.g. the task firing while the network is still
+# coming up after wake-from-sleep) would otherwise hang forever.
+$name = ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -i $KeyPath $RemoteUserHost 'basename "$(readlink -f ~/backups/latest.tar.gz)"'
 if ($LASTEXITCODE -ne 0) { throw "ssh to $RemoteUserHost failed" }
 $name = "$name".Trim()
 if ($name -notmatch '^agent-backup-\d{8}-\d{6}\.tar\.gz$') {
@@ -36,7 +39,7 @@ if (Test-Path $target) {
     # Download to a .part name first so an interrupted transfer is never
     # mistaken for a complete archive on the next run.
     $part = "$target.part"
-    scp -o BatchMode=yes -i $KeyPath "${RemoteUserHost}:backups/$name" $part
+    scp -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -i $KeyPath "${RemoteUserHost}:backups/$name" $part
     if ($LASTEXITCODE -ne 0) {
         Remove-Item -Force $part -ErrorAction SilentlyContinue
         throw "scp failed for $name"
