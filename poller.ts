@@ -61,6 +61,7 @@ const TG_FETCH_TIMEOUT_MS = (POLL_TIMEOUT + 15) * 1000; // hard cap on any Teleg
 const FLUSH_MS = 1500; // min gap between Telegram edits while streaming (rate-limit safe)
 const CAL_LEAD_MIN = Number(process.env.CAL_NUDGE_MINUTES ?? 15); // nudge this many minutes before an event
 const CAL_CHECK_MS = Number(process.env.CAL_CHECK_MS ?? 300_000); // how often to scan the calendar
+const DEBOUNCE_MS = Number(process.env.DEBOUNCE_MS ?? 2000); // wait this long after the last message before dispatching, so rapid bursts batch into one turn
 
 // Attachments
 export const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES ?? 20 * 1024 * 1024); // Telegram getFile caps bot downloads at ~20MB
@@ -250,6 +251,34 @@ function stopChild(chatId: number): boolean {
  *  the one serialized callback chain. POLL_SERIAL=1 bypasses both. */
 const chatQueues = new ChatQueues();
 const cbChain = new SerialChain();
+
+// Debounce buffer: holds messages per chat until DEBOUNCE_MS has passed with
+// no new arrivals, then flushes as a batch so rapid bursts become one Claude turn.
+const debounceBuf = new Map<number, { timer: ReturnType<typeof setTimeout>; msgs: TgMessage[] }>();
+
+function scheduleDebounced(chatId: number, msg: TgMessage) {
+  const existing = debounceBuf.get(chatId);
+  if (existing) {
+    clearTimeout(existing.timer);
+    existing.msgs.push(msg);
+    existing.timer = setTimeout(() => flushDebounced(chatId), DEBOUNCE_MS);
+  } else {
+    const entry = { msgs: [msg], timer: setTimeout(() => flushDebounced(chatId), DEBOUNCE_MS) };
+    debounceBuf.set(chatId, entry);
+  }
+}
+
+function flushDebounced(chatId: number) {
+  const entry = debounceBuf.get(chatId);
+  debounceBuf.delete(chatId);
+  if (!entry) return;
+  const { msgs } = entry;
+  if (msgs.length === 1) {
+    chatQueues.enqueue(chatId, () => handleMessage(msgs[0]));
+  } else {
+    chatQueues.enqueue(chatId, () => handleMessageBatch(msgs));
+  }
+}
 
 // Graceful shutdown: a deploy's systemctl restart must drain what was already
 // consumed from Telegram (offset is saved at fetch time — anything enqueued
@@ -1272,6 +1301,184 @@ async function handleMessage(msg: TgMessage) {
   }
 }
 
+/** Handles a rapid burst of messages as a single Claude turn.
+ *  Called only when ≥2 messages arrive within DEBOUNCE_MS of each other. */
+async function handleMessageBatch(msgs: TgMessage[]) {
+  const first = msgs[0];
+  const last = msgs[msgs.length - 1];
+  const chatId = first.chat.id;
+  if (!first.from) return;
+  const fromId = String(first.from.id);
+  const name = first.from.first_name || first.from.username || fromId;
+
+  if (!loadAllowList().has(fromId)) {
+    console.log(redact(`[SKIP] unauthorized ${name} (${fromId}) [batch:${msgs.length}]`));
+    return;
+  }
+
+  const parts: string[] = [];
+  const historyParts: string[] = [];
+
+  for (const msg of msgs) {
+    const voice = voiceInfo(msg);
+    if (voice) {
+      if (resolveBackend() === "off" || voice.duration > VOICE_MAX_SEC || isTooLarge(voice.size)) {
+        parts.push("[voice note — could not transcribe]");
+        historyParts.push("[voice note]");
+        continue;
+      }
+      let audioPath: string | undefined;
+      try {
+        audioPath = await downloadFile(voice.fileId, "voice.oga");
+      } catch {}
+      if (!audioPath) {
+        parts.push("[voice note — download failed]");
+        historyParts.push("[voice note]");
+        continue;
+      }
+      try {
+        const tr = await transcribeVoice(audioPath);
+        if (tr.text.trim()) {
+          parts.push(voicePromptText(tr.text));
+          historyParts.push(voiceHistoryNote(tr.text));
+        } else {
+          parts.push("[voice note — empty]");
+          historyParts.push("[voice note — empty]");
+        }
+      } catch {
+        parts.push("[voice note — transcription failed]");
+        historyParts.push("[voice note]");
+      } finally {
+        cleanupFile(audioPath);
+      }
+      continue;
+    }
+
+    const info = attachmentInfo(msg);
+    if (info) {
+      const caption = msg.caption ?? "";
+      if (isTooLarge(info.size)) {
+        parts.push(`[${info.kind} — too large to download]`);
+        historyParts.push(caption ? `[sent ${info.kind}] ${caption}` : `[sent ${info.kind}]`);
+        continue;
+      }
+      try {
+        const filePath = await downloadFile(info.fileId, info.name);
+        evictUploadsToFit();
+        const note = `[The user sent ${info.kind}, saved at: ${filePath} — open and read it to answer.]`;
+        parts.push(caption ? `${caption}\n\n${note}` : note);
+        historyParts.push(caption ? `[sent ${info.kind}] ${caption}` : `[sent ${info.kind}]`);
+      } catch {
+        parts.push(`[${info.kind} — download failed]`);
+        historyParts.push(caption ? `[sent ${info.kind}] ${caption}` : `[sent ${info.kind}]`);
+      }
+      continue;
+    }
+
+    const text = msg.text ?? msg.caption ?? "";
+    if (text) {
+      parts.push(text);
+      historyParts.push(text);
+    }
+  }
+
+  const combined = parts.filter(Boolean).join("\n");
+  const historyNote = historyParts.filter(Boolean).join("\n");
+  if (!combined.trim()) return;
+
+  const { model, prompt: userMsg } = pickModel(combined);
+  console.log(redact(`[MSG] ${name} (${model}) [batch:${msgs.length}]: ${userMsg.slice(0, 100)}`));
+
+  void setReaction(chatId, last.message_id, REACTION_START);
+  void sendTyping(chatId);
+
+  let placeholderId: number | null = null;
+  try {
+    const ph = await tg("sendMessage", { chat_id: chatId, text: "⏳" });
+    placeholderId = ph.message_id;
+  } catch {}
+
+  try {
+    const db = getDb();
+    const history = recentMessages(db, chatId, HISTORY_MAX);
+    const beforeId = history.length ? history[0].id : Number.MAX_SAFE_INTEGER;
+    let recall: RecallHit[] = [];
+    try {
+      recall = searchMessages(db, chatId, userMsg || historyNote, RECALL_K, beforeId);
+    } catch (e: any) {
+      console.error(`[ERR] recall: ${e?.message ?? e}`);
+    }
+    let skills = "";
+    try {
+      skills = skillsIndexBlock(db, userMsg || historyNote);
+    } catch (e: any) {
+      console.error(`[ERR] skills: ${e?.message ?? e}`);
+    }
+
+    const devDirective = detectDevIntent(userMsg || historyNote) ? DEV_INTENT_DIRECTIVE : "";
+    let quizDirective = "";
+    try {
+      const qstate = loadQuizState();
+      if (qstate.chatId === chatId && shouldAttachQuizDirective(qstate, Math.floor(Date.now() / 1000))) {
+        const activeQ = loadQuestions().find((x) => x.id === qstate.lastQuestionId);
+        if (activeQ) quizDirective = quizEvalDirective(activeQ, qstate.hintsUsed);
+      }
+    } catch (e: any) {
+      console.error(`[ERR] quiz directive: ${e?.message ?? e}`);
+    }
+    const directive = [devDirective, quizDirective].filter(Boolean).join("\n\n");
+    const replyContext = replyContextLine(last.reply_to_message, botUserId, name) ?? "";
+    const turnId = newTurnId();
+    const answer =
+      (await streamClaude(
+        buildPrompt(history, name, userMsg, recall, loadMemory(), skills, directive, replyContext, recentUploadsBlock()),
+        chatId,
+        placeholderId,
+        model,
+        { env: { TELEGRAM_TURN_ID: turnId } },
+      )).trim() || "(no output)";
+
+    const now = Math.floor(Date.now() / 1000);
+    try {
+      insertMessage(db, { chatId, role: "user", content: historyNote, ts: now, model });
+      insertMessage(db, { chatId, role: "assistant", content: answer, ts: now, model });
+    } catch (e: any) {
+      console.error(`[ERR] persist message: ${e?.message ?? e}`);
+    }
+    await sendPendingProposals(chatId, turnId);
+    await sendPendingChoices(chatId, turnId);
+    console.log(`[DONE] replied to batch of ${msgs.length} from ${fromId}`);
+    void setReaction(chatId, last.message_id, outcomeReaction(true));
+    if (shouldReview(chatId, Math.floor(Date.now() / 1000))) {
+      try {
+        const transcript = recentMessages(db, chatId, 20).map((m) => ({ role: m.role, content: m.content }));
+        runReview(transcript, { claudeBin: CLAUDE_BIN, cwd: PROJECT_DIR, env: process.env });
+      } catch (e: any) {
+        console.error(`[ERR] review: ${e?.message ?? e}`);
+      }
+    }
+  } catch (e: any) {
+    if (e instanceof TurnStopped) {
+      console.log(`[STOP] batch turn for ${fromId} stopped mid-answer`);
+      try {
+        const db = getDb();
+        const now = Math.floor(Date.now() / 1000);
+        insertMessage(db, { chatId, role: "user", content: historyNote, ts: now, model });
+        insertMessage(db, { chatId, role: "assistant", content: "[stopped]", ts: now, model });
+      } catch {}
+      return;
+    }
+    console.error(`[ERR] handling batch from ${fromId}: ${e?.message ?? e}`);
+    void setReaction(chatId, last.message_id, outcomeReaction(false));
+    const limitMsg = limitHitReply(e?.message);
+    await sendReply(
+      chatId,
+      placeholderId,
+      limitMsg ?? "⚠️ Sorry, something went wrong handling that. Please try again.",
+    ).catch(() => {});
+  }
+}
+
 /** Inline-button presses. ACK fast (with a toast when the press is stale),
  *  allowlist-check, then route by namespace. Every press logs one [CB] line —
  *  silent dead buttons cost a forensic hunt on 2026-06-12. */
@@ -2157,7 +2364,7 @@ async function main() {
           break;
         case "message": {
           const m = u.message!;
-          chatQueues.enqueue(m.chat.id, () => handleMessage(m));
+          scheduleDebounced(m.chat.id, m);
           break;
         }
         // "ignore": nothing — same as today's else-fallthrough.
