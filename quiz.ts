@@ -15,7 +15,7 @@
  * EVAL_WINDOW_S. One model call per message either way.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,9 @@ export function saveQuizState(state: QuizState): void {
   const path = statePath();
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(path, JSON.stringify(state, null, 2));
+  const tmp = path + ".tmp";
+  writeFileSync(tmp, JSON.stringify(state, null, 2));
+  renameSync(tmp, path); // atomic replace
 }
 
 // ---------------------------------------------------------------------------

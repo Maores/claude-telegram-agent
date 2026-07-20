@@ -13,7 +13,7 @@
  */
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { sanitizeFtsQuery } from "./db";
 import { scanThreats } from "./threats";
@@ -378,7 +378,9 @@ export function exportMirror(db: Database, dir: string, now: number): { written:
       baks.push(bak);
     }
     const content = renderMirror(db, kind, title);
-    writeFileSync(path, content);
+    const tmp = path + ".tmp";
+    writeFileSync(tmp, content);
+    renameSync(tmp, path); // atomic replace
     db.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(metaKey, sha(content));
     written.push(path);
   }
