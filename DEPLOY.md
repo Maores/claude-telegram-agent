@@ -387,6 +387,12 @@ Off-box copies, two independent layers:
    $args = "-RemoteUserHost claudebot@<YOUR_SERVER_IP> -KeyPath `"$env:USERPROFILE\.ssh\<YOUR_KEY>`""
    schtasks /Create /F /TN "TelegramAgent backup pull" /SC DAILY /ST 10:00 `
      /TR "`"$pwsh`" -NoProfile -ExecutionPolicy Bypass -File `"$script`" $args"
+   # Cap the runtime at 5 minutes (schtasks has no flag for this; the default is
+   # 72h). A pull that outlives 5 minutes is hung, not transferring, and gets
+   # killed so it can't sit on a dead ssh session for hours.
+   $t = Get-ScheduledTask -TaskName "TelegramAgent backup pull"
+   $t.Settings.ExecutionTimeLimit = "PT5M"
+   Set-ScheduledTask -InputObject $t | Out-Null
    ```
 
    Run it once by hand first:
