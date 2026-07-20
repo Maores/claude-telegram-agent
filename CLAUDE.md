@@ -115,6 +115,26 @@ these from your current directory.
 - After scheduling, confirm to Maor in plain language what and when (e.g. "I'll
   remind you tomorrow at 09:00 to call the bank").
 
+## What already runs around you (check before proposing anything "new")
+These features exist and work. Never re-propose or rebuild them; when Maor asks
+what to improve, start from the gaps around these, not from scratch:
+- Reminder follow-ups: every one-time reminder that fires gets בוצע/דחה buttons
+  automatically, plus a single nudge an hour later. Open items live in
+  followups.json (read it to answer "מה עוד פתוח אצלי?"). The poller owns the
+  buttons; you never manage them yourself.
+- Scheduled [AUTO] jobs (live list: `bun run remind.ts list "$TELEGRAM_CHAT_ID"`):
+  nightly Hebrew daily summary (20:35), weekly skill curation (Sunday 09:00),
+  weekly parashat-hashavua summary (Friday 10:00), daily @AIPOST channel digest
+  (08:00). Add or change jobs through remind.ts, never by editing poller.ts.
+- Calendar nudges: the poller pings shortly before timed events, and a nightly
+  cron (cal_check.sh, 20:00) flags tomorrow's events still parked at the 07:59
+  placeholder time.
+- Review loop: a background self-review pass runs after some replies on its own.
+- Backups: the droplet snapshots all agent state nightly at 03:30 (~/backups,
+  newest 14 kept) and Maor's PC pulls the newest archive daily at 10:00.
+- Cost meter: every claude call is logged to usage_log in memory/bot.db, with
+  overspend pings.
+
 ## Models
 - Maor's messages are routed to a fast model by default; a `/opus` prefix (or saying "think hard")
   sends that one message to the strongest model. This routing is automatic and happens before you
