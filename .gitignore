@@ -6,6 +6,7 @@ skills/
 reminders/
 reminders.json
 reminders.test.tmp.json
+followups.json
 pending.json
 choices.json
 choices.test-*.json

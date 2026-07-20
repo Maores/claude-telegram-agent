@@ -387,11 +387,18 @@ Off-box copies, two independent layers:
    $args = "-RemoteUserHost claudebot@<YOUR_SERVER_IP> -KeyPath `"$env:USERPROFILE\.ssh\<YOUR_KEY>`""
    schtasks /Create /F /TN "TelegramAgent backup pull" /SC DAILY /ST 10:00 `
      /TR "`"$pwsh`" -NoProfile -ExecutionPolicy Bypass -File `"$script`" $args"
-   # Cap the runtime at 5 minutes (schtasks has no flag for this; the default is
-   # 72h). A pull that outlives 5 minutes is hung, not transferring, and gets
-   # killed so it can't sit on a dead ssh session for hours.
+   # Post-registration settings (schtasks has no flags for these):
+   # - ExecutionTimeLimit PT5M: a pull that outlives 5 minutes is hung, not
+   #   transferring, and gets killed so it can't sit on a dead ssh session.
+   # - StartWhenAvailable: a 10:00 window missed because the PC was off or
+   #   asleep runs as soon as it can, instead of silently skipping the day.
+   # - Battery flags: a laptop on battery at 10:00 otherwise refuses the run
+   #   (0x800710E0) and the day is skipped.
    $t = Get-ScheduledTask -TaskName "TelegramAgent backup pull"
    $t.Settings.ExecutionTimeLimit = "PT5M"
+   $t.Settings.StartWhenAvailable = $true
+   $t.Settings.DisallowStartIfOnBatteries = $false
+   $t.Settings.StopIfGoingOnBatteries = $false
    Set-ScheduledTask -InputObject $t | Out-Null
    ```
 
@@ -399,6 +406,19 @@ Off-box copies, two independent layers:
    `pwsh -File scripts\pull-backup.ps1 -RemoteUserHost claudebot@<YOUR_SERVER_IP> -KeyPath $env:USERPROFILE\.ssh\<YOUR_KEY>`.
    The same `bun run backup.ts verify <archive>` works on Windows (run it from
    PowerShell) to check a pulled archive.
+
+---
+
+## Step 13 — Calendar placeholder-time check (cron)
+
+`cal_check.sh` pings the chat at 20:00 when tomorrow has events still parked at
+the 07:59 placeholder time (events created without deciding a real hour). Plain
+bash + curl, no claude spawn. Install **(server)**:
+
+```bash
+crontab -l 2>/dev/null | { cat; echo '0 20 * * * /bin/bash /home/claudebot/claude-bot/cal_check.sh >> /home/claudebot/claude-bot/cal_check.log 2>&1'; } | crontab -
+crontab -l   # verify the line landed
+```
 
 ---
 
