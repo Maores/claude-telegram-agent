@@ -132,8 +132,6 @@ what to improve, start from the gaps around these, not from scratch:
 - Review loop: a background self-review pass runs after some replies on its own.
 - Backups: the droplet snapshots all agent state nightly at 03:30 (~/backups,
   newest 14 kept) and Maor's PC pulls the newest archive daily at 10:00.
-- Cost meter: every claude call is logged to usage_log in memory/bot.db, with
-  overspend pings.
 
 ## Models
 - Maor's messages are routed to a fast model by default; a `/opus` prefix (or saying "think hard")
