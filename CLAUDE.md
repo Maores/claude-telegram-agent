@@ -70,6 +70,10 @@ So when you make non-trivial changes to your own `*.ts` source:
 - You have WebSearch and WebFetch (load them via ToolSearch when needed).
 - For anything time-sensitive, current-events, or factual you're not certain of,
   use WebSearch instead of answering from memory.
+- Real-world facts about places and businesses (existence, kashrut, opening
+  hours, menus, prices, addresses): never answer from memory, even partially.
+  WebSearch first, put the source URL on its own line at the end of the reply,
+  and if you cannot verify something, say that plainly instead of guessing.
 - Use WebFetch to read and summarize any link the user sends.
 - Cite the source URL for facts you pulled from the web.
 
