@@ -61,7 +61,7 @@ const TG_FETCH_TIMEOUT_MS = (POLL_TIMEOUT + 15) * 1000; // hard cap on any Teleg
 const FLUSH_MS = 1500; // min gap between Telegram edits while streaming (rate-limit safe)
 const CAL_LEAD_MIN = Number(process.env.CAL_NUDGE_MINUTES ?? 15); // nudge this many minutes before an event
 const CAL_CHECK_MS = Number(process.env.CAL_CHECK_MS ?? 300_000); // how often to scan the calendar
-const DEBOUNCE_MS = Number(process.env.DEBOUNCE_MS ?? 2000); // wait this long after the last message before dispatching, so rapid bursts batch into one turn
+const DEBOUNCE_MS = Number(process.env.DEBOUNCE_MS ?? 3500); // quiet gap after the last message before dispatching (resets per arrival); 2000 missed real iPhone typing gaps between consecutive sends
 
 // Attachments
 export const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES ?? 20 * 1024 * 1024); // Telegram getFile caps bot downloads at ~20MB
