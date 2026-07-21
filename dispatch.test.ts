@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { isStopCommand, classifyUpdate, ChatQueues, SerialChain } from "./dispatch";
+import { isStopCommand, classifyUpdate, ChatQueues, SerialChain, Debouncer } from "./dispatch";
 
 test("classifyUpdate triages callback > stop > message > ignore", () => {
   expect(classifyUpdate({ update_id: 1, callback_query: {} }, "bot")).toBe("callback");
@@ -138,4 +138,108 @@ test("SerialChain.idle resolves after the tail job", async () => {
   g.open();
   await tick(); await tick();
   expect(idle).toBe(true);
+});
+
+// --- Debouncer (message-burst batching) --------------------------------------
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+test("Debouncer flushes a single message after the quiet period", async () => {
+  const flushes: Array<[number, string[]]> = [];
+  const d = new Debouncer<string>(30, (chat, items) => flushes.push([chat, items]));
+  d.schedule(1, "a");
+  expect(d.pending(1)).toBe(1);
+  expect(flushes).toEqual([]); // not before the window closes
+  await sleep(80);
+  expect(flushes).toEqual([[1, ["a"]]]);
+  expect(d.pending(1)).toBe(0);
+});
+
+test("Debouncer batches a burst into one flush, in arrival order", async () => {
+  const flushes: string[][] = [];
+  const d = new Debouncer<string>(30, (_c, items) => flushes.push(items));
+  d.schedule(1, "a");
+  d.schedule(1, "b");
+  d.schedule(1, "c");
+  await sleep(80);
+  expect(flushes).toEqual([["a", "b", "c"]]);
+});
+
+test("Debouncer restarts the window on every arrival", async () => {
+  const flushes: string[][] = [];
+  const d = new Debouncer<string>(60, (_c, items) => flushes.push(items));
+  d.schedule(1, "a");
+  await sleep(30); // inside the window
+  d.schedule(1, "b"); // resets the timer
+  await sleep(30); // 60ms since "a" — would have flushed without the reset
+  expect(flushes).toEqual([]);
+  await sleep(80);
+  expect(flushes).toEqual([["a", "b"]]);
+});
+
+test("Debouncer keeps chats independent", async () => {
+  const flushes: Array<[number, string[]]> = [];
+  const d = new Debouncer<string>(30, (chat, items) => flushes.push([chat, items]));
+  d.schedule(1, "a1");
+  d.schedule(2, "b1");
+  d.schedule(1, "a2");
+  await sleep(80);
+  expect(flushes.sort((x, y) => x[0] - y[0])).toEqual([
+    [1, ["a1", "a2"]],
+    [2, ["b1"]],
+  ]);
+});
+
+test("Debouncer clear() drops the buffer without flushing (the /stop path)", async () => {
+  const flushes: string[][] = [];
+  const d = new Debouncer<string>(30, (_c, items) => flushes.push(items));
+  d.schedule(1, "a");
+  d.schedule(1, "b");
+  expect(d.clear(1)).toBe(2);
+  expect(d.pending(1)).toBe(0);
+  await sleep(80);
+  expect(flushes).toEqual([]); // nothing resurrects after the window
+  expect(d.clear(1)).toBe(0); // idempotent on an empty chat
+});
+
+test("Debouncer flushNow() dispatches immediately and cancels the timer", async () => {
+  const flushes: string[][] = [];
+  const d = new Debouncer<string>(1000, (_c, items) => flushes.push(items)); // window outlives the test
+  d.schedule(1, "a");
+  d.flushNow(1);
+  expect(flushes).toEqual([["a"]]);
+  await sleep(40);
+  expect(flushes).toEqual([["a"]]); // no second flush when the old timer would have fired
+  d.flushNow(2); // chat with nothing buffered: no-op
+  expect(flushes).toEqual([["a"]]);
+});
+
+test("Debouncer flushAll() drains every chat at shutdown", () => {
+  const flushes: Array<[number, string[]]> = [];
+  const d = new Debouncer<string>(1000, (chat, items) => flushes.push([chat, items]));
+  d.schedule(1, "a");
+  d.schedule(2, "b");
+  d.flushAll();
+  expect(flushes.sort((x, y) => x[0] - y[0])).toEqual([
+    [1, ["a"]],
+    [2, ["b"]],
+  ]);
+  expect(d.pending(1)).toBe(0);
+  expect(d.pending(2)).toBe(0);
+});
+
+test("a throwing onFlush does not break the debouncer", async () => {
+  const flushes: string[][] = [];
+  let first = true;
+  const d = new Debouncer<string>(30, (_c, items) => {
+    if (first) {
+      first = false;
+      throw new Error("boom");
+    }
+    flushes.push(items);
+  });
+  d.schedule(1, "a");
+  await sleep(80); // first flush throws and is swallowed
+  d.schedule(1, "b");
+  await sleep(80);
+  expect(flushes).toEqual([["b"]]);
 });
