@@ -33,7 +33,7 @@ import { scanThreats } from "./threats";
 import { redact } from "./redact";
 import { resolveBackend, transcribeVoice, shouldEchoTranscript, VOICE_MAX_SEC } from "./transcribe";
 import { shouldReview, runReview } from "./review";
-import { classifyUpdate, ChatQueues, SerialChain, isStopCommand } from "./dispatch";
+import { classifyUpdate, ChatQueues, SerialChain, Debouncer, isStopCommand } from "./dispatch";
 export { isStopCommand }; // poller.test.ts and external users keep their import path
 
 // ---------------------------------------------------------------------------
@@ -252,33 +252,13 @@ function stopChild(chatId: number): boolean {
 const chatQueues = new ChatQueues();
 const cbChain = new SerialChain();
 
-// Debounce buffer: holds messages per chat until DEBOUNCE_MS has passed with
-// no new arrivals, then flushes as a batch so rapid bursts become one Claude turn.
-const debounceBuf = new Map<number, { timer: ReturnType<typeof setTimeout>; msgs: TgMessage[] }>();
-
-function scheduleDebounced(chatId: number, msg: TgMessage) {
-  const existing = debounceBuf.get(chatId);
-  if (existing) {
-    clearTimeout(existing.timer);
-    existing.msgs.push(msg);
-    existing.timer = setTimeout(() => flushDebounced(chatId), DEBOUNCE_MS);
-  } else {
-    const entry = { msgs: [msg], timer: setTimeout(() => flushDebounced(chatId), DEBOUNCE_MS) };
-    debounceBuf.set(chatId, entry);
-  }
-}
-
-function flushDebounced(chatId: number) {
-  const entry = debounceBuf.get(chatId);
-  debounceBuf.delete(chatId);
-  if (!entry) return;
-  const { msgs } = entry;
-  if (msgs.length === 1) {
-    chatQueues.enqueue(chatId, () => handleMessage(msgs[0]));
-  } else {
-    chatQueues.enqueue(chatId, () => handleMessageBatch(msgs));
-  }
-}
+// Debounce: rapid bursts buffer per chat and flush as one batch turn after
+// DEBOUNCE_MS of quiet. Timer bookkeeping lives in dispatch.ts (unit-tested);
+// what a flush MEANS stays here. A single message keeps the exact old path.
+const debouncer = new Debouncer<TgMessage>(DEBOUNCE_MS, (chatId, msgs) => {
+  if (msgs.length === 1) chatQueues.enqueue(chatId, () => handleMessage(msgs[0]));
+  else chatQueues.enqueue(chatId, () => handleMessageBatch(msgs));
+});
 
 // Graceful shutdown: a deploy's systemctl restart must drain what was already
 // consumed from Telegram (offset is saved at fetch time — anything enqueued
@@ -1303,21 +1283,24 @@ async function handleMessage(msg: TgMessage) {
 
 /** Handles a rapid burst of messages as a single Claude turn.
  *  Called only when ≥2 messages arrive within DEBOUNCE_MS of each other. */
-async function handleMessageBatch(msgs: TgMessage[]) {
+async function handleMessageBatch(allMsgs: TgMessage[]) {
+  const chatId = allMsgs[0].chat.id;
+  // Allowlist per message, not per batch: in a group chat a burst can mix
+  // senders, and a stranger must neither ride along nor sink the batch.
+  const allow = loadAllowList();
+  const msgs = allMsgs.filter((m) => m.from && allow.has(String(m.from.id)));
+  if (msgs.length < allMsgs.length) {
+    console.log(redact(`[SKIP] ${allMsgs.length - msgs.length} unauthorized message(s) in batch for chat ${chatId}`));
+  }
+  if (!msgs.length) return;
   const first = msgs[0];
   const last = msgs[msgs.length - 1];
-  const chatId = first.chat.id;
-  if (!first.from) return;
-  const fromId = String(first.from.id);
-  const name = first.from.first_name || first.from.username || fromId;
-
-  if (!loadAllowList().has(fromId)) {
-    console.log(redact(`[SKIP] unauthorized ${name} (${fromId}) [batch:${msgs.length}]`));
-    return;
-  }
+  const fromId = String(first.from!.id);
+  const name = first.from!.first_name || first.from!.username || fromId;
 
   const parts: string[] = [];
   const historyParts: string[] = [];
+  const echoes: string[] = [];
 
   for (const msg of msgs) {
     const voice = voiceInfo(msg);
@@ -1341,6 +1324,8 @@ async function handleMessageBatch(msgs: TgMessage[]) {
         if (tr.text.trim()) {
           parts.push(voicePromptText(tr.text));
           historyParts.push(voiceHistoryNote(tr.text));
+          // Same low-confidence transcript echo the single-message path shows.
+          if (shouldEchoTranscript(tr.confidence)) echoes.push(`🎤 «${tr.text}»`);
         } else {
           parts.push("[voice note — empty]");
           historyParts.push("[voice note — empty]");
@@ -1429,13 +1414,14 @@ async function handleMessageBatch(msgs: TgMessage[]) {
     const directive = [devDirective, quizDirective].filter(Boolean).join("\n\n");
     const replyContext = replyContextLine(last.reply_to_message, botUserId, name) ?? "";
     const turnId = newTurnId();
+    const batchOpts = echoes.length ? { renderPrefix: echoes.join("\n") + "\n\n" } : {};
     const answer =
       (await streamClaude(
         buildPrompt(history, name, userMsg, recall, loadMemory(), skills, directive, replyContext, recentUploadsBlock()),
         chatId,
         placeholderId,
         model,
-        { env: { TELEGRAM_TURN_ID: turnId } },
+        { ...batchOpts, env: { TELEGRAM_TURN_ID: turnId } },
       )).trim() || "(no output)";
 
     const now = Math.floor(Date.now() / 1000);
@@ -1845,7 +1831,9 @@ async function handleStopDispatch(msg: TgMessage) {
   }
   const chatId = msg.chat.id;
   const hadRun = stopChild(chatId);
-  const dropped = chatQueues.drop(chatId);
+  // Buffered-but-undispatched messages die too — otherwise a message still in
+  // its debounce window would resurrect as a fresh turn seconds after the ✋.
+  const dropped = chatQueues.drop(chatId) + debouncer.clear(chatId);
   const text =
     hadRun || dropped
       ? `נעצר ✋${dropped ? ` (בוטלו גם ${dropped} הודעות שחיכו בתור)` : ""}`
@@ -2364,7 +2352,14 @@ async function main() {
           break;
         case "message": {
           const m = u.message!;
-          scheduleDebounced(m.chat.id, m);
+          if (parseQuizCommand(m.text ?? "", botUsername)) {
+            // Quiz commands are answered by the poller, never by claude — a
+            // batch prompt must not swallow them. Flush first so order holds.
+            debouncer.flushNow(m.chat.id);
+            chatQueues.enqueue(m.chat.id, () => handleMessage(m));
+          } else {
+            debouncer.schedule(m.chat.id, m);
+          }
           break;
         }
         // "ignore": nothing — same as today's else-fallthrough.
@@ -2376,6 +2371,9 @@ async function main() {
   // Drain: finish everything already consumed from Telegram, bounded well
   // under systemd's TimeoutStopSec (90s) so we exit before SIGKILL.
   const GRACE_MS = 80_000;
+  // Buffered messages join the queues first — the offset was saved at fetch
+  // time, so anything left in a debounce window would be lost forever.
+  debouncer.flushAll();
   await Promise.race([Promise.all([cbChain.idle(), chatQueues.idle()]), sleep(GRACE_MS)]);
   console.log("[BOT] drained — exiting");
   process.exit(0);

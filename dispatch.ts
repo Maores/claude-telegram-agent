@@ -99,3 +99,63 @@ export class SerialChain {
     return this.tail.then(() => {});
   }
 }
+
+/** Per-chat message debouncer: buffers a rapid burst and hands it to onFlush
+ *  as one batch after `delayMs` of quiet (each arrival restarts the timer).
+ *  Pure timer bookkeeping — what a flush MEANS is the caller's business. The
+ *  caller must also cover the two paths a timer can't see: clear() on /stop
+ *  (a stopped message must not resurrect when its window expires) and
+ *  flushAll() on shutdown (the offset is already saved, so anything left
+ *  buffered would be lost forever). */
+export class Debouncer<T> {
+  private buf = new Map<number, { timer: ReturnType<typeof setTimeout>; items: T[] }>();
+
+  constructor(
+    private delayMs: number,
+    private onFlush: (chatId: number, items: T[]) => void,
+  ) {}
+
+  /** Buffer one item and (re)start the chat's quiet-period timer. */
+  schedule(chatId: number, item: T): void {
+    const e = this.buf.get(chatId);
+    if (e) {
+      clearTimeout(e.timer);
+      e.items.push(item);
+      e.timer = setTimeout(() => this.flushNow(chatId), this.delayMs);
+    } else {
+      this.buf.set(chatId, { items: [item], timer: setTimeout(() => this.flushNow(chatId), this.delayMs) });
+    }
+  }
+
+  /** Flush one chat immediately (no-op when nothing is buffered). */
+  flushNow(chatId: number): void {
+    const e = this.buf.get(chatId);
+    if (!e) return;
+    clearTimeout(e.timer);
+    this.buf.delete(chatId);
+    try {
+      this.onFlush(chatId, e.items);
+    } catch (err: any) {
+      console.error(`[ERR] debounce flush (chat ${chatId}): ${err?.message ?? err}`);
+    }
+  }
+
+  /** Drop a chat's buffer without flushing (the /stop path). Returns count. */
+  clear(chatId: number): number {
+    const e = this.buf.get(chatId);
+    if (!e) return 0;
+    clearTimeout(e.timer);
+    this.buf.delete(chatId);
+    return e.items.length;
+  }
+
+  /** Flush every chat now (graceful-shutdown drain). */
+  flushAll(): void {
+    for (const chatId of [...this.buf.keys()]) this.flushNow(chatId);
+  }
+
+  /** Buffered items for a chat (observability + tests). */
+  pending(chatId: number): number {
+    return this.buf.get(chatId)?.items.length ?? 0;
+  }
+}
