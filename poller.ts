@@ -1917,10 +1917,10 @@ async function sendQuizQuestion(
   const state = loadQuizState();
   const picked =
     kind === "pattern"
-      ? pickPattern(questions, state.seenIds)
+      ? pickPattern(questions, state.seenIds, state.difficultyFilter)
       : kind === "diagram"
-        ? pickDiagram(questions, state.seenIds)
-        : pickByType(questions, typeForDay(state.dayIndex), state.seenIds);
+        ? pickDiagram(questions, state.seenIds, state.difficultyFilter)
+        : pickByType(questions, typeForDay(state.dayIndex), state.seenIds, state.difficultyFilter);
   if (!picked.question) {
     await tg("sendMessage", { chat_id: chatId, text: "לא מצאתי שאלה מתאימה במאגר." });
     return;

@@ -24,6 +24,7 @@ import {
   loadQuizState,
   saveQuizState,
   loadQuestions,
+  mergeQuestionBanks,
   type Question,
 } from "./quiz";
 
@@ -73,22 +74,22 @@ test("todayStr formats as YYYY-MM-DD", () => {
 
 // --- rotation -------------------------------------------------------------------
 
-test("rotation is the work-focused 7-day cycle and wraps", () => {
+test("rotation is Gilboa's 4-algo 7-day cycle and wraps", () => {
   expect(ROTATION).toEqual([
-    "system-design",
     "algo",
     "concept",
+    "algo",
     "behavioral",
+    "algo",
     "system-design",
-    "concept",
     "algo",
   ]);
-  expect(typeForDay(0)).toBe("system-design");
-  expect(typeForDay(1)).toBe("algo");
+  expect(typeForDay(0)).toBe("algo");
+  expect(typeForDay(1)).toBe("concept");
   expect(typeForDay(3)).toBe("behavioral");
-  expect(typeForDay(5)).toBe("concept");
-  expect(typeForDay(7)).toBe("system-design");
-  expect(typeForDay(12)).toBe("concept");
+  expect(typeForDay(5)).toBe("system-design");
+  expect(typeForDay(7)).toBe("algo");
+  expect(typeForDay(12)).toBe("system-design");
 });
 
 // --- hints -----------------------------------------------------------------------
@@ -151,6 +152,38 @@ test("pickPattern picks only questions with a pattern field", () => {
   const questions = [q({ id: "no-pat" }), q({ id: "with-pat", pattern: "sliding-window" })];
   const { question } = pickPattern(questions, []);
   expect(question?.id).toBe("with-pat");
+});
+
+test("pickByType honors the difficulty filter", () => {
+  const questions = [
+    q({ id: "easy-1", difficulty: "easy" }),
+    q({ id: "hard-1", difficulty: "hard" }),
+  ];
+  const { question } = pickByType(questions, "algo", [], ["hard"]);
+  expect(question?.id).toBe("hard-1");
+});
+
+test("questions without a difficulty pass any filter", () => {
+  const questions = [q({ id: "no-diff" }), q({ id: "easy-1", difficulty: "easy" })];
+  const { question } = pickByType(questions, "algo", [], ["hard"]);
+  expect(question?.id).toBe("no-diff");
+});
+
+test("an over-narrow difficulty filter falls back to the full pool", () => {
+  const questions = [q({ id: "easy-1", difficulty: "easy" })];
+  const { question } = pickByType(questions, "algo", [], ["hard"]);
+  expect(question?.id).toBe("easy-1"); // never dead-ends the daily send
+});
+
+test("pickDiagram and pickPattern accept the filter too", () => {
+  const questions = [
+    q({ id: "d-easy", difficulty: "easy", diagram_url: "https://assets.bytebytego.com/diagrams/a.png" }),
+    q({ id: "d-hard", difficulty: "hard", diagram_url: "https://assets.bytebytego.com/diagrams/b.png" }),
+    q({ id: "p-easy", difficulty: "easy", pattern: "two-pointers" }),
+    q({ id: "p-hard", difficulty: "hard", pattern: "sliding-window" }),
+  ];
+  expect(pickDiagram(questions, [], ["hard"]).question?.id).toBe("d-hard");
+  expect(pickPattern(questions, [], ["easy"]).question?.id).toBe("p-easy");
 });
 
 test("markSeen appends and caps at 500 ids", () => {
@@ -309,4 +342,46 @@ test("loadQuestions parses a JSON array and drops malformed entries", () => {
   process.env.QUIZ_QUESTIONS_FILE = file;
   const loaded = loadQuestions();
   expect(loaded.map((x) => x.id)).toEqual(["ok-1"]);
+});
+
+test("loadQuestions accepts an explicit path, ignoring the env override", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qzp-"));
+  const file = join(dir, "incoming.json");
+  require("node:fs").writeFileSync(file, JSON.stringify([q({ id: "from-path" })]));
+  process.env.QUIZ_QUESTIONS_FILE = join(dir, "does-not-exist.json");
+  expect(loadQuestions(file).map((x) => x.id)).toEqual(["from-path"]);
+  delete process.env.QUIZ_QUESTIONS_FILE;
+});
+
+// --- bank merging -----------------------------------------------------------------
+
+test("mergeQuestionBanks: incoming wins on id and title collisions, uniques survive", () => {
+  const ours = [
+    q({ id: "algo-1", title: "Two Sum" }), // id collision
+    q({ id: "ours-rob", title: "House Robber" }), // title collision under a new id
+    q({ id: "ours-unique", title: "Only We Have This" }),
+  ];
+  const incoming = [
+    q({ id: "algo-1", title: "Two Sum", lc_description: "full statement" }),
+    q({ id: "algo-blind75-22", title: "House  Robber!" }), // normalizes to the same title
+  ];
+  const res = mergeQuestionBanks(ours, incoming);
+  expect(res.merged.map((x) => x.id)).toEqual(["algo-1", "algo-blind75-22", "ours-unique"]);
+  expect(res.merged[0].lc_description).toBe("full statement");
+  expect(res.replacedOurs).toBe(2);
+  expect(res.keptOurs).toBe(1);
+  expect(res.dupesInIncoming).toBe(0);
+});
+
+test("mergeQuestionBanks: same title in another type is no collision; in-file dupes collapse", () => {
+  const ours = [q({ id: "c-scale", type: "concept", title: "Scaling" })];
+  const incoming = [
+    q({ id: "sd-scale", type: "system-design", title: "Scaling" }),
+    q({ id: "sd-scale", type: "system-design", title: "Scaling" }), // exact dupe in the file
+  ];
+  const res = mergeQuestionBanks(ours, incoming);
+  expect(res.merged.map((x) => x.id)).toEqual(["sd-scale", "c-scale"]);
+  expect(res.incoming).toBe(1);
+  expect(res.dupesInIncoming).toBe(1);
+  expect(res.keptOurs).toBe(1);
 });
