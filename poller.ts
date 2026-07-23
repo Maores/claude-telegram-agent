@@ -45,6 +45,12 @@ const TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS ?? 240_000);
 
+const MODEL_IDS: Record<string, string> = {
+  sonnet: "claude-sonnet-5",
+  opus: "claude-opus-4-8",
+  haiku: "claude-haiku-4-5",
+};
+
 const HISTORY_DIR = process.env.HISTORY_DIR ?? join(PROJECT_DIR, "history");
 const UPLOADS_DIR = process.env.UPLOADS_DIR ?? join(PROJECT_DIR, "uploads");
 const MEMORY_FILE = join(PROJECT_DIR, "memory", "MEMORY.md");
@@ -851,7 +857,7 @@ async function streamClaude(
 ): Promise<string> {
   const proc = Bun.spawn(
     // prettier-ignore
-    [CLAUDE_BIN, "-p", "--model", model, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions", ...(opts.extraArgs ?? [])],
+    [CLAUDE_BIN, "-p", "--model", MODEL_IDS[model] ?? model, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions", ...(opts.extraArgs ?? [])],
     {
       cwd: PROJECT_DIR,
       stdin: "pipe",
