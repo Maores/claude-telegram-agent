@@ -25,6 +25,7 @@ import {
   saveQuizState,
   loadQuestions,
   mergeQuestionBanks,
+  isPlaceholderAnswer,
   type Question,
 } from "./quiz";
 
@@ -270,6 +271,27 @@ test("quizEvalDirective asks for complexity feedback on algo questions", () => {
   expect(d).toContain("סיבוכיות");
 });
 
+test("isPlaceholderAnswer spots Gilboa's stub answers and nothing else", () => {
+  expect(isPlaceholderAnswer("Share your approach — describe the algorithm in plain English.")).toBe(true);
+  expect(isPlaceholderAnswer("I'll evaluate it when you reply.")).toBe(true);
+  expect(isPlaceholderAnswer("Use a hash map for O(n) lookups.")).toBe(false);
+});
+
+test("quizEvalDirective omits stub answers and carries lc_description when present", () => {
+  const stub = quizEvalDirective(
+    q({
+      answer: "Share your approach — I'll evaluate it when you reply.",
+      lc_description: "Given an array of integers nums and a target...",
+    }),
+    0,
+  );
+  expect(stub).not.toContain("Share your approach");
+  expect(stub).toContain("אין תשובת עזר");
+  expect(stub).toContain("Given an array of integers");
+  const real = quizEvalDirective(q({}), 0);
+  expect(real).toContain("התשובה המלאה");
+});
+
 // --- commands -----------------------------------------------------------------------
 
 test("parseQuizCommand recognizes the five commands, with optional bot mention", () => {
@@ -315,20 +337,29 @@ test("quiz state round-trips through its JSON file", () => {
 test("the shipped questions.json is valid and complete enough to run", () => {
   delete process.env.QUIZ_QUESTIONS_FILE;
   const qs = loadQuestions();
-  expect(qs.length).toBeGreaterThanOrEqual(75);
+  // Post-import floors (Gilboa bank merge, 2026-07-23): big enough to sustain
+  // the 4-algo rotation without fast repeats.
+  expect(qs.length).toBeGreaterThanOrEqual(600);
+  expect(qs.filter((x) => x.type === "algo").length).toBeGreaterThanOrEqual(150);
   const types = new Set(qs.map((x) => x.type));
   expect(types).toEqual(new Set(["algo", "concept", "behavioral", "system-design"]));
   const ids = new Set(qs.map((x) => x.id));
   expect(ids.size).toBe(qs.length);
+  let richAlgo = 0;
   for (const x of qs) {
+    expect(x.title.trim().length).toBeGreaterThan(0);
+    expect(x.prompt.trim().length).toBeGreaterThan(0);
+    expect(x.answer.trim().length).toBeGreaterThan(0);
     if (x.diagram_url) {
       expect(x.diagram_url.startsWith("https://assets.bytebytego.com/diagrams/")).toBe(true);
     }
-    if (x.type === "algo") {
-      expect(x.leetcode_url).toBeDefined();
-      expect(splitHints(x.hint).length).toBe(3);
-    }
+    // Stub answers are an algo-only compromise; every other type must have a
+    // real stored answer for /reveal and the eval directive.
+    if (x.type !== "algo") expect(isPlaceholderAnswer(x.answer)).toBe(false);
+    if (x.type === "algo" && x.leetcode_url && splitHints(x.hint).length === 3) richAlgo++;
   }
+  // Our fully-authored algo set (solution + 3 hints + LeetCode link) survives the merge.
+  expect(richAlgo).toBeGreaterThanOrEqual(25);
 });
 
 test("loadQuestions parses a JSON array and drops malformed entries", () => {
@@ -384,4 +415,31 @@ test("mergeQuestionBanks: same title in another type is no collision; in-file du
   expect(res.incoming).toBe(1);
   expect(res.dupesInIncoming).toBe(1);
   expect(res.keptOurs).toBe(1);
+});
+
+test("mergeQuestionBanks: an incoming stub never beats our real answer; uncontested stubs stay", () => {
+  const STUB = "Share your approach — I'll evaluate it when you reply.";
+  const ours = [q({ id: "algo-1", title: "Two Sum" })]; // fixture answer is a real solution
+  const incoming = [
+    q({ id: "algo-1", title: "Two Sum", answer: STUB }), // id collision → loses
+    q({ id: "algo-alias", title: "Two  Sum!", answer: STUB }), // title collision → loses
+    q({ id: "algo-new", title: "Brand New Problem", answer: STUB }), // no collision → kept
+  ];
+  const res = mergeQuestionBanks(ours, incoming);
+  expect(res.merged.map((x) => x.id).sort()).toEqual(["algo-1", "algo-new"]);
+  expect(isPlaceholderAnswer(res.merged.find((x) => x.id === "algo-1")!.answer)).toBe(false);
+  expect(res.keptOursOverIncoming).toBe(2);
+  expect(res.replacedOurs).toBe(0);
+  expect(res.keptOurs).toBe(1);
+});
+
+test("mergeQuestionBanks: stub vs stub — incoming still wins the collision", () => {
+  const STUB = "Share your approach — I'll evaluate it when you reply.";
+  const ours = [q({ id: "algo-1", answer: STUB })];
+  const incoming = [q({ id: "algo-1", answer: STUB, lc_description: "fresh statement" })];
+  const res = mergeQuestionBanks(ours, incoming);
+  expect(res.merged).toHaveLength(1);
+  expect(res.merged[0].lc_description).toBe("fresh statement");
+  expect(res.keptOursOverIncoming).toBe(0);
+  expect(res.replacedOurs).toBe(1);
 });

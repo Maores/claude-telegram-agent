@@ -14,6 +14,7 @@
 
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import {
+  isPlaceholderAnswer,
   loadQuestions,
   mergeQuestionBanks,
   questionsPath,
@@ -56,7 +57,11 @@ const res = mergeQuestionBanks(ours, incoming);
 console.log(
   `merge: ${res.incoming} incoming` +
     (res.dupesInIncoming ? ` (${res.dupesInIncoming} duplicate ids inside the file collapsed)` : "") +
-    `, ${res.replacedOurs} of ours replaced, ${res.keptOurs} of ours kept -> ${res.merged.length} total`,
+    `, ${res.replacedOurs} of ours replaced, ${res.keptOurs} of ours kept` +
+    (res.keptOursOverIncoming
+      ? `, ${res.keptOursOverIncoming} collisions kept OUR richer version (incoming stub dropped)`
+      : "") +
+    ` -> ${res.merged.length} total`,
 );
 
 function report(qs: Question[]): void {
@@ -77,7 +82,7 @@ function report(qs: Question[]): void {
   };
   flag(
     "placeholder-looking answers (check /reveal quality)",
-    qs.filter((q) => /share your approach|i'?ll evaluate/i.test(q.answer)),
+    qs.filter((q) => isPlaceholderAnswer(q.answer)),
   );
   flag(
     "short answers under 60 chars",

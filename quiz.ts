@@ -388,16 +388,25 @@ const RUBRIC: Record<QuestionType, string> = {
     "הערך את הרכיבים שהוזכרו, את ההתמודדות עם scale ואת ההתייחסות ל-trade-offs, מול התשובה המלאה.",
 };
 
+/** Gilboa's imported algo entries store a "Share your approach…" stub instead of
+ *  a solution; treat those as having no stored answer. */
+export function isPlaceholderAnswer(answer: string): boolean {
+  return /share your approach|i'?ll evaluate/i.test(answer);
+}
+
 export function quizEvalDirective(q: Question, hintsUsed: number): string {
   const hints = splitHints(q.hint);
   const lines = [
     "[הקשר פנימי: למאור נשלחה שאלת תרגול לראיונות והיא עדיין פתוחה.]",
     `השאלה (${TYPE_HE[q.type]}): ${q.title}`,
     q.prompt,
-    "",
-    "התשובה המלאה (לשיפוט בלבד, אל תדביק אותה כמו שהיא):",
-    q.answer,
   ];
+  if (q.lc_description) lines.push(q.lc_description);
+  if (isPlaceholderAnswer(q.answer)) {
+    lines.push("", "אין תשובת עזר שמורה לשאלה הזו; שפוט לפי הידע שלך.");
+  } else {
+    lines.push("", "התשובה המלאה (לשיפוט בלבד, אל תדביק אותה כמו שהיא):", q.answer);
+  }
   if (q.time_complexity) lines.push(`Time: ${q.time_complexity}`);
   if (q.space_complexity) lines.push(`Space: ${q.space_complexity}`);
   if (hintsUsed > 0 && hints.length) {
@@ -426,22 +435,40 @@ export interface MergeResult {
   dupesInIncoming: number; // duplicate ids inside the incoming file itself
   replacedOurs: number; // ours dropped because incoming covers them (id or title)
   keptOurs: number; // ours that survived alongside
+  keptOursOverIncoming: number; // collisions where ours won (their side dropped)
 }
 
-/** Merge an incoming bank over the existing one. Incoming wins every collision
- *  (same id, or same title within a type) since its entries carry the fuller
- *  fields. Existing questions without a collision are kept, so their ids in
- *  seenIds stay valid and the extra variety costs nothing. */
+/** Merge an incoming bank over the existing one. Incoming wins a collision
+ *  (same id, or same title within a type) UNLESS its answer is a placeholder
+ *  while ours is real — a question with an actual solution never loses to a
+ *  stub of itself. Non-colliding entries on both sides are kept, so existing
+ *  ids in seenIds stay valid and the extra variety costs nothing. */
 export function mergeQuestionBanks(existing: Question[], incoming: Question[]): MergeResult {
   const ids = new Set<string>();
   const uniqIncoming = incoming.filter((q) => (ids.has(q.id) ? false : (ids.add(q.id), true)));
-  const titles = new Set(uniqIncoming.map(titleKey));
-  const keep = existing.filter((q) => !ids.has(q.id) && !titles.has(titleKey(q)));
+  const ourById = new Map(existing.map((q) => [q.id, q]));
+  const ourByTitle = new Map(existing.map((q) => [titleKey(q), q]));
+  const losers = new Set<Question>(); // incoming entries beaten by a richer ours
+  const beatenOurIds = new Set<string>(); // ours covered by an accepted incoming entry
+  for (const q of uniqIncoming) {
+    const hits = [ourById.get(q.id), ourByTitle.get(titleKey(q))].filter(
+      (o, i, a): o is Question => !!o && a.indexOf(o) === i,
+    );
+    if (!hits.length) continue;
+    if (isPlaceholderAnswer(q.answer) && hits.some((o) => !isPlaceholderAnswer(o.answer))) {
+      losers.add(q);
+    } else {
+      for (const o of hits) beatenOurIds.add(o.id);
+    }
+  }
+  const accepted = uniqIncoming.filter((q) => !losers.has(q));
+  const keep = existing.filter((q) => !beatenOurIds.has(q.id));
   return {
-    merged: [...uniqIncoming, ...keep],
+    merged: [...accepted, ...keep],
     incoming: uniqIncoming.length,
     dupesInIncoming: incoming.length - uniqIncoming.length,
     replacedOurs: existing.length - keep.length,
     keptOurs: keep.length,
+    keptOursOverIncoming: losers.size,
   };
 }
