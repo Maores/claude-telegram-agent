@@ -215,18 +215,31 @@ function pickFromPool(
 }
 
 const isLeetCode = (q: Question) => q.tags.includes("blind75") || !!q.leetcode_url;
+const isResume = (q: Question) => q.tags.includes("resume");
+
+/** On non-algo days, this fraction of sends prefers an unseen question about
+ *  Maor's own resume projects (Telegram agent / certimanager) — steady
+ *  interview-story practice without crowding out the imported bank. */
+const RESUME_PRIORITY_P = 0.5;
 
 export function pickByType(
   questions: Question[],
   type: QuestionType,
   seen: string[],
   difficulty?: Difficulty[],
+  rng: () => number = Math.random,
 ): { question: Question | null; seen: string[] } {
   const pool = applyDifficulty(
     questions.filter((q) => q.type === type),
     difficulty,
   );
-  if (type !== "algo") return pickFromPool(pool, seen);
+  if (type !== "algo") {
+    const resumeUnseen = pool.filter((q) => isResume(q) && !seen.includes(q.id));
+    if (resumeUnseen.length && rng() < RESUME_PRIORITY_P) {
+      return { question: pickRandom(resumeUnseen), seen };
+    }
+    return pickFromPool(pool, seen);
+  }
   // Algo days prefer the LeetCode set first (guide's "LeetCode priority").
   const lcUnseen = pool.filter((q) => isLeetCode(q) && !seen.includes(q.id));
   if (lcUnseen.length) return { question: pickRandom(lcUnseen), seen };

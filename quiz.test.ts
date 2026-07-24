@@ -360,6 +360,26 @@ test("the shipped questions.json is valid and complete enough to run", () => {
   }
   // Our fully-authored algo set (solution + 3 hints + LeetCode link) survives the merge.
   expect(richAlgo).toBeGreaterThanOrEqual(25);
+  // Resume-project practice set (Telegram agent + certimanager) is present.
+  expect(qs.filter((x) => x.tags.includes("resume")).length).toBeGreaterThanOrEqual(20);
+});
+
+test("pickByType gives unseen resume questions priority on non-algo days, gated by the coin", () => {
+  const pool = [
+    q({ id: "c-1", type: "concept", title: "Plain One" }),
+    q({ id: "c-2", type: "concept", title: "Plain Two" }),
+    q({ id: "resume-x", type: "concept", title: "My Project", tags: ["resume", "telegram-agent"] }),
+  ];
+  for (let i = 0; i < 10; i++) {
+    const { question } = pickByType(pool, "concept", [], undefined, () => 0);
+    expect(question!.id).toBe("resume-x");
+  }
+  // Already seen → falls back to the normal pool even with a winning coin.
+  const seenRes = pickByType(pool, "concept", ["resume-x"], undefined, () => 0);
+  expect(["c-1", "c-2"]).toContain(seenRes.question!.id);
+  // Losing coin → normal pick from the full unseen pool.
+  const lost = pickByType(pool, "concept", [], undefined, () => 0.99);
+  expect(lost.question).not.toBeNull();
 });
 
 test("loadQuestions parses a JSON array and drops malformed entries", () => {
