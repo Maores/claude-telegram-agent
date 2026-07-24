@@ -1,5 +1,341 @@
 [
   {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-1",
+    "type": "system-design",
+    "title": "Telegram agent: end-to-end architecture",
+    "prompt": "Walk me through the architecture of your Telegram assistant. What happens from the moment you send a message until the reply appears?",
+    "answer": "Reference points: a Bun/TypeScript long-poll poller runs 24/7 on a DigitalOcean VPS as a systemd service (journald logs, Restart=always). Incoming message -> allowlist check -> a 3.5s debounce window batches rapid bursts into one turn. Each turn spawns a fresh `claude -p` (Claude Code CLI) with a prompt assembled from per-chat history, BM25-recalled past messages (SQLite FTS5), guarded long-term memory, and relevant skills. The CLI's stream-json stdout is parsed incrementally and throttle-edited into the Telegram message (~1.5s edits, 4096-char overflow splits). State lives in SQLite plus small JSON files written atomically (tmp+rename). Side systems: reminders/[AUTO] jobs, iCloud CalDAV calendar+tasks, monitors, and the daily quiz all hang off the same poller loop.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-2",
+    "type": "system-design",
+    "title": "Telegram agent: why a fresh process per message?",
+    "prompt": "Your bot spawns a fresh LLM CLI process for every message instead of keeping one long-running session. Defend that decision. What are the tradeoffs?",
+    "answer": "Reference points: isolation (a hung or crashed turn dies alone under its own timeout and can never poison the main loop), per-message model routing (cheap fast model by default, /opus escalation per message), least-privilege per session type (scheduled [AUTO] jobs run with a restricted tool surface), and config freshness (CLAUDE.md and memory are re-read every turn, so most behavior changes deploy without a restart). Continuity is rebuilt deliberately: injected history, recall, and memory instead of implicit context accumulation. Costs: cold-start latency per message and no free in-context continuity; both acceptable for a personal-assistant load profile.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-3",
+    "type": "system-design",
+    "title": "Telegram agent: safety for an LLM with shell access",
+    "prompt": "The assistant's LLM can run shell commands on its own server. How do you make destructive or outward-facing actions safe?",
+    "answer": "Reference points, defense in depth: (1) a PreToolUse guard hook with a hardline command blocklist, fail-closed even in full-permission mode, which also blocks edits to the guard/hook/env files themselves; (2) confirm-before-write: risky writes (calendar, deletions) are frozen as proposals and executed only when the user taps an inline approve button, one execution path; (3) capability absence: the Gmail connector has no send tool, so 'never send email' is enforced by architecture, not prompt; (4) untrusted-content quarantine: facts or procedures learned from emails/web/files are held back until explicitly approved; (5) secret redaction at the single send chokepoint; (6) a chat-id allowlist in front of everything.",
+    "difficulty": "hard"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-4",
+    "type": "system-design",
+    "title": "Telegram agent: safe self-modification",
+    "prompt": "Your bot can edit its own source code on the server it runs on. How did you design self-modification so a deploy can never lose or silently ship unreviewed code?",
+    "answer": "Reference points: the agent's policy is commit-to-a-branch, never hot-patch main. Its origin remote is deliberately credential-less, so it physically cannot push; a human fetches the branch straight off the server over ssh, reviews it on a desktop, and lands it as a normal PR. deploy.sh captures any uncommitted tracked edits to an autosave branch before running git reset --hard, so a deploy cannot destroy self-written code. The guard hook blocks the agent from editing the guard itself, the hook files, or the env. Real examples to tell: the message-debounce feature and a default-model upgrade were both written by the agent on the server, rescued, reviewed (and fixed), then merged.",
+    "difficulty": "hard"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-5",
+    "type": "concept",
+    "title": "Telegram agent: streaming replies without a streaming API",
+    "prompt": "Telegram has no streaming API. How do your replies still stream in live like ChatGPT?",
+    "answer": "Reference points: the CLI emits stream-json events on stdout; the poller parses them incrementally and edits a placeholder message in place via editMessageText, throttled to ~1.5s so Telegram's rate limits are respected. Overflow past Telegram's 4096-char limit rolls into follow-up messages. A typing indicator and emoji reaction acknowledge receipt before the first token. The stream parser is a separate tested module (stream.ts); partial output is preserved if a turn is stopped mid-stream with /stop.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-6",
+    "type": "concept",
+    "title": "Telegram agent: the message debounce",
+    "prompt": "What is the message-debounce feature in your bot, why does it exist, and why is the window 3.5 seconds?",
+    "answer": "Reference points: people send one thought as several rapid messages; without batching, each spawns its own LLM turn that answers a fragment. A quiet-window debounce buffers messages and flushes them as ONE combined turn. The window resets on every arrival, so it measures the gap between messages, not total typing time. It started at 2s and was widened to 3.5s from real usage (iPhone typing gaps between sends). The interesting engineering was the seams: the shutdown drain flushes the buffer so a deploy can't eat messages, /stop clears it, quiz commands are handled in code and must not leak into a batched prompt, and the allowlist is checked per sender, not per batch.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-7",
+    "type": "concept",
+    "title": "Telegram agent: memory that resists prompt injection",
+    "prompt": "How does your assistant's long-term memory work, and how do you stop prompt-injected 'facts' from an email or web page from poisoning it?",
+    "answer": "Reference points: core facts live in SQLite and are injected into every prompt. Writes are guarded by provenance: facts the user states are active immediately; anything derived from outside content (email, web, files) is quarantined and unused until the user explicitly promotes it. Entries are threat-scanned on write, size budgets force consolidation instead of unbounded growth, and every change lands in an audit journal with soft-delete. Retrieval over the full chat archive is BM25/FTS5 keyword search, a deliberate no-embeddings choice: simpler, debuggable, and good enough for one user's history.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-8",
+    "type": "concept",
+    "title": "Telegram agent: Hebrew, English, and BiDi rendering",
+    "prompt": "Your bot replies in Hebrew, which is right-to-left. What breaks when English tokens are mixed into RTL text, and how did you solve it?",
+    "answer": "Reference points: the Unicode BiDi algorithm can visually reorder mixed-direction lines; the worst offender is an English term followed by an em-dash or colon then Hebrew, which reliably scrambles. The fix is rules baked into the bot's system prompt: never separate scripts with a dash/colon, put standalone LTR tokens (URLs, file paths, commands) on their own lines, give each language its own line when explaining, and never end an RTL sentence with a bare LTR token. This came from a real rendering bug report and is a good story about localization details that unit tests don't catch.",
+    "difficulty": "easy"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-9",
+    "type": "behavioral",
+    "title": "Telegram agent: a production incident",
+    "prompt": "Tell me about a production incident on your Telegram assistant and how you debugged it. (Answer in STAR form.)",
+    "answer": "Pick one real incident and STAR it. Strong options: (1) the two-pollers war: the tmux-run poller died silently and took its logs; after migrating to systemd, any second poller instance caused Telegram 409 conflicts, so the rule became exactly one consumer of getUpdates, verified with a kill-test. (2) The deploy that ate a button press: restarts dropped consumed-but-unprocessed updates; fixed with graceful drain (SIGTERM stops fetching, drains queues up to 80s, then exits), diagnosed via offset-file mtime and pending_update_count forensics. (3) Auth expiry: the CLI's OAuth token expired after ~28h causing 401s; fixed with a long-lived token in the service env plus a runbook.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-10",
+    "type": "behavioral",
+    "title": "Telegram agent: saying no to a feature",
+    "prompt": "Tell me about a time you deliberately cut scope or said no to a capability on this project, and why.",
+    "answer": "Reference stories: (1) Email sending: chose drafts-only. The connector deliberately has no send tool, so the bot composes a draft, the user approves it in chat, the draft lands in Gmail, and the human presses Send. Turning 'the bot could send email' from a risk into an architectural impossibility was worth more than the feature. (2) LLM-based message routing: rejected a per-message classifier call because it would re-pay CLI startup latency on every message; shipped cheap keyword/prefix routing instead. The theme to land: on an agent with real-world side effects, the safest capability is one that structurally does not exist.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-11",
+    "type": "behavioral",
+    "title": "Telegram agent: hardest tradeoff",
+    "prompt": "What is the hardest architectural tradeoff you made on the Telegram assistant, and would you decide differently today?",
+    "answer": "No single right answer; strong candidates: (1) fresh process per message vs a persistent LLM session (isolation and routing vs latency and rebuilt continuity); (2) long-polling vs webhooks (simplicity on one small VPS vs instant delivery and horizontal scale); (3) SQLite + small JSON state files vs one proper database (transparent, atomic-rename simple, but state is scattered); (4) no embeddings, BM25 only (debuggable, but semantic recall is weaker). A good answer names the constraint that drove the choice (single user, single small VPS, safety-first) and states what threshold would flip the decision.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "telegram-agent"
+    ],
+    "id": "resume-ta-12",
+    "type": "system-design",
+    "title": "Telegram agent: scaling from 1 user to 100",
+    "prompt": "The assistant serves one user today. What would you change to serve 100 users safely?",
+    "answer": "Reference points: switch long-poll to webhooks behind a small HTTP service; shard state per user (history, memory, quiz, reminders) instead of global files; per-chat serialized queues with global concurrency limits on LLM spawns; per-user auth and secrets (each user's own connector tokens), turning the allowlist into a real identity model; per-user quotas to bound cost; observability (structured logs, per-user usage metrics, alerting); and a hard look at the guard model, because 100 users means 100 sources of prompt injection against shared infrastructure. Bonus: the confirm-button and quarantine patterns already generalize per user.",
+    "difficulty": "hard"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-1",
+    "type": "system-design",
+    "title": "certimanager: end-to-end architecture",
+    "prompt": "Walk me through the architecture of certimanager, your certification-tracking SaaS.",
+    "answer": "Reference points: a Hebrew-language, RTL-first web app for a manager overseeing ~150 field employees with time-limited certifications. Next.js 16 App Router + React 19 frontend styled with Tailwind v4; Supabase supplies Postgres, Auth, and Storage (certification images). middleware.ts gates every /dashboard route behind auth; Supabase access goes through separate client and server factories (SSR-safe). Feature areas: employee CRUD, certification CRUD with image upload, cert-type management, course-candidates with a promotion flow, bulk Excel import, tasks, reports/timeline, and an in-app feedback inbox. Deployed on Render with auto-deploy from master; Vitest unit tests (507 passing) plus Playwright e2e and a staging smoke test.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-2",
+    "type": "system-design",
+    "title": "certimanager: multi-tenancy in two layers",
+    "prompt": "How does multi-tenancy work in certimanager, and why did you implement it in two layers?",
+    "answer": "Reference points: every query scopes rows by manager_id = auth.uid(). The application layer is the first line: every server action and page-level fetch includes the filter explicitly. Supabase Row Level Security is the second line: policies enforce the same predicate inside Postgres, so a forgotten filter in app code fails closed at the database instead of leaking another tenant's data. The discipline: when adding any new data access, check both places. This is a textbook defense-in-depth story: the DB guarantees isolation, the app layer keeps queries efficient and intent explicit.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-3",
+    "type": "system-design",
+    "title": "certimanager: schema evolution with migrations",
+    "prompt": "How do you evolve certimanager's database schema safely while a real user depends on it?",
+    "answer": "Reference points: a base schema.sql plus ~20 incremental, numbered migration files applied strictly in order. New requirements never edit the base schema; they land as a new migration, so any environment (fresh local setup, staging, production) reaches the same state by replaying the sequence. Local setup is reproducible: create a Supabase project, run the schema in the SQL editor, apply migrations. The talking point: migrations-as-append-only-log is what makes a solo project safe to change months later, and it pairs with the test suite as the deploy gate.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-4",
+    "type": "system-design",
+    "title": "certimanager: design the expiry-notification system",
+    "prompt": "certimanager tracks expiry dates but push notifications (WhatsApp/SMS/mail) are not built yet. Design that system.",
+    "answer": "Reference points for a strong answer: a scheduled job (cron or Supabase scheduled/edge function) scans certifications entering configurable windows (30/14/7/0 days); a notifications state table records what was already sent per certification+threshold so alerts are idempotent and fire once; a channel abstraction (mail first, WhatsApp/SMS via a provider like Twilio later) with per-manager preferences; templates in Hebrew with correct RTL; timezone-correct date math; retries with backoff and a dead-letter log for failed sends; and a digest mode (one morning summary vs per-cert spam). Bonus points: cost control per channel and an unsubscribe/quiet-hours policy.",
+    "difficulty": "hard"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-5",
+    "type": "concept",
+    "title": "certimanager: why Supabase?",
+    "prompt": "Why did you pick Supabase for certimanager instead of building your own backend, and what are the tradeoffs?",
+    "answer": "Reference points: as a solo developer with a real user waiting, managed Postgres + Auth + Storage + RLS bought product velocity: no auth service to write, no file-storage plumbing, SQL-first with real migrations instead of an ORM lock-in. The client uses only the anon/public key and RLS is the security model; the service-role key never ships to the browser. Tradeoffs to name honestly: vendor coupling (auth and RLS idioms are Supabase-shaped), RLS policies add a second place where authorization logic lives, and local/offline development needs more setup than a plain SQLite app.",
+    "difficulty": "easy"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-6",
+    "type": "concept",
+    "title": "certimanager: the Excel bulk import",
+    "prompt": "How does the Excel bulk import work in certimanager, and what makes importing real-world spreadsheets hard?",
+    "answer": "Reference points: a dedicated parser module (lib/excel-parser.ts) turns the manager's xlsx files into employees plus certifications. The hard parts are all real-world messiness: inconsistent headers, date cells that arrive as strings/serials in mixed formats (ISO date-formatting fixes were real bugs), duplicate rows needing dedup, and partially-filled records. The honest engineering story: the format ultimately has to match the actual files the real manager uses, which needs a working session with him; until then the import is built against samples with validation before anything is committed to the database.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-7",
+    "type": "concept",
+    "title": "certimanager: testing strategy",
+    "prompt": "What is your testing strategy on certimanager, and why does it look like that?",
+    "answer": "Reference points: three layers. Vitest unit tests (507 passing) cover parsing, date logic, and helpers; Playwright end-to-end tests drive real flows in a browser; and a staging smoke test runs against a deployed environment. The whole suite runs in about 80 seconds via one command (npm run test:all), which matters: a solo maintainer only keeps running tests that are fast. Deploys ride Render auto-deploy from master, so the suite is effectively the deploy gate. The talking point: with one developer and a real user, tests are not bureaucracy, they are the only reviewer.",
+    "difficulty": "easy"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-8",
+    "type": "concept",
+    "title": "certimanager: the auth flow",
+    "prompt": "Describe certimanager's authentication flow from login to a protected dashboard page render.",
+    "answer": "Reference points: Supabase Auth manages users (the first account is created from the Supabase dashboard, deliberate for a closed system with no self-signup). Login exchanges credentials for a session persisted in cookies. middleware.ts intercepts every /dashboard request and redirects unauthenticated visitors to login: one chokepoint instead of per-page checks. Server components and server actions get their own Supabase server client (cookie-aware factory) so SSR reads run as the logged-in user, which is also what makes RLS's auth.uid() correct on the server side. Client components use a separate browser-client factory.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-9",
+    "type": "behavioral",
+    "title": "certimanager: building for a real user",
+    "prompt": "certimanager has a real user, a manager of ~150 field employees. Tell me how working with a real user shaped the product.",
+    "answer": "Reference stories: the course-candidates promotion flow exists because his actual process is 'send people to a course, then certify them', not just CRUD; the in-app feedback inbox exists so he can report issues from the field without leaving the app; the Excel import is shaped around his real spreadsheets and honestly still needs a sit-down with his actual files; a mobile bug (a dropdown needing a second tap) surfaced only because he uses it from the field on a phone; and the whole UI is Hebrew-first RTL because that's who uses it. The theme: requirements came from his workflow, and several backlog items are literally his words.",
+    "difficulty": "easy"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-10",
+    "type": "behavioral",
+    "title": "certimanager: a bug that reached the user",
+    "prompt": "Tell me about a bug in certimanager that reached the real user, and how you handled it. (STAR form.)",
+    "answer": "Reference candidates to STAR: (1) date-format bugs: dates parsed or displayed inconsistently (ISO formatting fixes are in the recent history), risky in an app whose whole point is expiry dates; the fix included normalizing formats and unit tests around date handling. (2) The mobile dropdown that needed a second tap, reported from field usage, likely an event/hydration quirk; fixed and pending verification on his device. A strong close: what changed systemically, i.e. tests added around the fixed area and the in-app feedback inbox shortening the report-to-fix loop.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-11",
+    "type": "behavioral",
+    "title": "certimanager: running a product solo",
+    "prompt": "You are the product manager, developer, QA, and support for certimanager. How do you keep that sustainable?",
+    "answer": "Reference points: a backlog fed by user meetings and the in-app feedback inbox, so priorities come from real usage, not guesses; incremental numbered migrations so schema changes months apart stay safe; a fast three-layer test suite (unit, e2e, staging smoke, ~80s) acting as the reviewer; Render auto-deploy from master so shipping is push-and-watch; and honest deferral: features that need the user's input (the real xlsx formats, notification channels) are parked as open questions instead of guessed at. 317 commits of steady small increments rather than big-bang rewrites.",
+    "difficulty": "medium"
+  },
+  {
+    "category": "resume",
+    "source": "resume-prep",
+    "tags": [
+      "resume",
+      "certimanager"
+    ],
+    "id": "resume-cm-12",
+    "type": "concept",
+    "title": "Your two resume projects, compared",
+    "prompt": "Compare your two main projects, the Telegram agent and certimanager. Where do their architectures differ and why, and what do they share?",
+    "answer": "Reference points: they solve opposite problems. certimanager is a classic multi-tier SaaS: browser frontend, managed Postgres backend, and the core risk is data isolation, answered with two-layer tenancy (app filter + RLS). The Telegram agent is a long-running stateful service wrapping an LLM CLI, where the core risk is an AI taking real-world actions, answered with guard hooks, confirm buttons, capability absence, and quarantined memory. Different delivery too: Render auto-deploy vs a VPS with systemd and a rescue-aware deploy script. Shared DNA: TypeScript, tests as the deploy gate (594 and 507 tests), small incremental changes, Hebrew/RTL first-class, and both serve one real demanding user.",
+    "difficulty": "medium"
+  },
+  {
     "category": "behavioral",
     "source": "yangshun/tech-interview-handbook (MIT)",
     "tags": [
