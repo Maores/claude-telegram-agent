@@ -18,7 +18,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt } from "./reminders.ts";
-import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWindow, todayStr, typeForDay, pickByType, pickDiagram, pickPattern, markSeen, splitHints, formatQuestion, splitForCaption, quizStartKeyboard, quizNextKeyboard, parseQzCallback, quizEvalDirective, parseQuizCommand, shouldAttachQuizDirective, type QzCallback, type QuizCommand, type QuizState } from "./quiz";
+import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWindow, todayStr, typeForDay, pickByType, pickDiagram, pickPattern, markSeen, splitHints, formatQuestion, splitForCaption, quizStartKeyboard, quizNextKeyboard, parseQzCallback, quizEvalDirective, parseQuizCommand, shouldAttachQuizDirective, isPlaceholderAnswer, type QzCallback, type QuizCommand, type QuizState } from "./quiz";
 import { takePending, consumeAction, validateArgv, pruneActions, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
 import { StreamParser, displayText } from "./stream.ts";
@@ -1923,10 +1923,10 @@ async function sendQuizQuestion(
   const state = loadQuizState();
   const picked =
     kind === "pattern"
-      ? pickPattern(questions, state.seenIds)
+      ? pickPattern(questions, state.seenIds, state.difficultyFilter)
       : kind === "diagram"
-        ? pickDiagram(questions, state.seenIds)
-        : pickByType(questions, typeForDay(state.dayIndex), state.seenIds);
+        ? pickDiagram(questions, state.seenIds, state.difficultyFilter)
+        : pickByType(questions, typeForDay(state.dayIndex), state.seenIds, state.difficultyFilter);
   if (!picked.question) {
     await tg("sendMessage", { chat_id: chatId, text: "לא מצאתי שאלה מתאימה במאגר." });
     return;
@@ -1991,7 +1991,9 @@ async function handleQuizCommand(cmd: QuizCommand, chatId: number) {
       return;
     }
     if (cmd === "reveal") {
-      const lines = ["הפתרון המלא:", "", q.answer];
+      const lines = isPlaceholderAnswer(q.answer)
+        ? ["אין פתרון שמור לשאלה הזו בבנק; אפשר לבקש ממני פתרון מלא כאן בצ'אט."]
+        : ["הפתרון המלא:", "", q.answer];
       if (q.solution_code) lines.push("", q.solution_code);
       if (q.time_complexity) lines.push("", `Time: ${q.time_complexity}`);
       if (q.space_complexity) lines.push(`Space: ${q.space_complexity}`);

@@ -24,12 +24,14 @@ import { dirname, join } from "node:path";
 
 export type QuestionType = "algo" | "concept" | "behavioral" | "system-design";
 
+export type Difficulty = "easy" | "medium" | "hard";
+
 export interface Question {
   id: string;
   type: QuestionType;
   category: string;
   title: string;
-  difficulty?: "easy" | "medium" | "hard";
+  difficulty?: Difficulty;
   prompt: string;
   answer: string;
   hint?: string; // up to 3 hints separated by "||"
@@ -53,6 +55,7 @@ export interface QuizState {
   seenIds: string[];
   hintsUsed: number;
   sentAtS: number; // when the active question went out (epoch s)
+  difficultyFilter?: Difficulty[]; // when set, every pick prefers these difficulties
 }
 
 // ---------------------------------------------------------------------------
@@ -61,7 +64,7 @@ export interface QuizState {
 
 const VALID_TYPES: QuestionType[] = ["algo", "concept", "behavioral", "system-design"];
 
-function questionsPath(): string {
+export function questionsPath(): string {
   return process.env.QUIZ_QUESTIONS_FILE ?? join(import.meta.dir, "data", "questions.json");
 }
 
@@ -71,10 +74,10 @@ function statePath(): string {
 
 /** Read the question bank, dropping anything that doesn't match the schema —
  *  a malformed entry must never break the daily send. */
-export function loadQuestions(): Question[] {
+export function loadQuestions(path = questionsPath()): Question[] {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(questionsPath(), "utf8"));
+    raw = JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return [];
   }
@@ -140,15 +143,16 @@ export function saveQuizState(state: QuizState): void {
 // Schedule
 // ---------------------------------------------------------------------------
 
-/** Work-focused week (Maor, 2026-07-07): 5 of 7 days on job-interview material
- *  (design/concept/behavioral), 2 algo days to keep LeetCode practice alive. */
+/** Gilboa's mix (Maor, 2026-07-22, replacing the 2026-07-07 work-focused week):
+ *  4 algo days for LeetCode volume, one day each of concept/behavioral/design.
+ *  Chosen together with the imported bank, whose 165 algo questions sustain it. */
 export const ROTATION: QuestionType[] = [
-  "system-design",
   "algo",
   "concept",
+  "algo",
   "behavioral",
+  "algo",
   "system-design",
-  "concept",
   "algo",
 ];
 
@@ -184,6 +188,15 @@ function pickRandom<T>(pool: T[]): T {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+/** Optional difficulty narrowing (guide v2): questions with no difficulty field
+ *  always pass, and an over-narrow filter falls back to the full pool so the
+ *  daily send can never dead-end on it. */
+function applyDifficulty(pool: Question[], filter?: Difficulty[]): Question[] {
+  if (!filter?.length) return pool;
+  const narrowed = pool.filter((q) => !q.difficulty || filter.includes(q.difficulty));
+  return narrowed.length ? narrowed : pool;
+}
+
 /** Core picker: unseen from the pool; when the whole pool was seen, forget the
  *  pool's ids (per-type reset, per the guide) and start the cycle over. */
 function pickFromPool(
@@ -207,8 +220,12 @@ export function pickByType(
   questions: Question[],
   type: QuestionType,
   seen: string[],
+  difficulty?: Difficulty[],
 ): { question: Question | null; seen: string[] } {
-  const pool = questions.filter((q) => q.type === type);
+  const pool = applyDifficulty(
+    questions.filter((q) => q.type === type),
+    difficulty,
+  );
   if (type !== "algo") return pickFromPool(pool, seen);
   // Algo days prefer the LeetCode set first (guide's "LeetCode priority").
   const lcUnseen = pool.filter((q) => isLeetCode(q) && !seen.includes(q.id));
@@ -219,15 +236,17 @@ export function pickByType(
 export function pickDiagram(
   questions: Question[],
   seen: string[],
+  difficulty?: Difficulty[],
 ): { question: Question | null; seen: string[] } {
-  return pickFromPool(questions.filter((q) => !!q.diagram_url), seen);
+  return pickFromPool(applyDifficulty(questions.filter((q) => !!q.diagram_url), difficulty), seen);
 }
 
 export function pickPattern(
   questions: Question[],
   seen: string[],
+  difficulty?: Difficulty[],
 ): { question: Question | null; seen: string[] } {
-  return pickFromPool(questions.filter((q) => !!q.pattern), seen);
+  return pickFromPool(applyDifficulty(questions.filter((q) => !!q.pattern), difficulty), seen);
 }
 
 // ---------------------------------------------------------------------------
@@ -369,16 +388,25 @@ const RUBRIC: Record<QuestionType, string> = {
     "הערך את הרכיבים שהוזכרו, את ההתמודדות עם scale ואת ההתייחסות ל-trade-offs, מול התשובה המלאה.",
 };
 
+/** Gilboa's imported algo entries store a "Share your approach…" stub instead of
+ *  a solution; treat those as having no stored answer. */
+export function isPlaceholderAnswer(answer: string): boolean {
+  return /share your approach|i'?ll evaluate/i.test(answer);
+}
+
 export function quizEvalDirective(q: Question, hintsUsed: number): string {
   const hints = splitHints(q.hint);
   const lines = [
     "[הקשר פנימי: למאור נשלחה שאלת תרגול לראיונות והיא עדיין פתוחה.]",
     `השאלה (${TYPE_HE[q.type]}): ${q.title}`,
     q.prompt,
-    "",
-    "התשובה המלאה (לשיפוט בלבד, אל תדביק אותה כמו שהיא):",
-    q.answer,
   ];
+  if (q.lc_description) lines.push(q.lc_description);
+  if (isPlaceholderAnswer(q.answer)) {
+    lines.push("", "אין תשובת עזר שמורה לשאלה הזו; שפוט לפי הידע שלך.");
+  } else {
+    lines.push("", "התשובה המלאה (לשיפוט בלבד, אל תדביק אותה כמו שהיא):", q.answer);
+  }
   if (q.time_complexity) lines.push(`Time: ${q.time_complexity}`);
   if (q.space_complexity) lines.push(`Space: ${q.space_complexity}`);
   if (hintsUsed > 0 && hints.length) {
@@ -391,4 +419,56 @@ export function quizEvalDirective(q: Question, hintsUsed: number): string {
     "אם ההודעה החדשה לא קשורה לשאלה: ענה עליה כרגיל לגמרי והתעלם מהשאלה הפתוחה.",
   );
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Bank merging (scripts/merge-questions.ts drives this when importing a bank)
+// ---------------------------------------------------------------------------
+
+/** Same question, different id: normalize title-within-type for collision checks. */
+const titleKey = (q: Question) =>
+  `${q.type}:${q.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()}`;
+
+export interface MergeResult {
+  merged: Question[];
+  incoming: number; // valid incoming questions (after in-file dedupe)
+  dupesInIncoming: number; // duplicate ids inside the incoming file itself
+  replacedOurs: number; // ours dropped because incoming covers them (id or title)
+  keptOurs: number; // ours that survived alongside
+  keptOursOverIncoming: number; // collisions where ours won (their side dropped)
+}
+
+/** Merge an incoming bank over the existing one. Incoming wins a collision
+ *  (same id, or same title within a type) UNLESS its answer is a placeholder
+ *  while ours is real — a question with an actual solution never loses to a
+ *  stub of itself. Non-colliding entries on both sides are kept, so existing
+ *  ids in seenIds stay valid and the extra variety costs nothing. */
+export function mergeQuestionBanks(existing: Question[], incoming: Question[]): MergeResult {
+  const ids = new Set<string>();
+  const uniqIncoming = incoming.filter((q) => (ids.has(q.id) ? false : (ids.add(q.id), true)));
+  const ourById = new Map(existing.map((q) => [q.id, q]));
+  const ourByTitle = new Map(existing.map((q) => [titleKey(q), q]));
+  const losers = new Set<Question>(); // incoming entries beaten by a richer ours
+  const beatenOurIds = new Set<string>(); // ours covered by an accepted incoming entry
+  for (const q of uniqIncoming) {
+    const hits = [ourById.get(q.id), ourByTitle.get(titleKey(q))].filter(
+      (o, i, a): o is Question => !!o && a.indexOf(o) === i,
+    );
+    if (!hits.length) continue;
+    if (isPlaceholderAnswer(q.answer) && hits.some((o) => !isPlaceholderAnswer(o.answer))) {
+      losers.add(q);
+    } else {
+      for (const o of hits) beatenOurIds.add(o.id);
+    }
+  }
+  const accepted = uniqIncoming.filter((q) => !losers.has(q));
+  const keep = existing.filter((q) => !beatenOurIds.has(q.id));
+  return {
+    merged: [...accepted, ...keep],
+    incoming: uniqIncoming.length,
+    dupesInIncoming: incoming.length - uniqIncoming.length,
+    replacedOurs: existing.length - keep.length,
+    keptOurs: keep.length,
+    keptOursOverIncoming: losers.size,
+  };
 }
