@@ -15,6 +15,7 @@ import {
   isStopCommand,
   outcomeReaction,
   parseFuCallback,
+  parseCustomSnoozeTime,
   parseFuuCallback,
   fuKeyboard,
   snoozeKeyboard,
@@ -406,6 +407,7 @@ test("outcomeReaction maps success/failure to 👍/👎", () => {
 test("parseFuCallback parses valid data and rejects junk", () => {
   expect(parseFuCallback("fu:done:f3")).toEqual({ action: "done", id: "f3" });
   expect(parseFuCallback("fu:s1h:f12")).toEqual({ action: "s1h", id: "f12" });
+  expect(parseFuCallback("fu:scus:f9")).toEqual({ action: "scus", id: "f9" });
   expect(parseFuCallback("fu:nope:f1")).toBeNull();
   expect(parseFuCallback("cal:yes:1")).toBeNull(); // future namespaces are not ours
   expect(parseFuCallback("")).toBeNull();
@@ -417,8 +419,35 @@ test("fuKeyboard / snoozeKeyboard carry the follow-up id in callback_data", () =
   expect(flat).toEqual(["fu:done:f7", "fu:later:f7"]);
   const sk = snoozeKeyboard("f7") as any;
   expect(sk.inline_keyboard.flat().map((b: any) => b.callback_data)).toEqual([
-    "fu:s1h:f7", "fu:seve:f7", "fu:stom:f7",
+    "fu:s1h:f7", "fu:seve:f7", "fu:stom:f7", "fu:scus:f7",
   ]);
+});
+
+test("parseCustomSnoozeTime handles clock times, tomorrow, and relative phrasing", () => {
+  // Fixed "now": today at 12:00 local.
+  const base = new Date();
+  const now = Math.floor(
+    new Date(base.getFullYear(), base.getMonth(), base.getDate(), 12, 0, 0, 0).getTime() / 1000,
+  );
+  const at = (dayOffset: number, h: number, m: number) =>
+    Math.floor(
+      new Date(base.getFullYear(), base.getMonth(), base.getDate() + dayOffset, h, m, 0, 0).getTime() / 1000,
+    );
+  expect(parseCustomSnoozeTime("18:30", now)).toBe(at(0, 18, 30));
+  expect(parseCustomSnoozeTime("ב18:30", now)).toBe(at(0, 18, 30));
+  expect(parseCustomSnoozeTime("ב-6:45", now)).toBe(at(1, 6, 45)); // past today → tomorrow
+  expect(parseCustomSnoozeTime("9", now)).toBe(at(1, 9, 0)); // past today → tomorrow
+  expect(parseCustomSnoozeTime("מחר 9", now)).toBe(at(1, 9, 0));
+  expect(parseCustomSnoozeTime("מחר 09:30", now)).toBe(at(1, 9, 30));
+  expect(parseCustomSnoozeTime("בעוד שעה", now)).toBe(now + 3600);
+  expect(parseCustomSnoozeTime("בעוד שעתיים", now)).toBe(now + 7200);
+  expect(parseCustomSnoozeTime("בעוד חצי שעה", now)).toBe(now + 1800);
+  expect(parseCustomSnoozeTime("בעוד 45 דקות", now)).toBe(now + 45 * 60);
+  expect(parseCustomSnoozeTime("בעוד 3 שעות", now)).toBe(now + 3 * 3600);
+  expect(parseCustomSnoozeTime("25:00", now)).toBeNull();
+  expect(parseCustomSnoozeTime("12:70", now)).toBeNull();
+  expect(parseCustomSnoozeTime("מחרתיים 9", now)).toBeNull();
+  expect(parseCustomSnoozeTime("תודה רבה", now)).toBeNull();
 });
 
 test("parseFuuCallback parses undo data and rejects junk", () => {

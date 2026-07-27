@@ -292,13 +292,75 @@ export function outcomeReaction(ok: boolean): string {
 // ---------------------------------------------------------------------------
 
 export interface FuCallback {
-  action: "done" | "later" | "s1h" | "seve" | "stom";
+  action: "done" | "later" | "s1h" | "seve" | "stom" | "scus";
   id: string;
 }
 
 export function parseFuCallback(data: string): FuCallback | null {
-  const m = /^fu:(done|later|s1h|seve|stom):([\w-]+)$/.exec(data ?? "");
+  const m = /^fu:(done|later|s1h|seve|stom|scus):([\w-]+)$/.exec(data ?? "");
   return m ? { action: m[1] as FuCallback["action"], id: m[2] } : null;
+}
+
+/** Custom snooze ("זמן אחר…"): chat → the followup awaiting a typed time.
+ *  In-memory only — a restart mid-ask just means tapping the button again. */
+const pendingCustomSnooze = new Map<number, { fuId: string; expiresAt: number }>();
+const CUSTOM_SNOOZE_WINDOW_S = 10 * 60;
+
+/** Free-text snooze times, parsed in code (no model call): "18:30", "ב18:30",
+ *  "9", "מחר 9", "מחר 09:30", "בעוד שעה/שעתיים/חצי שעה", "בעוד N דקות/שעות".
+ *  A clock time already past today rolls to tomorrow. Epoch seconds, or null. */
+export function parseCustomSnoozeTime(text: string, nowEpoch: number): number | null {
+  const s = text.trim();
+  const now = new Date(nowEpoch * 1000);
+  const at = (dayOffset: number, h: number, m: number) =>
+    Math.floor(
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset, h, m, 0, 0).getTime() / 1000,
+    );
+
+  const rel = /^בעוד\s+(.+)$/.exec(s);
+  if (rel) {
+    const r = rel[1].trim();
+    if (r === "שעה") return nowEpoch + 3600;
+    if (r === "שעתיים") return nowEpoch + 7200;
+    if (r === "חצי שעה") return nowEpoch + 1800;
+    if (r === "רבע שעה") return nowEpoch + 900;
+    const n = /^(\d{1,3})\s+(דקות|שעות)$/.exec(r);
+    if (n) return nowEpoch + Number(n[1]) * (n[2] === "דקות" ? 60 : 3600);
+    return null;
+  }
+
+  const m = /^(מחר\s+)?ב?-?(\d{1,2})(?::(\d{2}))?$/.exec(s);
+  if (!m) return null;
+  const hh = Number(m[2]);
+  const mm = m[3] ? Number(m[3]) : 0;
+  if (hh > 23 || mm > 59) return null;
+  if (m[1]) return at(1, hh, mm);
+  const today = at(0, hh, mm);
+  return today > nowEpoch ? today : at(1, hh, mm);
+}
+
+/** When a "זמן אחר…" ask is open for this chat, try to consume the message as
+ *  the requested time. True = fully handled (no Claude turn). The ask is
+ *  one-shot: whatever the next message is, it closes the ask — a message that
+ *  isn't a time simply flows on as normal chat. */
+async function consumeCustomSnooze(chatId: number, text: string): Promise<boolean> {
+  const pend = pendingCustomSnooze.get(chatId);
+  if (!pend) return false;
+  pendingCustomSnooze.delete(chatId);
+  const nowS = Math.floor(Date.now() / 1000);
+  if (nowS > pend.expiresAt) return false;
+  const t = parseCustomSnoozeTime(text, nowS);
+  if (t === null) return false;
+  const f = resolveFollowup(pend.fuId, "snoozed");
+  if (!f) return false; // resolved via a button tap meanwhile
+  const nr = addOnce(f.chatId, t, f.text);
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text: `«${f.text}» — נדחה ל־${fmt(t)}`,
+    reply_markup: undoKeyboard(f.id, nr.id),
+  }).catch(() => {});
+  console.log(`[REMIND] snoozed fu ${f.id} to ${fmt(t)} (custom, r=${nr.id})`);
+  return true;
 }
 
 export function fuKeyboard(id: string): unknown {
@@ -312,11 +374,14 @@ export function fuKeyboard(id: string): unknown {
 
 export function snoozeKeyboard(id: string): unknown {
   return {
-    inline_keyboard: [[
-      { text: "+1 שעה", callback_data: `fu:s1h:${id}` },
-      { text: "הערב 20:00", callback_data: `fu:seve:${id}` },
-      { text: "מחר 09:00", callback_data: `fu:stom:${id}` },
-    ]],
+    inline_keyboard: [
+      [
+        { text: "+1 שעה", callback_data: `fu:s1h:${id}` },
+        { text: "הערב 20:00", callback_data: `fu:seve:${id}` },
+        { text: "מחר 09:00", callback_data: `fu:stom:${id}` },
+      ],
+      [{ text: "זמן אחר…", callback_data: `fu:scus:${id}` }],
+    ],
   };
 }
 
@@ -1150,6 +1215,9 @@ async function handleMessage(msg: TgMessage) {
     return;
   }
 
+  // An open "זמן אחר…" snooze ask consumes the next message when it's a time.
+  if (await consumeCustomSnooze(chatId, voiceText ?? words)) return;
+
   const { model, prompt: userMsg } = pickModel(voiceText ?? words);
 
   // What Claude sees: the user's words plus a note about the media.
@@ -1377,6 +1445,9 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
   const historyNote = historyParts.filter(Boolean).join("\n");
   if (!combined.trim()) return;
 
+  // An open "זמן אחר…" snooze ask consumes the batch when it's a time answer.
+  if (await consumeCustomSnooze(chatId, combined)) return;
+
   const { model, prompt: userMsg } = pickModel(combined);
   console.log(redact(`[MSG] ${name} (${model}) [batch:${msgs.length}]: ${userMsg.slice(0, 100)}`));
 
@@ -1528,6 +1599,7 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
       return;
     }
     await ack();
+    pendingCustomSnooze.delete(f.chatId); // done supersedes an open "זמן אחר…" ask
     await tg("editMessageText", {
       chat_id: chatId,
       message_id: messageId,
@@ -1545,6 +1617,19 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
       message_id: messageId,
       reply_markup: snoozeKeyboard(parsed.id),
     }).catch(() => {});
+  } else if (parsed.action === "scus") {
+    const f = getFollowup(parsed.id);
+    if (f?.status !== "pending") {
+      console.log(`[CB] stale ${parsed.id} (scus)`);
+      await ack("הכפתור הזה כבר טופל");
+      return;
+    }
+    await ack();
+    pendingCustomSnooze.set(f.chatId, { fuId: f.id, expiresAt: nowS + CUSTOM_SNOOZE_WINDOW_S });
+    await tg("sendMessage", {
+      chat_id: f.chatId,
+      text: `לאיזה זמן לדחות את «${f.text}»? כתוב חופשי, למשל: 18:30, מחר 9, בעוד שעתיים`,
+    }).catch(() => {});
   } else {
     const f = resolveFollowup(parsed.id, "snoozed");
     if (!f) {
@@ -1553,6 +1638,7 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
       return;
     }
     await ack();
+    pendingCustomSnooze.delete(f.chatId); // a preset tap supersedes an open "זמן אחר…" ask
     const t = snoozeTarget(parsed.action, nowS);
     const nr = addOnce(f.chatId, t, f.text);
     await tg("editMessageText", {
