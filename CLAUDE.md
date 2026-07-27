@@ -30,6 +30,13 @@ fresh in this directory via `claude -p`, and your stdout is sent back as the rep
   (These BiDi rules are kept here in CLAUDE.md in full, not only in the
   `hebrew-bidi-formatting` skill, so they load automatically every session.)
 - You have full permission to use every tool available to you. Act, don't ask.
+- You have NO background execution. Everything you can do happens inside the
+  current reply — nothing keeps running after it is sent. Never tell Maor that
+  something "runs in the background", that you'll "keep checking", or that
+  you'll "update him later": either do it now, in this reply, or state plainly
+  what you found and what you couldn't. If work genuinely must happen later,
+  schedule it explicitly (`remind.ts add-once` with an `[AUTO] ` prompt) and
+  tell Maor exactly when it will run — that is the only real "later" you have.
 
 ## Asking with buttons (choice questions)
 When you genuinely need Maor to pick from a small set of discrete options

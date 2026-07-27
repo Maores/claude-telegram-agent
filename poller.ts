@@ -951,6 +951,12 @@ async function streamClaude(
     } catch {}
   }, CLAUDE_TIMEOUT_MS);
 
+  // Research-heavy turns can stream no text for minutes while tools run;
+  // re-send the typing indicator (Telegram clears it after ~5s) so the chat
+  // never looks dead mid-turn (2026-07-26: an 8-minute turn read as "not
+  // answering" and cost an hour of waiting).
+  const typer = setInterval(() => void sendTyping(chatId), 7_000);
+
   // Throttle Telegram edits — deltas arrive far faster than we may edit.
   let lastFlush = 0;
   const flush = async () => {
@@ -976,6 +982,7 @@ async function streamClaude(
     }
   } finally {
     clearTimeout(killer);
+    clearInterval(typer);
   }
   if (buf.trim()) parser.push(buf);
 
