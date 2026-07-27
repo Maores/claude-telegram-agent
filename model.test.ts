@@ -24,6 +24,23 @@ test("/sonnet prefix forces sonnet and is stripped", () => {
   expect(r.prompt).toBe("just a quick one");
 });
 
+test("/opus at the end of a message escalates and is stripped", () => {
+  const r = pickModel("בוא נעשה brainstorm לגבי פיצ׳רים חדשים /opus");
+  expect(r.model).toBe("opus");
+  expect(r.prompt).toBe("בוא נעשה brainstorm לגבי פיצ׳רים חדשים");
+});
+
+test("/opus mid-message escalates without mangling the prompt", () => {
+  const r = pickModel("please review this /opus and be thorough");
+  expect(r.model).toBe("opus");
+  expect(r.prompt).toBe("please review this and be thorough");
+});
+
+test("a url or word containing 'opus' does not escalate", () => {
+  expect(pickModel("read about magnum opus history").model).toBe("sonnet");
+  expect(pickModel("see example.com//opusfile please").model).toBe("sonnet");
+});
+
 test("keywords escalate to opus without stripping the text", () => {
   expect(pickModel("think hard about this problem").model).toBe("opus");
   expect(pickModel("can you use opus for this?").model).toBe("opus");
