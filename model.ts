@@ -17,6 +17,9 @@ export interface Routed {
 const OPUS_KEYWORDS = ["think hard", "use opus", "ultrathink", "deep dive", "reason carefully"];
 const OPUS_PREFIX = /^\/opus\b[ \t]*/i;
 const SONNET_PREFIX = /^\/sonnet\b[ \t]*/i;
+// "/opus" is often appended at the END of a message; a prefix-only match
+// silently ran those on the fast model, so the token escalates from anywhere.
+const OPUS_TOKEN = /(^|\s)\/opus\b[ \t]*/i;
 
 export function pickModel(text: string): Routed {
   const trimmed = text.trim();
@@ -24,6 +27,12 @@ export function pickModel(text: string): Routed {
   // Explicit slash prefixes win and are stripped from the prompt.
   if (OPUS_PREFIX.test(trimmed)) return { model: "opus", prompt: trimmed.replace(OPUS_PREFIX, "") };
   if (SONNET_PREFIX.test(trimmed)) return { model: "sonnet", prompt: trimmed.replace(SONNET_PREFIX, "") };
+  if (OPUS_TOKEN.test(trimmed)) {
+    return {
+      model: "opus",
+      prompt: trimmed.replace(OPUS_TOKEN, " ").replace(/\s{2,}/g, " ").trim(),
+    };
+  }
 
   // Cheap signals that a stronger model is worth it.
   const lower = trimmed.toLowerCase();
