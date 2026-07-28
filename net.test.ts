@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import {
   isBlockedIp, parseAndCheckUrl, extractText, normalize, hashContent, safeFetch,
+  charsetFrom, decodeBody,
 } from "./net";
 
 test("isBlockedIp blocks loopback/private/link-local/metadata/ula", () => {
@@ -56,4 +57,37 @@ test("safeFetch refuses a blocked destination before any network call", async ()
   const r = await safeFetch("https://169.254.169.254/latest/meta-data/");
   expect(r.ok).toBe(false);
   if (!r.ok) expect(r.error).toMatch(/blocked|https|port|ip/i);
+});
+
+// --- charset-aware decoding ---------------------------------------------------
+// Hebrew sites still serve windows-1255; decoding those as UTF-8 produced
+// replacement junk, which broke monitor keywords and summaries silently.
+
+// "שלום" in windows-1255 (ש=0xF9 ל=0xEC ו=0xE5 ם=0xED).
+const SHALOM_1255 = new Uint8Array([0xf9, 0xec, 0xe5, 0xed]);
+
+test("charsetFrom reads the charset parameter case-insensitively", () => {
+  // seret.co.il really sends the capital-C spelling.
+  expect(charsetFrom("text/html; Charset=windows-1255")).toBe("windows-1255");
+  expect(charsetFrom("text/html;charset=UTF-8")).toBe("utf-8");
+  expect(charsetFrom('text/html; charset="windows-1255"')).toBe("windows-1255");
+});
+
+test("charsetFrom defaults to utf-8 when the header says nothing", () => {
+  expect(charsetFrom("text/html")).toBe("utf-8");
+  expect(charsetFrom("")).toBe("utf-8");
+});
+
+test("decodeBody decodes windows-1255 Hebrew correctly", () => {
+  expect(decodeBody(SHALOM_1255, "text/html; Charset=windows-1255")).toBe("שלום");
+});
+
+test("decodeBody without a charset treats bytes as utf-8 (the old behavior)", () => {
+  expect(decodeBody(new TextEncoder().encode("שלום"), "text/html")).toBe("שלום");
+  // the regression this fix targets: 1255 bytes read as utf-8 are unreadable
+  expect(decodeBody(SHALOM_1255, "text/html")).not.toBe("שלום");
+});
+
+test("decodeBody falls back to utf-8 on a charset label it doesn't know", () => {
+  expect(decodeBody(new TextEncoder().encode("hello"), "text/html; charset=x-not-a-charset")).toBe("hello");
 });
