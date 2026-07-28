@@ -93,6 +93,26 @@ export function hashContent(s: string): string {
   return createHash("sha256").update(s).digest("hex");
 }
 
+/** Charset label out of a content-type header, lowercased; utf-8 when absent.
+ *  Israeli sites still serve windows-1255 (seret.co.il does, spelling the
+ *  parameter "Charset=" with a capital C), so the match is case-insensitive. */
+export function charsetFrom(contentType: string): string {
+  const m = /;\s*charset\s*=\s*"?([\w-]+)"?/i.exec(contentType ?? "");
+  return (m?.[1] ?? "utf-8").toLowerCase();
+}
+
+/** Decode a response body using the charset the server declared. Decoding a
+ *  windows-1255 page as UTF-8 turns every Hebrew character into replacement
+ *  junk, which silently broke keyword matching and summaries for monitors on
+ *  Hebrew sites. An unknown label falls back to utf-8 rather than throwing. */
+export function decodeBody(buf: ArrayBuffer | Uint8Array, contentType: string): string {
+  try {
+    return new TextDecoder(charsetFrom(contentType)).decode(buf);
+  } catch {
+    return new TextDecoder().decode(buf);
+  }
+}
+
 // ---------- hardened fetch (network) ----------
 
 const MAX_BYTES = 1_500_000;
@@ -153,11 +173,12 @@ export async function safeFetch(url: string): Promise<FetchResult> {
       continue;
     }
 
-    const ct = (resp.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    const rawCt = resp.headers.get("content-type") || "";
+    const ct = rawCt.split(";")[0].trim().toLowerCase();
     if (!OK_CONTENT_TYPES.includes(ct)) return { ok: false, error: `content-type not allowed: ${ct || "(none)"}` };
     const buf = await resp.arrayBuffer();
     if (buf.byteLength > MAX_BYTES) return { ok: false, error: "response too large" };
-    return { ok: true, status: resp.status, contentType: ct, text: new TextDecoder().decode(buf) };
+    return { ok: true, status: resp.status, contentType: ct, text: decodeBody(buf, rawCt) };
   }
   return { ok: false, error: "too many redirects" };
 }
