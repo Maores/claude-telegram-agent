@@ -1,5 +1,5 @@
 /**
- * transcribe.ts — voice-note transcription behind one interface (Phase 6).
+ * transcribe.ts — voice-note / audio-file transcription behind one interface (Phase 6).
  *
  * Two swappable backends (hermes survey §B1 "local_command" pattern):
  *  - groq: hosted whisper-large-v3-turbo via the OpenAI-compatible endpoint.
@@ -99,6 +99,42 @@ export function parseLocalOutput(stdout: string): Transcript {
 const GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 export const GROQ_STT_MODEL = process.env.GROQ_STT_MODEL || "whisper-large-v3-turbo";
 
+/** Groq validates a multipart upload by its FILENAME extension. Map the local
+ *  file's extension to an accepted upload name; .oga (Telegram voice) must go
+ *  out as .ogg (live 400, 2026-06-11), and anything unrecognized falls back to
+ *  voice.ogg — exactly the old hardcoded behavior. */
+const UPLOAD_EXT: Record<string, string> = {
+  oga: "ogg",
+  ogg: "ogg",
+  opus: "opus",
+  mp3: "mp3",
+  mpga: "mpga",
+  mpeg: "mpeg",
+  m4a: "m4a",
+  mp4: "mp4",
+  wav: "wav",
+  flac: "flac",
+  webm: "webm",
+};
+const UPLOAD_MIME: Record<string, string> = {
+  ogg: "audio/ogg",
+  opus: "audio/ogg",
+  mp3: "audio/mpeg",
+  mpga: "audio/mpeg",
+  mpeg: "audio/mpeg",
+  m4a: "audio/mp4",
+  mp4: "audio/mp4",
+  wav: "audio/wav",
+  flac: "audio/flac",
+  webm: "audio/webm",
+};
+export function uploadMetaFor(path: string): { name: string; type: string } {
+  const raw = /\.([A-Za-z0-9]+)$/.exec(path)?.[1]?.toLowerCase();
+  const ext = raw ? UPLOAD_EXT[raw] : undefined;
+  if (!ext) return { name: "voice.ogg", type: "audio/ogg" };
+  return { name: `voice.${ext}`, type: UPLOAD_MIME[ext] };
+}
+
 /** Languages voice notes are expected in (VOICE_LANGS env, CSV of ISO codes).
  *  The FIRST entry is what an off-list detection gets re-forced to. */
 export function parseVoiceLangs(raw: string | undefined): string[] {
@@ -156,10 +192,12 @@ export async function groqTranscribe(
   // extension and rejects Telegram's .oga (same ogg/opus container) — live 400
   // "file must be one of [... ogg opus ...]" 2026-06-11. Bun's FormData ignores
   // the explicit filename argument for lazy Bun.file blobs (the full PATH went
-  // out as the name), so only an in-memory File reliably carries "voice.ogg".
-  // Voice notes are capped at VOICE_MAX_SEC ≈ a couple of MB — fine to hold.
-  const audio = new File([await Bun.file(path).arrayBuffer()], "voice.ogg", {
-    type: "audio/ogg",
+  // out as the name), so only an in-memory File reliably carries the name.
+  // The extension comes from the local file, so audio files keep their real
+  // container; recordings are capped at VOICE_MAX_SEC ≈ a couple of MB.
+  const meta = uploadMetaFor(path);
+  const audio = new File([await Bun.file(path).arrayBuffer()], meta.name, {
+    type: meta.type,
   });
 
   /** One auto-detect or forced-language transcription pass, with the existing

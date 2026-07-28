@@ -6,9 +6,9 @@
  * CLAUDE.md and injected memory apply). Conversation continuity comes from a
  * per-chat history file, not a persistent Claude session.
  *
- * Text, photos, documents, and voice notes are supported: attachments are
+ * Text, photos, documents, voice notes, and audio files are supported: attachments are
  * downloaded from Telegram into ./uploads — files are handed to Claude by path,
- * voice is transcribed first (transcribe.ts) and flows in as a typed message.
+ * voice/audio is transcribed first (transcribe.ts) and flows in as a typed message.
  * Other kinds (video, stickers, …) are declined honestly.
  *
  * Runs on Bun. Zero npm dependencies.
@@ -31,7 +31,7 @@ import { dueMonitors, performCheck, recordCheck, FAILURE_LIMIT, type Monitor, ty
 import { recordUsage, windowSpendUsd, shouldWarn, limitHitReply } from "./usage";
 import { scanThreats } from "./threats";
 import { redact } from "./redact";
-import { resolveBackend, transcribeVoice, shouldEchoTranscript, VOICE_MAX_SEC } from "./transcribe";
+import { resolveBackend, transcribeVoice, shouldEchoTranscript, VOICE_MAX_SEC, type Backend } from "./transcribe";
 import { shouldReview, runReview } from "./review";
 import { classifyUpdate, ChatQueues, SerialChain, Debouncer, isStopCommand } from "./dispatch";
 export { isStopCommand }; // poller.test.ts and external users keep their import path
@@ -106,6 +106,13 @@ interface TgVoice {
   mime_type?: string;
   file_size?: number;
 }
+interface TgAudio {
+  file_id: string;
+  duration?: number;
+  mime_type?: string;
+  file_name?: string;
+  file_size?: number;
+}
 interface TgMessage {
   message_id: number;
   chat: { id: number };
@@ -115,10 +122,10 @@ interface TgMessage {
   photo?: TgPhotoSize[];
   document?: TgDocument;
   voice?: TgVoice;
+  audio?: TgAudio; // rides the same transcription path as voice (2026-07-28)
   // Media we recognize but can't open yet — used only to decline honestly.
   video?: TgFile;
   video_note?: TgFile;
-  audio?: TgFile;
   animation?: TgFile;
   sticker?: TgFile;
   reply_to_message?: TgMessage; // the message a native Telegram reply quotes
@@ -587,27 +594,71 @@ export function attachmentInfo(
   return null;
 }
 
-/** Human label for media we recognize but can't open, else null. */
+/** Human label for media we recognize but can't open, else null.
+ *  Audio left this list 2026-07-28 — it rides the transcription path now. */
 export function unsupportedMediaKind(msg: TgMessage): string | null {
   if (msg.video) return "a video";
   if (msg.video_note) return "a video note";
-  if (msg.audio) return "an audio file";
   if (msg.animation) return "a GIF";
   if (msg.sticker) return "a sticker";
   return null;
 }
 
-/** Describe a voice bubble (file id, duration, size) WITHOUT downloading it,
- *  so the caller can gate on duration/size first. Null when not a voice msg. */
-export function voiceInfo(
-  msg: TgMessage,
-): { fileId: string; duration: number; size?: number } | null {
-  if (!msg.voice) return null;
-  return {
-    fileId: msg.voice.file_id,
-    duration: msg.voice.duration ?? 0,
-    size: msg.voice.file_size,
+/** Local filename for downloading an audio file, keeping its real container
+ *  visible: the transcriber derives Groq's upload name from this extension.
+ *  file_name's extension wins, else the mime subtype, else ogg (forwarded
+ *  WhatsApp voice notes — the common case — are ogg/opus). */
+export function audioDownloadName(audio: { file_name?: string; mime_type?: string }): string {
+  const fromName = audio.file_name ? /\.([A-Za-z0-9]{1,5})$/.exec(audio.file_name)?.[1] : undefined;
+  if (fromName) return `audio.${fromName.toLowerCase()}`;
+  const sub = (audio.mime_type ?? "").toLowerCase().replace(/^audio\//, "");
+  const bySubtype: Record<string, string> = {
+    mpeg: "mp3",
+    mp3: "mp3",
+    mp4: "m4a",
+    "x-m4a": "m4a",
+    aac: "m4a",
+    ogg: "ogg",
+    opus: "opus",
+    wav: "wav",
+    "x-wav": "wav",
+    flac: "flac",
+    webm: "webm",
   };
+  return `audio.${bySubtype[sub] ?? "ogg"}`;
+}
+
+export type VoiceKind = "voice" | "audio";
+
+/** Describe a transcribable recording WITHOUT downloading it, so the caller can
+ *  gate on duration/size first: a Telegram voice bubble, or an audio file (how
+ *  a voice recording forwarded from WhatsApp arrives). Null when neither. */
+export function voiceInfo(msg: TgMessage): {
+  fileId: string;
+  duration: number;
+  size?: number;
+  kind: VoiceKind;
+  downloadName: string;
+} | null {
+  if (msg.voice) {
+    return {
+      fileId: msg.voice.file_id,
+      duration: msg.voice.duration ?? 0,
+      size: msg.voice.file_size,
+      kind: "voice",
+      downloadName: "voice.oga",
+    };
+  }
+  if (msg.audio) {
+    return {
+      fileId: msg.audio.file_id,
+      duration: msg.audio.duration ?? 0,
+      size: msg.audio.file_size,
+      kind: "audio",
+      downloadName: audioDownloadName(msg.audio),
+    };
+  }
+  return null;
 }
 
 /** True when there is nothing to act on: no readable attachment, no typed
@@ -837,13 +888,14 @@ export function buildPrompt(
 
 /** What Claude sees for a voice note: the medium is named so it can read
  *  obvious mishearings charitably; the transcript stays the user's words. */
-export function voicePromptText(transcript: string): string {
-  return `[The user sent a voice note; this is its transcript — answer it like a typed message.]\n${transcript}`;
+export function voicePromptText(transcript: string, kind: VoiceKind = "voice"): string {
+  const medium = kind === "audio" ? "an audio file" : "a voice note";
+  return `[The user sent ${medium}; this is its transcript — answer it like a typed message.]\n${transcript}`;
 }
 
-/** What history/recall stores for a voice note (file is transient). */
-export function voiceHistoryNote(transcript: string): string {
-  return `[voice] ${transcript}`;
+/** What history/recall stores for a voice note / audio file (file is transient). */
+export function voiceHistoryNote(transcript: string, kind: VoiceKind = "voice"): string {
+  return `[${kind}] ${transcript}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,10 +1161,11 @@ async function handleMessage(msg: TgMessage) {
     return;
   }
 
-  // Voice notes (phase 6): transcribe, then treat exactly like a typed message.
-  // Gates run BEFORE the download; the ack fires early because transcription
-  // adds latency before the ⏳ placeholder appears.
-  // A caption on a voice message (possible only via bots/forwards) is dropped.
+  // Voice notes and audio files (phase 6): transcribe, then treat like a typed
+  // message. Gates run BEFORE the download; the ack fires early because
+  // transcription adds latency before the ⏳ placeholder appears.
+  // A caption on a voice bubble (possible only via bots/forwards) is dropped;
+  // an audio file's caption is kept as the accompanying words.
   const voice = voiceInfo(msg);
   let voiceText: string | null = null;
   let voiceConfidence: number | null = null;
@@ -1143,9 +1196,9 @@ async function handleMessage(msg: TgMessage) {
 
     let audioPath: string;
     try {
-      audioPath = await downloadFile(voice.fileId, "voice.oga");
+      audioPath = await downloadFile(voice.fileId, voice.downloadName);
     } catch (e: any) {
-      console.error(`[ERR] download voice from ${fromId}: ${e?.message ?? e}`);
+      console.error(`[ERR] download ${voice.kind} from ${fromId}: ${e?.message ?? e}`);
       void setReaction(chatId, msg.message_id, outcomeReaction(false));
       await tg("sendMessage", {
         chat_id: chatId,
@@ -1159,9 +1212,11 @@ async function handleMessage(msg: TgMessage) {
       voiceConfidence = tr.confidence;
       // Confidence in the journal (transcript itself logs later via [MSG]) —
       // this is what VOICE_ECHO_BELOW gets calibrated against with real notes.
-      console.log(`[VOICE] confidence=${tr.confidence?.toFixed(3) ?? "n/a"} chars=${tr.text.length}`);
+      console.log(
+        `[VOICE] confidence=${tr.confidence?.toFixed(3) ?? "n/a"} chars=${tr.text.length}${voice.kind === "audio" ? " kind=audio" : ""}`,
+      );
     } catch (e: any) {
-      console.error(`[ERR] transcribe voice from ${fromId}: ${e?.message ?? e}`);
+      console.error(`[ERR] transcribe ${voice.kind} from ${fromId}: ${e?.message ?? e}`);
       void setReaction(chatId, msg.message_id, outcomeReaction(false));
       await tg("sendMessage", {
         chat_id: chatId,
@@ -1216,8 +1271,8 @@ async function handleMessage(msg: TgMessage) {
   // Nothing readable and nothing said → polite, specific decline.
   if (shouldDeclineUnreadable(attachment, words, voiceText)) {
     const text = unsupported
-      ? `I can't open ${unsupported} yet — I can read text, images, documents (PDFs, etc.), and voice notes.`
-      : "I can read text, images, documents (PDFs, etc.), and voice notes right now — but not this kind of message yet.";
+      ? `I can't open ${unsupported} yet — I can read text, images, documents (PDFs, etc.), voice notes, and audio files.`
+      : "I can read text, images, documents (PDFs, etc.), voice notes, and audio files right now — but not this kind of message yet.";
     await tg("sendMessage", { chat_id: chatId, text }).catch(() => {});
     return;
   }
@@ -1232,8 +1287,14 @@ async function handleMessage(msg: TgMessage) {
   let messageForClaude = userMsg;
   let historyNote = userMsg;
   if (voiceText !== null) {
-    messageForClaude = voicePromptText(userMsg);
-    historyNote = voiceHistoryNote(userMsg);
+    const kind = voice?.kind ?? "voice";
+    messageForClaude = voicePromptText(userMsg, kind);
+    historyNote = voiceHistoryNote(userMsg, kind);
+    if (kind === "audio" && words) {
+      // An audio file's caption is the instruction that came with it.
+      messageForClaude = `${words}\n\n${messageForClaude}`;
+      historyNote = `${words}\n${historyNote}`;
+    }
   } else if (attachment) {
     const note = `[The user sent ${attachment.kind}, saved at: ${attachment.path} — open and read it to answer.]`;
     messageForClaude = userMsg ? `${userMsg}\n\n${note}` : note;
@@ -1244,7 +1305,12 @@ async function handleMessage(msg: TgMessage) {
     messageForClaude = `${userMsg}\n\n${note}`;
     historyNote = `[sent ${unsupported}] ${userMsg}`;
   }
-  const label = voiceText !== null ? "a voice note" : attachment?.kind ?? unsupported;
+  const label =
+    voiceText !== null
+      ? voice?.kind === "audio"
+        ? "an audio file"
+        : "a voice note"
+      : attachment?.kind ?? unsupported;
   console.log(redact(`[MSG] ${name} (${model})${label ? ` [${label}]` : ""}: ${userMsg || "(no caption)"}`));
 
   // 👀 ack on the user's message + a typing bubble while we work. Best-effort.
@@ -1362,6 +1428,96 @@ async function handleMessage(msg: TgMessage) {
   }
 }
 
+/** Render one message of a batch into its prompt part + history marker.
+ *  Every branch returns SOMETHING for media: a message that fell through all
+ *  branches used to vanish from the prompt, and Claude then denied the file
+ *  was ever sent (the 2026-07-28 voice-forward incident). IO is injectable
+ *  for tests; the classification mirrors the single-message path. */
+export async function renderBatchItem(
+  msg: TgMessage,
+  io: {
+    backend?: () => Backend;
+    download?: (fileId: string, preferredName?: string) => Promise<string>;
+    transcribe?: (path: string) => Promise<{ text: string; confidence: number | null }>;
+  } = {},
+): Promise<{ part: string; historyPart: string; echo?: string }> {
+  const backend = io.backend ?? resolveBackend;
+  const download = io.download ?? downloadFile;
+  const transcribe = io.transcribe ?? transcribeVoice;
+
+  const voice = voiceInfo(msg);
+  if (voice) {
+    const noun = voice.kind === "audio" ? "audio file" : "voice note";
+    // A voice bubble can't carry a caption in practice; an audio file's caption
+    // is the instruction that came with it (same rule as the single path).
+    const caption = voice.kind === "audio" ? (msg.caption ?? "") : "";
+    if (backend() === "off" || voice.duration > VOICE_MAX_SEC || isTooLarge(voice.size)) {
+      return { part: `[${noun} — could not transcribe]`, historyPart: `[${noun}]` };
+    }
+    let audioPath: string | undefined;
+    try {
+      audioPath = await download(voice.fileId, voice.downloadName);
+    } catch {}
+    if (!audioPath) {
+      return { part: `[${noun} — download failed]`, historyPart: `[${noun}]` };
+    }
+    try {
+      const tr = await transcribe(audioPath);
+      if (tr.text.trim()) {
+        console.log(
+          `[VOICE] confidence=${tr.confidence?.toFixed(3) ?? "n/a"} chars=${tr.text.length}${voice.kind === "audio" ? " kind=audio" : ""} (batch)`,
+        );
+        const prompt = voicePromptText(tr.text, voice.kind);
+        const note = voiceHistoryNote(tr.text, voice.kind);
+        return {
+          part: caption ? `${caption}\n\n${prompt}` : prompt,
+          historyPart: caption ? `${caption}\n${note}` : note,
+          // Same low-confidence transcript echo the single-message path shows.
+          echo: shouldEchoTranscript(tr.confidence) ? `🎤 «${tr.text}»` : undefined,
+        };
+      }
+      return { part: `[${noun} — empty]`, historyPart: `[${noun} — empty]` };
+    } catch (e: any) {
+      console.error(`[ERR] transcribe ${voice.kind} in batch: ${e?.message ?? e}`);
+      return { part: `[${noun} — transcription failed]`, historyPart: `[${noun}]` };
+    } finally {
+      cleanupFile(audioPath);
+    }
+  }
+
+  const info = attachmentInfo(msg);
+  if (info) {
+    const caption = msg.caption ?? "";
+    const historyPart = caption ? `[sent ${info.kind}] ${caption}` : `[sent ${info.kind}]`;
+    if (isTooLarge(info.size)) {
+      return { part: `[${info.kind} — too large to download]`, historyPart };
+    }
+    try {
+      const filePath = await download(info.fileId, info.name);
+      evictUploadsToFit();
+      const note = `[The user sent ${info.kind}, saved at: ${filePath} — open and read it to answer.]`;
+      return { part: caption ? `${caption}\n\n${note}` : note, historyPart };
+    } catch {
+      return { part: `[${info.kind} — download failed]`, historyPart };
+    }
+  }
+
+  // Media we recognize but can't open — mirror the single path's honesty so
+  // the model never denies a file was sent.
+  const unsupported = unsupportedMediaKind(msg);
+  if (unsupported) {
+    const caption = msg.caption ?? "";
+    const note = `[The user also sent ${unsupported}, which you can't open. Answer from their words, and say you couldn't view the ${unsupported} if it matters.]`;
+    return {
+      part: caption ? `${caption}\n\n${note}` : note,
+      historyPart: caption ? `[sent ${unsupported}] ${caption}` : `[sent ${unsupported}]`,
+    };
+  }
+
+  const text = msg.text ?? msg.caption ?? "";
+  return { part: text, historyPart: text };
+}
+
 /** Handles a rapid burst of messages as a single Claude turn.
  *  Called only when ≥2 messages arrive within DEBOUNCE_MS of each other. */
 async function handleMessageBatch(allMsgs: TgMessage[]) {
@@ -1384,68 +1540,10 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
   const echoes: string[] = [];
 
   for (const msg of msgs) {
-    const voice = voiceInfo(msg);
-    if (voice) {
-      if (resolveBackend() === "off" || voice.duration > VOICE_MAX_SEC || isTooLarge(voice.size)) {
-        parts.push("[voice note — could not transcribe]");
-        historyParts.push("[voice note]");
-        continue;
-      }
-      let audioPath: string | undefined;
-      try {
-        audioPath = await downloadFile(voice.fileId, "voice.oga");
-      } catch {}
-      if (!audioPath) {
-        parts.push("[voice note — download failed]");
-        historyParts.push("[voice note]");
-        continue;
-      }
-      try {
-        const tr = await transcribeVoice(audioPath);
-        if (tr.text.trim()) {
-          parts.push(voicePromptText(tr.text));
-          historyParts.push(voiceHistoryNote(tr.text));
-          // Same low-confidence transcript echo the single-message path shows.
-          if (shouldEchoTranscript(tr.confidence)) echoes.push(`🎤 «${tr.text}»`);
-        } else {
-          parts.push("[voice note — empty]");
-          historyParts.push("[voice note — empty]");
-        }
-      } catch {
-        parts.push("[voice note — transcription failed]");
-        historyParts.push("[voice note]");
-      } finally {
-        cleanupFile(audioPath);
-      }
-      continue;
-    }
-
-    const info = attachmentInfo(msg);
-    if (info) {
-      const caption = msg.caption ?? "";
-      if (isTooLarge(info.size)) {
-        parts.push(`[${info.kind} — too large to download]`);
-        historyParts.push(caption ? `[sent ${info.kind}] ${caption}` : `[sent ${info.kind}]`);
-        continue;
-      }
-      try {
-        const filePath = await downloadFile(info.fileId, info.name);
-        evictUploadsToFit();
-        const note = `[The user sent ${info.kind}, saved at: ${filePath} — open and read it to answer.]`;
-        parts.push(caption ? `${caption}\n\n${note}` : note);
-        historyParts.push(caption ? `[sent ${info.kind}] ${caption}` : `[sent ${info.kind}]`);
-      } catch {
-        parts.push(`[${info.kind} — download failed]`);
-        historyParts.push(caption ? `[sent ${info.kind}] ${caption}` : `[sent ${info.kind}]`);
-      }
-      continue;
-    }
-
-    const text = msg.text ?? msg.caption ?? "";
-    if (text) {
-      parts.push(text);
-      historyParts.push(text);
-    }
+    const item = await renderBatchItem(msg);
+    if (item.part) parts.push(item.part);
+    if (item.historyPart) historyParts.push(item.historyPart);
+    if (item.echo) echoes.push(item.echo);
   }
 
   const combined = parts.filter(Boolean).join("\n");

@@ -8,6 +8,7 @@ import {
   deriveConfidence,
   parseLocalOutput,
   groqTranscribe,
+  uploadMetaFor,
   buildLocalCommand,
   localTranscribe,
   transcribeVoice,
@@ -182,6 +183,41 @@ test("groqTranscribe sends auth, model, verbose_json — and parses the reply", 
   // Groq validates the multipart FILENAME's extension; Telegram saves voice as
   // .oga which Groq's list rejects (live 400, 2026-06-11) — must upload as .ogg.
   expect((form.get("file") as File).name).toBe("voice.ogg");
+});
+
+// --- uploadMetaFor: extension-aware upload naming (audio files) ---------------
+
+test("uploadMetaFor keeps Telegram voice (.oga) uploading as voice.ogg", () => {
+  expect(uploadMetaFor("/up/123-voice.oga")).toEqual({ name: "voice.ogg", type: "audio/ogg" });
+});
+
+test("uploadMetaFor carries a real audio extension through, case-insensitively", () => {
+  expect(uploadMetaFor("/up/123-audio.mp3")).toEqual({ name: "voice.mp3", type: "audio/mpeg" });
+  expect(uploadMetaFor("/up/123-song.M4A")).toEqual({ name: "voice.m4a", type: "audio/mp4" });
+  expect(uploadMetaFor("/up/123-note.opus")).toEqual({ name: "voice.opus", type: "audio/ogg" });
+});
+
+test("uploadMetaFor falls back to voice.ogg for unknown or missing extensions", () => {
+  expect(uploadMetaFor("/up/123-mystery.xyz")).toEqual({ name: "voice.ogg", type: "audio/ogg" });
+  expect(uploadMetaFor("/up/123-bare")).toEqual({ name: "voice.ogg", type: "audio/ogg" });
+});
+
+test("groqTranscribe uploads an .mp3 under its own extension (Groq validates by name)", async () => {
+  const MP3_TMP = join(import.meta.dir, "transcribe.test.audio.mp3");
+  writeTestFile(MP3_TMP, "ID3-not-really-audio");
+  try {
+    const calls: { init: RequestInit }[] = [];
+    const fetchFn = (async (_url: any, init: any) => {
+      calls.push({ init });
+      return groqOk({ text: "hi" });
+    }) as typeof fetch;
+    await groqTranscribe(MP3_TMP, { apiKey: "k", fetchFn });
+    const file = (calls[0].init.body as FormData).get("file") as File;
+    expect(file.name).toBe("voice.mp3");
+    expect(file.type).toBe("audio/mpeg");
+  } finally {
+    rmTestFile(MP3_TMP, { force: true });
+  }
 });
 
 test("groqTranscribe yields null confidence when segments are absent", async () => {
