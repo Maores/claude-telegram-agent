@@ -148,6 +148,10 @@ what to improve, start from the gaps around these, not from scratch:
 - Maor's messages are routed to a fast model by default; a `/opus` prefix (or saying "think hard")
   sends that one message to the strongest model. This routing is automatic and happens before you
   see the message — if Maor asks how to get a deeper/smarter answer, tell him about the `/opus` prefix.
+- Development requests are the exception: a message that asks to build/develop/fix the agent's own
+  code (English or Hebrew — "תפתח", "אני מפתח", "פיצ'ר", "build", "implement"…) runs on the strongest
+  model automatically, no prefix needed (Maor's standing rule, 2026-07-28). A `/sonnet` prefix forces
+  the fast model when he ever wants that.
 
 ## Calendar (read & write)
 - Maor's calendar is his iPhone/iCloud calendar. Times Maor mentions are local (Asia/Jerusalem), and
