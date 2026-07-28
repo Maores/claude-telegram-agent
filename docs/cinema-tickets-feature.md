@@ -49,12 +49,14 @@ cart + seat lock → link for Maor to pay.
 Maor wants all non-trivial coding/design work on this feature to run on
 Opus, not the fast default model — this thread involves security-adjacent
 work (third-party API reverse engineering, payment-boundary design) where he
-wants the stronger model doing the thinking. Continue this project only in
-an `/opus`-launched session (or via a tap-to-launch button that embeds
-`/opus`). See the `dev-intent` detector in `model.ts` / `poller.ts` for the
-existing (partial) automation of this — it doesn't yet reliably fire on
-Hebrew phrasings like "אני מפתח", which is why this reminder still has to be
-manual for now.
+wants the stronger model doing the thinking.
+
+Update (2026-07-28, later the same day): this is now automatic. Dev-intent
+messages route to Opus in `model.ts` with no manual `/opus`, and the detector
+learned the Hebrew phrasings from this exact thread ("אני מפתח", "לפתח",
+"פיתוח", "פיצ'ר" in both apostrophe spellings). `/sonnet` is the manual
+override. Continuing this feature in chat will therefore run on Opus by
+itself.
 
 ## Sources
 

@@ -89,3 +89,31 @@ test("detectDevIntent does NOT fire on ordinary messages", () => {
   expect(detectDevIntent("יש לי הבנה טובה של החומר")).toBe(false);
   expect(detectDevIntent("")).toBe(false);
 });
+
+test("detectDevIntent fires on the 2026-07-28 phrasings it missed (cinema thread)", () => {
+  expect(detectDevIntent("איך אני מפתח את זה? אני מפתח את זה פה אצלך")).toBe(true);
+  expect(detectDevIntent("תעשה את הפיתוחים של הדברים האלה")).toBe(true);
+  expect(detectDevIntent("בוא נמשיך לפתח את זה")).toBe(true);
+  // both apostrophe spellings of פיצ'ר: ASCII and the Hebrew geresh
+  expect(detectDevIntent("יש לי רעיון לפיצ'ר חדש")).toBe(true);
+  expect(detectDevIntent("למה שאנחנו רוצים לפתח על הפיצ׳רים?")).toBe(true);
+});
+
+test("detectDevIntent still ignores keys, doors, and openings", () => {
+  expect(detectDevIntent("איפה המפתח של הבית?")).toBe(false); // מפתח the noun (key)
+  expect(detectDevIntent("תזכיר לי לפתוח את הדלת")).toBe(false); // לפתוח (to open) is not לפתח
+  expect(detectDevIntent("המפתחות אצל אורל")).toBe(false);
+});
+
+// dev-intent → Opus (Maor's standing rule, 2026-07-28, given by voice)
+test("pickModel escalates dev-intent messages to opus automatically", () => {
+  expect(pickModel("איך אני מפתח את זה? אני מפתח את זה פה אצלך").model).toBe("opus");
+  expect(pickModel("תבנה לי פיצ'ר שמסכם מיילים").model).toBe("opus");
+  expect(pickModel("let's build a new feature").model).toBe("opus");
+});
+
+test("the /sonnet prefix still beats dev-intent (manual escape hatch)", () => {
+  const r = pickModel("/sonnet תפתח לי סקריפט קטן");
+  expect(r.model).toBe("sonnet");
+  expect(r.prompt).toBe("תפתח לי סקריפט קטן");
+});
