@@ -23,6 +23,8 @@ import {
   snoozeTarget,
   replyContextLine,
   voiceInfo,
+  audioDownloadName,
+  renderBatchItem,
   voicePromptText,
   voiceHistoryNote,
   shouldDeclineUnreadable,
@@ -153,6 +155,12 @@ test("unsupportedMediaKind labels a video", () => {
 test("unsupportedMediaKind no longer labels voice — phase 6 reads it", () => {
   expect(
     unsupportedMediaKind({ message_id: 1, chat: { id: 1 }, voice: { file_id: "v", duration: 3 } }),
+  ).toBeNull();
+});
+
+test("unsupportedMediaKind no longer labels audio — transcription reads it now", () => {
+  expect(
+    unsupportedMediaKind({ message_id: 1, chat: { id: 1 }, audio: { file_id: "a" } }),
   ).toBeNull();
 });
 
@@ -498,7 +506,35 @@ test("voiceInfo extracts file id, duration, and size", () => {
     chat: { id: 1 },
     voice: { file_id: "v9", duration: 42, mime_type: "audio/ogg", file_size: 130_000 },
   });
-  expect(info).toEqual({ fileId: "v9", duration: 42, size: 130_000 });
+  expect(info).toEqual({
+    fileId: "v9",
+    duration: 42,
+    size: 130_000,
+    kind: "voice",
+    downloadName: "voice.oga",
+  });
+});
+
+test("voiceInfo also describes an audio file — how a forwarded WhatsApp recording arrives", () => {
+  const info = voiceInfo({
+    message_id: 1,
+    chat: { id: 1 },
+    audio: { file_id: "a1", duration: 9, file_name: "PTT-20260728-WA0001.opus", file_size: 40_000 },
+  });
+  expect(info).toEqual({
+    fileId: "a1",
+    duration: 9,
+    size: 40_000,
+    kind: "audio",
+    downloadName: "audio.opus",
+  });
+});
+
+test("audioDownloadName prefers the file name's extension, then the mime type, then ogg", () => {
+  expect(audioDownloadName({ file_name: "Song.MP3" })).toBe("audio.mp3");
+  expect(audioDownloadName({ mime_type: "audio/mpeg" })).toBe("audio.mp3");
+  expect(audioDownloadName({ mime_type: "audio/mp4" })).toBe("audio.m4a");
+  expect(audioDownloadName({})).toBe("audio.ogg");
 });
 
 test("voiceInfo defaults a missing duration to 0", () => {
@@ -519,12 +555,125 @@ test("voiceHistoryNote stores a compact searchable marker", () => {
   expect(voiceHistoryNote("call the bank")).toBe("[voice] call the bank");
 });
 
+test("voicePromptText and voiceHistoryNote can name an audio file instead", () => {
+  expect(voicePromptText("שיר יפה", "audio")).toContain("an audio file");
+  expect(voicePromptText("שיר יפה", "audio").endsWith("שיר יפה")).toBe(true);
+  expect(voiceHistoryNote("שיר יפה", "audio")).toBe("[audio] שיר יפה");
+});
+
 test("shouldDeclineUnreadable declines only when nothing at all is actionable", () => {
   expect(shouldDeclineUnreadable(null, "", null)).toBe(true); // sticker with no caption
   expect(shouldDeclineUnreadable(null, "hi", null)).toBe(false); // typed text
   expect(shouldDeclineUnreadable({ path: "/up/x.pdf", kind: "a file" }, "", null)).toBe(false); // attachment
   // THE Task 8 regression: a transcribed voice note has empty words + no attachment.
   expect(shouldDeclineUnreadable(null, "", "תזכיר לי מחר")).toBe(false);
+});
+
+// --- renderBatchItem: a batched message must never vanish silently ------------
+// The 2026-07-28 bug: an audio file inside a debounced batch matched no branch,
+// contributed nothing to the prompt, and Claude denied any file had been sent.
+
+const batchNoIo = {
+  backend: () => "groq" as const,
+  download: async (): Promise<string> => {
+    throw new Error("unexpected download");
+  },
+  transcribe: async (): Promise<{ text: string; confidence: number | null }> => {
+    throw new Error("unexpected transcribe");
+  },
+};
+
+test("renderBatchItem transcribes an audio file like a voice note", async () => {
+  const io = {
+    backend: () => "groq" as const,
+    download: async (_id: string, name?: string) => `/up/1-${name}`,
+    transcribe: async (path: string) => {
+      expect(path).toBe("/up/1-audio.opus");
+      return { text: "תבדוק את הדוח", confidence: 0.9 };
+    },
+  };
+  const r = await renderBatchItem(
+    { message_id: 1, chat: { id: 1 }, audio: { file_id: "a1", duration: 5, file_name: "x.opus" } },
+    io,
+  );
+  expect(r.part).toContain("an audio file");
+  expect(r.part).toContain("תבדוק את הדוח");
+  expect(r.historyPart).toBe("[audio] תבדוק את הדוח");
+});
+
+test("renderBatchItem keeps the caption alongside a transcribed audio file", async () => {
+  const io = {
+    backend: () => "groq" as const,
+    download: async () => "/up/1-audio.mp3",
+    transcribe: async () => ({ text: "hello", confidence: 0.95 }),
+  };
+  const r = await renderBatchItem(
+    { message_id: 1, chat: { id: 1 }, caption: "תתמלל", audio: { file_id: "a1", duration: 5 } },
+    io,
+  );
+  expect(r.part.startsWith("תתמלל")).toBe(true);
+  expect(r.part).toContain("hello");
+  expect(r.historyPart).toBe("תתמלל\n[audio] hello");
+});
+
+test("renderBatchItem reports a failed audio transcription instead of dropping it", async () => {
+  const io = {
+    backend: () => "groq" as const,
+    download: async () => "/up/1-audio.mp3",
+    transcribe: async (): Promise<{ text: string; confidence: number | null }> => {
+      throw new Error("groq HTTP 400");
+    },
+  };
+  const r = await renderBatchItem({ message_id: 1, chat: { id: 1 }, audio: { file_id: "a" } }, io);
+  expect(r.part).toContain("audio file");
+  expect(r.part).toContain("transcription failed");
+  expect(r.historyPart).toBe("[audio file]");
+});
+
+test("renderBatchItem tells Claude about media it can't open (the silent-drop bug)", async () => {
+  const r = await renderBatchItem(
+    { message_id: 1, chat: { id: 1 }, video_note: { file_id: "vn" } },
+    batchNoIo,
+  );
+  expect(r.part).toContain("a video note");
+  expect(r.part).toContain("can't open");
+  expect(r.historyPart).toBe("[sent a video note]");
+});
+
+test("renderBatchItem keeps the caption when the media itself is unreadable", async () => {
+  const r = await renderBatchItem(
+    { message_id: 1, chat: { id: 1 }, sticker: { file_id: "s" }, caption: "תראה" },
+    batchNoIo,
+  );
+  expect(r.part.startsWith("תראה")).toBe(true);
+  expect(r.part).toContain("a sticker");
+  expect(r.historyPart).toBe("[sent a sticker] תראה");
+});
+
+test("renderBatchItem passes plain text through untouched", async () => {
+  const r = await renderBatchItem({ message_id: 1, chat: { id: 1 }, text: "מה השעה?" }, batchNoIo);
+  expect(r.part).toBe("מה השעה?");
+  expect(r.historyPart).toBe("מה השעה?");
+});
+
+test("renderBatchItem still transcribes a voice bubble, downloading it as voice.oga", async () => {
+  let downloadedAs: string | undefined;
+  const io = {
+    backend: () => "groq" as const,
+    download: async (_id: string, name?: string) => {
+      downloadedAs = name;
+      return "/up/1-voice.oga";
+    },
+    transcribe: async () => ({ text: "שלום", confidence: 0.3 }),
+  };
+  const r = await renderBatchItem(
+    { message_id: 1, chat: { id: 1 }, voice: { file_id: "v", duration: 3 } },
+    io,
+  );
+  expect(downloadedAs).toBe("voice.oga");
+  expect(r.part).toContain("voice note");
+  expect(r.historyPart).toBe("[voice] שלום");
+  expect(r.echo).toBe("🎤 «שלום»");
 });
 
 test("parsePaCallback accepts ok/no and rejects junk", () => {
