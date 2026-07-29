@@ -95,8 +95,20 @@ export function checkBudget(db: Database, kind: Kind, extra: number): void {
 
 export interface AddArgs {
   kind: Kind; content: string; source: Provenance; now: number; actor?: string;
+  /** Escape hatch for tests/imports that need to create a deliberate twin. */
+  allowDuplicate?: boolean;
 }
-export interface AddResult { id: number; status: "active" | "quarantined"; reason: string | null }
+export interface AddResult {
+  id: number; status: "active" | "quarantined"; reason: string | null;
+  /** True when the fact was already stored and nothing new was written. */
+  duplicate?: boolean;
+}
+
+/** Comparison key for "we already know this". Whitespace and case only —
+ *  anything cleverer risks collapsing two genuinely different facts. */
+function dedupKey(content: string): string {
+  return content.replace(/\s+/g, " ").trim().toLowerCase();
+}
 
 export function addMemory(db: Database, a: AddArgs): AddResult {
   const content = a.content?.trim();
@@ -105,6 +117,25 @@ export function addMemory(db: Database, a: AddArgs): AddResult {
   if (!content) throw new MemoryError("content is empty");
   if (content.length > ENTRY_MAX) {
     throw new MemoryError(`entry too long (${content.length} > ${ENTRY_MAX} chars) — split or shorten it`);
+  }
+
+  // Already known? Return the existing row instead of minting a twin. Idempotent
+  // rather than an error on purpose: an error invites the caller to rephrase and
+  // save "the same fact, worded differently", which is how the core filled up
+  // with near-duplicates in the first place (live cleanup, 2026-07-29).
+  if (!a.allowDuplicate) {
+    const key = dedupKey(content);
+    const existing = (db
+      .query("SELECT * FROM memory WHERE kind = ? AND status != 'archived' ORDER BY id")
+      .all(a.kind) as MemoryRow[]).find((r) => dedupKey(r.content) === key);
+    if (existing) {
+      return {
+        id: existing.id,
+        status: existing.status as "active" | "quarantined",
+        reason: existing.reason,
+        duplicate: true,
+      };
+    }
   }
 
   const threats = scanThreats(content, "strict");
@@ -151,10 +182,27 @@ export function resolveBySubstring(db: Database, sub: string): MemoryRow {
   throw new MemoryError(`${rows.length} entries match "${needle}" — be more specific:\n${listing}`);
 }
 
-export interface ReplaceArgs { old: string; new: string; now: number; actor?: string }
+/** Resolve an explicit row id, refusing unknown or already-archived rows. */
+export function resolveById(db: Database, id: number): MemoryRow {
+  const row = getMemory(db, id);
+  if (!row) throw new MemoryError(`no memory entry with id ${id}`);
+  if (row.status === "archived") throw new MemoryError(`entry ${id} is already archived`);
+  return row;
+}
+
+/** Pick the target of a mutation: an explicit id wins, else the substring.
+ *  Byte-identical entries can only ever be told apart by id — the substring
+ *  path is genuinely ambiguous and refuses, which once left two duplicates
+ *  permanently unremovable (live incident, 2026-07-29). */
+export function resolveTarget(db: Database, sel: { id?: number; old?: string }): MemoryRow {
+  if (sel.id != null) return resolveById(db, sel.id);
+  return resolveBySubstring(db, sel.old ?? "");
+}
+
+export interface ReplaceArgs { old?: string; id?: number; new: string; now: number; actor?: string }
 
 export function replaceMemory(db: Database, a: ReplaceArgs): MemoryRow {
-  const target = resolveBySubstring(db, a.old);
+  const target = resolveTarget(db, a);
   const content = a.new?.trim();
   if (!content) throw new MemoryError("replacement content is empty");
   if (content.length > ENTRY_MAX) {
@@ -183,10 +231,10 @@ export function replaceMemory(db: Database, a: ReplaceArgs): MemoryRow {
   return after;
 }
 
-export interface RemoveArgs { old: string; reason?: string; now: number; actor?: string }
+export interface RemoveArgs { old?: string; id?: number; reason?: string; now: number; actor?: string }
 
 export function removeMemory(db: Database, a: RemoveArgs): MemoryRow {
-  const target = resolveBySubstring(db, a.old);
+  const target = resolveTarget(db, a);
   let after!: MemoryRow;
   // Write + audit journal must commit together or not at all.
   db.transaction(() => {
@@ -201,6 +249,78 @@ export function removeMemory(db: Database, a: RemoveArgs): MemoryRow {
     });
   })();
   return after;
+}
+
+export interface PurgeArgs { id: number; reason?: string; now: number; actor?: string }
+export interface PurgeResult { id: number; kind: Kind; chars: number }
+
+/**
+ * Hard-delete an entry. Unlike removeMemory (which archives and is reversible),
+ * this is a burn with no undo: the row is deleted, the AFTER DELETE trigger
+ * drops it from the FTS index, and every journal row that quoted its content is
+ * scrubbed. The audit TRAIL survives — you can still see that an entry existed
+ * and was purged, and why — but the text itself does not.
+ *
+ * This exists for facts that must not merely be deactivated: something untrue,
+ * private, or written by someone other than Maor. Callers should re-export the
+ * disk mirror afterwards so the readable copy drops it too.
+ */
+export function purgeMemory(db: Database, a: PurgeArgs): PurgeResult {
+  const target = getMemory(db, a.id);
+  if (!target) throw new MemoryError(`no memory entry with id ${a.id}`);
+  db.transaction(() => {
+    db.query("DELETE FROM memory WHERE id = ?").run(a.id); // trigger clears memory_fts
+    // Scrub the content this row left in earlier audit rows. Keep the rows
+    // themselves so the history stays honest about what happened.
+    db.query(
+      "UPDATE journal SET before = NULL, after = NULL WHERE target_table = 'memory' AND target_id = ?",
+    ).run(a.id);
+    journal(db, {
+      ts: a.now, actor: a.actor ?? "bot", action: "purge", targetTable: "memory",
+      targetId: a.id, provenance: target.provenance, reason: a.reason ?? null,
+      before: null, after: null,
+    });
+  })();
+  return { id: a.id, kind: target.kind, chars: target.content.length };
+}
+
+export interface CurateReport {
+  budgets: { kind: Kind; used: number; budget: number; pct: number }[];
+  duplicates: { content: string; ids: number[]; wastedChars: number }[];
+}
+
+/**
+ * Read-only health report on the core: how full each kind is, and which active
+ * entries are byte-identical. Deliberately does not mutate — the weekly curator
+ * reads this and decides what to merge or burn, the same division of labour
+ * skill.ts curate already uses.
+ */
+export function curateMemory(db: Database): CurateReport {
+  const budgets = KINDS.map((kind) => {
+    const used = coreChars(db, kind);
+    const budget = budgetFor(kind);
+    return { kind, used, budget, pct: Math.round((used / budget) * 100) };
+  });
+
+  const groups = new Map<string, { content: string; ids: number[] }>();
+  for (const r of db
+    .query("SELECT id, content FROM memory WHERE status = 'active' ORDER BY id")
+    .all() as { id: number; content: string }[]) {
+    const key = dedupKey(r.content);
+    const g = groups.get(key);
+    if (g) g.ids.push(r.id);
+    else groups.set(key, { content: r.content, ids: [r.id] });
+  }
+  const duplicates = [...groups.values()]
+    .filter((g) => g.ids.length > 1)
+    .map((g) => ({
+      content: g.content,
+      ids: g.ids,
+      // What you would get back by keeping one copy.
+      wastedChars: g.content.length * (g.ids.length - 1),
+    }));
+
+  return { budgets, duplicates };
 }
 
 function transition(
