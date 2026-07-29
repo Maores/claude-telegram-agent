@@ -153,6 +153,20 @@ export function initSchema(db: Database): void {
       output_tokens INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_usage_log_ts ON usage_log(ts);
+
+    -- Progress/XP ledger (gamification). Append-only: one row per thing Maor
+    -- actually finished. The ref column holds the source's own id (a followup
+    -- id, a task uid); the unique index is what makes re-running a sync safe.
+    CREATE TABLE IF NOT EXISTS xp_events (
+      id     INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts     INTEGER NOT NULL,   -- unix seconds, when the thing was completed
+      kind   TEXT    NOT NULL,   -- 'followup' | 'task'
+      points INTEGER NOT NULL,
+      ref    TEXT,               -- source id; NULL for one-off awards
+      note   TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_xp_events_ref ON xp_events(kind, ref);
+    CREATE INDEX IF NOT EXISTS idx_xp_events_ts ON xp_events(ts);
   `);
 
   // Phase 3.1 additive migration: which umbrella skill absorbed this one.
