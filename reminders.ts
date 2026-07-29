@@ -146,6 +146,59 @@ export function listFor(chatId: number): Reminder[] {
     .sort((a, b) => a.fireAt - b.fireAt);
 }
 
+export interface ReminderEdit {
+  fireAt?: number;                 // one-time: move to this epoch
+  hour?: number; minute?: number;  // repeating: new time of day
+  days?: number[];                 // repeating: new weekday set
+  text?: string;                   // either: reword
+}
+
+/**
+ * Move or reword a reminder in place, keeping its id. Rescheduling used to mean
+ * cancel + add, which mints a new id and loses the reminder entirely if the add
+ * half fails. Returns null when the id is unknown or belongs to another chat.
+ * Editing a repeat's time recomputes the next fire from it.
+ */
+export function editReminder(
+  chatId: number,
+  id: string,
+  e: ReminderEdit,
+  nowEpoch = Math.floor(Date.now() / 1000),
+): Reminder | null {
+  const touchesRepeat = e.hour != null || e.minute != null || e.days != null;
+  if (e.fireAt == null && e.text == null && !touchesRepeat) {
+    throw new Error("nothing to change — pass a new time, days, or text");
+  }
+  return withFileLock(storePath(), () => {
+    const list = loadStore();
+    const r = list.find((x) => x.chatId === chatId && x.id === id);
+    if (!r) return null;
+
+    if (touchesRepeat && !r.repeat) {
+      throw new Error(`${id} is a one-time reminder — move it with a new time instead of a repeat schedule`);
+    }
+    if (e.fireAt != null) {
+      if (r.repeat) throw new Error(`${id} repeats — change its time/days rather than a single fire time`);
+      if (e.fireAt <= nowEpoch) throw new Error("that time is in the past");
+      r.fireAt = e.fireAt;
+    }
+    if (touchesRepeat && r.repeat) {
+      const hour = e.hour ?? r.repeat.hour;
+      const minute = e.minute ?? r.repeat.minute;
+      const days = e.days ?? r.repeat.days;
+      r.repeat = { hour, minute, days };
+      r.fireAt = nextFire(nowEpoch, hour, minute, days);
+    }
+    if (e.text != null) {
+      const t = e.text.trim();
+      if (!t) throw new Error("text cannot be empty");
+      r.text = t;
+    }
+    saveStore(list);
+    return r;
+  });
+}
+
 export function cancel(chatId: number, id: string): boolean {
   return withFileLock(storePath(), () => {
     const list = loadStore();

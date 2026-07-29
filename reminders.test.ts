@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 const TMP = join(import.meta.dir, "reminders.test.tmp.json");
 process.env.REMINDERS_FILE = TMP;
 
-import { nextFire, addOnce, addRepeat, listFor, cancel, popDue, loadStore } from "./reminders.ts";
+import { nextFire, addOnce, addRepeat, listFor, cancel, editReminder, popDue, loadStore } from "./reminders.ts";
 
 const DAILY = [0, 1, 2, 3, 4, 5, 6];
 const WEEKDAYS = [1, 2, 3, 4, 5];
@@ -116,6 +116,75 @@ test("popDue leaves future reminders untouched", () => {
   addOnce(7, future, "later");
   expect(popDue().length).toBe(0);
   expect(loadStore().length).toBe(1);
+});
+
+// --- editReminder: move or reword without cancel+re-add ---------------------
+// Rescheduling used to mean cancel + add, which loses the reminder outright if
+// the second half fails, and mints a new id. Maor reschedules constantly
+// ("תדחה את זה ליום שני ב-10:20"), so it gets a first-class operation.
+
+test("editReminder moves a one-time reminder and keeps its id", () => {
+  const soon = Math.floor(Date.now() / 1000) + 600;
+  const r = addOnce(7, soon, "call the bank");
+  const moved = editReminder(7, r.id, { fireAt: soon + 7200 });
+  expect(moved).not.toBeNull();
+  expect(moved!.id).toBe(r.id);
+  expect(moved!.fireAt).toBe(soon + 7200);
+  expect(moved!.text).toBe("call the bank");
+  expect(loadStore().length).toBe(1); // moved, not duplicated
+});
+
+test("editReminder rewords without touching the time", () => {
+  const soon = Math.floor(Date.now() / 1000) + 600;
+  const r = addOnce(7, soon, "old wording");
+  const edited = editReminder(7, r.id, { text: "new wording" });
+  expect(edited!.text).toBe("new wording");
+  expect(edited!.fireAt).toBe(soon);
+});
+
+test("editReminder retimes a repeating reminder and recomputes the next fire", () => {
+  const r = addRepeat(7, 8, 0, [1, 2, 3, 4, 5], "standup");
+  const edited = editReminder(7, r.id, { hour: 20, minute: 35, days: [0, 1, 2, 3, 4, 5, 6] });
+  expect(edited!.repeat).toEqual({ hour: 20, minute: 35, days: [0, 1, 2, 3, 4, 5, 6] });
+  const next = new Date(edited!.fireAt * 1000);
+  expect(next.getHours()).toBe(20);
+  expect(next.getMinutes()).toBe(35);
+  expect(edited!.fireAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
+});
+
+test("editReminder rewords a repeating reminder without disturbing its schedule", () => {
+  const r = addRepeat(7, 9, 30, [0], "weekly thing");
+  const edited = editReminder(7, r.id, { text: "weekly thing, revised" });
+  expect(edited!.text).toBe("weekly thing, revised");
+  expect(edited!.repeat).toEqual({ hour: 9, minute: 30, days: [0] });
+  expect(edited!.fireAt).toBe(r.fireAt);
+});
+
+test("editReminder returns null for an unknown id or another chat's reminder", () => {
+  const soon = Math.floor(Date.now() / 1000) + 600;
+  const r = addOnce(7, soon, "mine");
+  expect(editReminder(7, "nope", { text: "x" })).toBeNull();
+  expect(editReminder(999, r.id, { text: "x" })).toBeNull(); // wrong chat
+  expect(loadStore()[0].text).toBe("mine");
+});
+
+test("editReminder refuses a one-time move into the past", () => {
+  const soon = Math.floor(Date.now() / 1000) + 600;
+  const r = addOnce(7, soon, "future thing");
+  expect(() => editReminder(7, r.id, { fireAt: Math.floor(Date.now() / 1000) - 60 })).toThrow(/past/i);
+  expect(loadStore()[0].fireAt).toBe(soon); // unchanged
+});
+
+test("editReminder with nothing to change is rejected rather than silently passing", () => {
+  const soon = Math.floor(Date.now() / 1000) + 600;
+  const r = addOnce(7, soon, "unchanged");
+  expect(() => editReminder(7, r.id, {})).toThrow(/nothing to change/i);
+});
+
+test("editReminder will not put a repeat schedule on a one-time reminder", () => {
+  const soon = Math.floor(Date.now() / 1000) + 600;
+  const r = addOnce(7, soon, "one-off");
+  expect(() => editReminder(7, r.id, { hour: 9, minute: 0, days: [1] })).toThrow(/one-time/i);
 });
 
 // --- follow-up lifecycle (Phase 5) ----------------------------------------
