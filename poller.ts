@@ -32,6 +32,7 @@ import { recordUsage, windowSpendUsd, shouldWarn, limitHitReply } from "./usage"
 import { scanThreats } from "./threats";
 import { redact } from "./redact";
 import { resolveBackend, transcribeVoice, shouldEchoTranscript, VOICE_MAX_SEC, type Backend } from "./transcribe";
+import { HEARTBEAT_FILE } from "./health.ts";
 import { shouldReview, runReview } from "./review";
 import { classifyUpdate, ChatQueues, SerialChain, Debouncer, isStopCommand } from "./dispatch";
 export { isStopCommand }; // poller.test.ts and external users keep their import path
@@ -2520,6 +2521,13 @@ async function main() {
     } finally {
       pollAbort = null;
     }
+
+    // Liveness heartbeat for health.ts (roadmap 0.2). Written only after a poll
+    // cycle actually completes, so a process that is up but no longer turning
+    // goes stale — systemd reports that case as perfectly healthy.
+    try {
+      writeFileSync(HEARTBEAT_FILE, String(Math.floor(Date.now() / 1000)));
+    } catch {}
 
     for (const u of updates) {
       offset = u.update_id + 1;
