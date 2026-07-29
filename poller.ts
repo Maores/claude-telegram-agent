@@ -2492,6 +2492,12 @@ async function main() {
   botUsername = me.username ?? "";
   botUserId = me.id ?? 0;
   console.log(`[BOT] Poller started as @${me.username}`);
+  // Stamp a heartbeat before the first long-poll. Without this there is a
+  // POLL_TIMEOUT-wide window after every restart where the file does not exist
+  // yet and health.ts would read a perfectly healthy boot as a stall.
+  try {
+    writeFileSync(HEARTBEAT_FILE, String(Math.floor(Date.now() / 1000)));
+  } catch {}
 
   setInterval(() => {
     void checkReminders();

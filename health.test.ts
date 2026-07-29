@@ -49,8 +49,16 @@ describe("assessHealth", () => {
   });
 
   test("a missing heartbeat file reads as stalled, not as healthy", () => {
+    // The poller stamps one at startup, so by the time it is serving, absence
+    // really does mean it never came up.
     const h = assessHealth({ ...ok, heartbeatAge: null });
     expect(h.healthy).toBe(false);
+  });
+
+  test("a heartbeat written seconds ago (fresh restart) is healthy", () => {
+    // Regression: the first probe after a deploy hit a POLL_TIMEOUT-wide window
+    // where no heartbeat existed yet and alerted on a perfectly good boot.
+    expect(assessHealth({ ...ok, heartbeatAge: 1 }).healthy).toBe(true);
   });
 
   test("several faults are all reported", () => {
