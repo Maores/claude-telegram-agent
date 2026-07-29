@@ -2,8 +2,10 @@
  * mem.ts — CLI the bot calls (via Bash) to manage guarded long-term memory.
  *
  *   bun run mem.ts add      --kind user|agent --source maor|derived --content "<text>"
- *   bun run mem.ts replace  --old "<unique substring>" --new "<text>"
- *   bun run mem.ts remove   --old "<unique substring>" [--reason "<why>"]
+ *   bun run mem.ts replace  (--old "<unique substring>" | --id <id>) --new "<text>"
+ *   bun run mem.ts remove   (--old "<unique substring>" | --id <id>) [--reason "<why>"]
+ *   bun run mem.ts purge    --id <id> [--reason "<why>"]   (HARD delete, no undo)
+ *   bun run mem.ts curate   (budget + duplicate report; the weekly job reads this)
  *   bun run mem.ts search   <query...>
  *   bun run mem.ts list     [--status active|quarantined|archived] [--kind user|agent]
  *   bun run mem.ts show     <id> [--raw]
@@ -19,7 +21,7 @@ import { readFileSync } from "node:fs";
 import { getDb } from "./db";
 import {
   addMemory, replaceMemory, removeMemory, searchMemory, listMemory, showMemory,
-  promoteMemory, restoreMemory, importMemoryMd, exportMirror, MemoryError,
+  promoteMemory, restoreMemory, importMemoryMd, exportMirror, purgeMemory, curateMemory, MemoryError,
   type Kind, type MemStatus, type Provenance,
 } from "./memory";
 
@@ -49,9 +51,20 @@ export function parseFlags(argv: string[]): { _: string[]; [k: string]: string |
 const MIRROR_DIR = join(import.meta.dir, "memory", "mirror");
 const MEMORY_MD = join(import.meta.dir, "memory", "MEMORY.md");
 
+/** Mutations target either an explicit --id or a unique --old substring.
+ *  --id is the only way to single out one of two identical entries. */
+export function selector(f: { id?: unknown; old?: unknown }): { id?: number; old?: string } {
+  if (f.id != null && f.id !== true) {
+    const id = Number(f.id);
+    if (!Number.isInteger(id)) die(`--id must be a whole number, got: ${String(f.id)}`);
+    return { id };
+  }
+  return { old: String(f.old ?? "") };
+}
+
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
-  if (!cmd) die("usage: mem.ts <add|replace|remove|search|list|show|promote|restore|import-md> ...");
+  if (!cmd) die("usage: mem.ts <add|replace|remove|purge|curate|search|list|show|promote|restore|import-md> ...");
 
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
@@ -78,19 +91,47 @@ function main() {
         break;
       }
       case "replace": {
-        const r = replaceMemory(db, { old: String(f.old ?? ""), new: String(f.new ?? ""), now });
+        const r = replaceMemory(db, { ...selector(f), new: String(f.new ?? ""), now });
         exportMirror(db, MIRROR_DIR, now);
         console.log(`OK — ${fmt(r)}`);
         break;
       }
       case "remove": {
         const r = removeMemory(db, {
-          old: String(f.old ?? ""),
+          ...selector(f),
           reason: typeof f.reason === "string" ? f.reason : undefined,
           now,
         });
         exportMirror(db, MIRROR_DIR, now);
         console.log(`archived ${r.id} (restore with: mem.ts restore ${r.id})`);
+        break;
+      }
+      case "purge": {
+        const id = Number(f.id);
+        if (!Number.isInteger(id)) die("usage: purge --id <id> [--reason \"...\"]  (irreversible)");
+        const r = purgeMemory(db, {
+          id,
+          reason: typeof f.reason === "string" ? f.reason : undefined,
+          now,
+        });
+        exportMirror(db, MIRROR_DIR, now);
+        console.log(`PURGED ${r.id} — ${r.chars} chars freed from the ${r.kind} core. This cannot be undone.`);
+        break;
+      }
+      case "curate": {
+        const rep = curateMemory(db);
+        for (const b of rep.budgets) {
+          console.log(`${b.kind}: ${b.used}/${b.budget} chars (${b.pct}%)${b.pct >= 90 ? "  <-- nearly full, consolidate" : ""}`);
+        }
+        if (!rep.duplicates.length) {
+          console.log("no duplicate entries");
+          break;
+        }
+        console.log(`\n${rep.duplicates.length} duplicate group(s):`);
+        for (const d of rep.duplicates) {
+          console.log(`  ids ${d.ids.join(", ")} — ${d.wastedChars} wasted chars — ${d.content}`);
+          console.log(`    keep ${d.ids[0]}, drop the rest: ${d.ids.slice(1).map((i) => `mem.ts remove --id ${i}`).join(" ; ")}`);
+        }
         break;
       }
       case "search": {

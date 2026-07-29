@@ -294,6 +294,17 @@ you do NOT read them yourself.
   mem.ts refuses the write and tells you to consolidate — merge or remove entries
   (`mem.ts replace --old "<snippet>" --new "<text>"`, `mem.ts remove --old
   "<snippet>"`) then retry. Review with `mem.ts list` / `mem.ts search <query>`.
+- Saving a fact you already know is a no-op — mem.ts returns the existing entry
+  and says so. Do NOT reword it and save it again; that is exactly how the core
+  filled up with near-duplicates. If a fact needs updating, `replace` it.
+- Every mutation can target `--id <id>` instead of `--old "<snippet>"`. Use the
+  id whenever two entries read alike, since a substring that matches both is
+  refused. `mem.ts curate` prints how full each core is plus any duplicate groups.
+- `mem.ts purge --id <id>` HARD-deletes an entry: gone from the core, the search
+  index, and the audit journal's quoted text, with no restore. Use it only for a
+  fact that is untrue, private, or not Maor's, and prefer `remove` (reversible)
+  for ordinary tidying. When Maor says to delete something about him, purge it
+  rather than archiving it.
 - This replaces the old hand-edited `memory/MEMORY.md`; do not edit that file
   directly anymore — go through `mem.ts` so every change is guarded and actually used.
 

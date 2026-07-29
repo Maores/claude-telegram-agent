@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync as rf, writeFileSync as wf, readdirSync as rd
 import { tmpdir } from "node:os";
 import { join as pjoin } from "node:path";
 import { openDb } from "./db";
-import { addMemory, coreChars, coreMemoryBlock, exportMirror, importMemoryMd, listMemory, MemoryError, promoteMemory, removeMemory, replaceMemory, restoreMemory, scrubForContext, searchMemory, showMemory, type MemoryRow } from "./memory";
+import { addMemory, coreChars, coreMemoryBlock, curateMemory, exportMirror, importMemoryMd, listMemory, MemoryError, promoteMemory, purgeMemory, removeMemory, replaceMemory, restoreMemory, scrubForContext, searchMemory, showMemory, type MemoryRow } from "./memory";
 
 const NOW = 1_781_000_000;
 
@@ -469,6 +469,193 @@ describe("coreMemoryBlock", () => {
     const block = coreMemoryBlock(db);
     expect(block).toContain("[BLOCKED:");
     expect(block).not.toContain("ignore all previous");
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Targeting by id, purge (hard delete), write-time dedup, and curation.
+// Driven by a live incident (2026-07-29): two byte-identical entries could not
+// be removed at all, because every mutation resolved its target by substring.
+// ---------------------------------------------------------------------------
+
+describe("targeting an entry by id", () => {
+  test("removeMemory --id archives exactly one of two identical entries", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "duplicated fact", source: "maor", now: NOW });
+    const b = addMemory(db, { kind: "user", content: "duplicated fact", source: "maor", now: NOW, allowDuplicate: true });
+    // The substring path is genuinely ambiguous here — that is the bug.
+    expect(() => removeMemory(db, { old: "duplicated fact", now: NOW })).toThrow(/2 entries match/);
+    removeMemory(db, { id: b.id, now: NOW, reason: "dupe" });
+    expect(getRow(db, b.id).status).toBe("archived");
+    expect(getRow(db, a.id).status).toBe("active");
+    db.close();
+  });
+
+  test("replaceMemory --id edits the entry you named", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "same text", source: "maor", now: NOW });
+    const b = addMemory(db, { kind: "user", content: "same text", source: "maor", now: NOW, allowDuplicate: true });
+    replaceMemory(db, { id: b.id, new: "edited text", now: NOW });
+    expect(getRow(db, b.id).content).toBe("edited text");
+    expect(getRow(db, a.id).content).toBe("same text");
+    db.close();
+  });
+
+  test("an unknown or archived id is rejected rather than silently matching", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "x", source: "maor", now: NOW });
+    expect(() => removeMemory(db, { id: 9999, now: NOW })).toThrow(/no memory entry with id/);
+    removeMemory(db, { id: a.id, now: NOW });
+    expect(() => removeMemory(db, { id: a.id, now: NOW })).toThrow(/already archived/);
+    db.close();
+  });
+});
+
+describe("purgeMemory (irreversible burn)", () => {
+  test("hard-deletes the row so it is gone, not archived", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "a wrong private fact", source: "maor", now: NOW });
+    purgeMemory(db, { id: a.id, now: NOW, reason: "not true" });
+    expect(getRow(db, a.id)).toBeNull(); // gone from the table entirely
+    expect(listMemory(db, {}).length).toBe(0);
+    db.close();
+  });
+
+  test("drops it from the FTS index so search can never surface it again", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "burnmeplease unique token", source: "maor", now: NOW });
+    expect(searchMemory(db, "burnmeplease", 5).length).toBe(1);
+    purgeMemory(db, { id: a.id, now: NOW });
+    expect(searchMemory(db, "burnmeplease", 5).length).toBe(0);
+    db.close();
+  });
+
+  test("scrubs the content out of the audit journal — a burn leaves no copy behind", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "sensitive burnable text", source: "maor", now: NOW });
+    replaceMemory(db, { id: a.id, new: "sensitive burnable text v2", now: NOW });
+    purgeMemory(db, { id: a.id, now: NOW, reason: "burn" });
+    const rows = db.query("SELECT before, after FROM journal WHERE target_id = ?").all(a.id) as any[];
+    expect(rows.length).toBeGreaterThan(0); // the audit TRAIL survives
+    for (const r of rows) {
+      expect(JSON.stringify(r.before ?? "")).not.toContain("burnable");
+      expect(JSON.stringify(r.after ?? "")).not.toContain("burnable");
+    }
+    db.close();
+  });
+
+  test("records that a purge happened, with its reason", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "gone soon", source: "maor", now: NOW });
+    purgeMemory(db, { id: a.id, now: NOW, reason: "written by someone else" });
+    const j = lastJournal(db);
+    expect(j.action).toBe("purge");
+    expect(j.target_id).toBe(a.id);
+    expect(j.reason).toBe("written by someone else");
+    db.close();
+  });
+
+  test("frees the budget the entry was holding", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "0123456789", source: "maor", now: NOW });
+    expect(coreCharsTest(db)).toBe(10);
+    purgeMemory(db, { id: a.id, now: NOW });
+    expect(coreCharsTest(db)).toBe(0);
+    db.close();
+  });
+
+  test("refuses an unknown id", () => {
+    const db = freshDb();
+    expect(() => purgeMemory(db, { id: 4242, now: NOW })).toThrow(/no memory entry with id/);
+    db.close();
+  });
+});
+
+describe("addMemory dedup", () => {
+  test("re-adding the same fact is idempotent instead of creating a twin", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "Maor drinks espresso", source: "maor", now: NOW });
+    const b = addMemory(db, { kind: "user", content: "Maor drinks espresso", source: "maor", now: NOW });
+    expect(b.id).toBe(a.id);
+    expect(b.duplicate).toBe(true);
+    expect(listMemory(db, { status: "active" }).length).toBe(1);
+    db.close();
+  });
+
+  test("dedup ignores surrounding whitespace and letter case", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "Likes Espresso", source: "maor", now: NOW });
+    const b = addMemory(db, { kind: "user", content: "  likes   espresso  ", source: "maor", now: NOW });
+    expect(b.id).toBe(a.id);
+    db.close();
+  });
+
+  test("the same text under a different kind is a separate fact", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "shared wording", source: "maor", now: NOW });
+    const b = addMemory(db, { kind: "agent", content: "shared wording", source: "maor", now: NOW });
+    expect(b.id).not.toBe(a.id);
+    db.close();
+  });
+
+  test("a genuinely new fact still saves normally", () => {
+    const db = freshDb();
+    addMemory(db, { kind: "user", content: "fact one", source: "maor", now: NOW });
+    const b = addMemory(db, { kind: "user", content: "fact two", source: "maor", now: NOW });
+    expect(b.duplicate).toBeFalsy();
+    expect(listMemory(db, { status: "active" }).length).toBe(2);
+    db.close();
+  });
+
+  test("an archived entry does not block re-learning the fact later", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "seasonal fact", source: "maor", now: NOW });
+    removeMemory(db, { id: a.id, now: NOW });
+    const b = addMemory(db, { kind: "user", content: "seasonal fact", source: "maor", now: NOW });
+    expect(b.id).not.toBe(a.id);
+    expect(b.duplicate).toBeFalsy();
+    db.close();
+  });
+});
+
+describe("curateMemory", () => {
+  test("reports budget pressure per kind", () => {
+    const db = freshDb();
+    addMemory(db, { kind: "user", content: "x".repeat(100), source: "maor", now: NOW });
+    const r = curateMemory(db);
+    const user = r.budgets.find((b) => b.kind === "user")!;
+    expect(user.used).toBe(100);
+    expect(user.budget).toBeGreaterThan(100);
+    expect(user.pct).toBe(Math.round((100 / user.budget) * 100));
+    db.close();
+  });
+
+  test("groups byte-identical actives so the curator can burn the extras", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "twin fact", source: "maor", now: NOW });
+    const b = addMemory(db, { kind: "user", content: "twin fact", source: "maor", now: NOW, allowDuplicate: true });
+    const r = curateMemory(db);
+    expect(r.duplicates.length).toBe(1);
+    expect(r.duplicates[0].ids).toEqual([a.id, b.id]);
+    expect(r.duplicates[0].wastedChars).toBe("twin fact".length);
+    db.close();
+  });
+
+  test("says nothing is wrong when the core is clean", () => {
+    const db = freshDb();
+    addMemory(db, { kind: "user", content: "one", source: "maor", now: NOW });
+    addMemory(db, { kind: "user", content: "two", source: "maor", now: NOW });
+    expect(curateMemory(db).duplicates).toEqual([]);
+    db.close();
+  });
+
+  test("ignores archived rows when hunting duplicates", () => {
+    const db = freshDb();
+    const a = addMemory(db, { kind: "user", content: "recycled", source: "maor", now: NOW });
+    removeMemory(db, { id: a.id, now: NOW });
+    addMemory(db, { kind: "user", content: "recycled", source: "maor", now: NOW });
+    expect(curateMemory(db).duplicates).toEqual([]);
     db.close();
   });
 });
