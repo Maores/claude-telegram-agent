@@ -368,6 +368,29 @@ cp -a /tmp/r/home/. ~/
 then re-create the `.env` secrets (steps 6-8) and
 `sudo systemctl start telegram-agent`.
 
+### Liveness self-check (roadmap 0.2)
+
+`health.ts` runs from cron, independently of the poller, and messages Maor
+through the Telegram Bot API directly when the agent is unhealthy. It exists for
+the 2026-06-20 failure: the OAuth token expired, systemd still reported the
+service active, and the agent was silently dead for 28 hours.
+
+```bash
+# hourly: service + poller heartbeat.  every 6h: also probe claude auth.
+crontab -e
+15 * * * * cd ~/claude-bot && set -a && . ~/.claude/channels/telegram/.env && set +a && ~/.bun/bin/bun run health.ts check >> ~/claude-bot/health.log 2>&1
+30 */6 * * * cd ~/claude-bot && set -a && . ~/.claude/channels/telegram/.env && set +a && ~/.bun/bin/bun run health.ts check --auth >> ~/claude-bot/health.log 2>&1
+```
+
+`TELEGRAM_CHAT_ID` must be in that env file for alerts to have a destination.
+Alerts are edge-triggered: one on the way into a fault, one on recovery, and a
+single daily reminder while it stays broken, so a healthy week is silent.
+
+What it cannot detect is the droplet being off or off-network — nothing running
+on the box can report its own absence. That gap needs an outside pinger such as
+healthchecks.io: create a check there and curl its ping URL from the same cron
+line.
+
 Off-box copies, two independent layers:
 
 1. **DigitalOcean automated backups** (whole-disk, hands-off, priced as a
