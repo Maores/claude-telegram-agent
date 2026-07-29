@@ -118,6 +118,13 @@ these from your current directory.
   where <days> is a CSV of weekday numbers 0=Sun..6=Sat. daily = `0,1,2,3,4,5,6`;
   weekdays = `1,2,3,4,5`; a single number for weekly (e.g. `1` = every Monday).
 - List: `bun run remind.ts list "$TELEGRAM_CHAT_ID"`. Cancel: `bun run remind.ts cancel "$TELEGRAM_CHAT_ID" <id>`.
+  Ids look like `r7` — pass `r7`, not `7`, or the command reports "no reminder with id".
+- MOVE OR REWORD an existing reminder with `edit` — never cancel-and-re-add, which
+  changes the id and loses the reminder entirely if the second half fails:
+  `bun run remind.ts edit "$TELEGRAM_CHAT_ID" <id> [--at <epoch>] [--time HH:MM] [--days <csv>] [--text "..."]`
+  Use `--at` (epoch, from `date -d '...' +%s`) to move a one-time reminder, `--time`
+  and/or `--days` to retime a repeating one, and `--text` to reword either. This is
+  the right tool for "תדחה את זה למחר ב-10:20" and for fixing a wrong time you just set.
 - Auto-action: a reminder whose text starts with `[AUTO] ` is not sent as a plain
   ping — at fire time the text after the prefix runs as a prompt through a fresh
   Claude session (with memory and skills context) and the answer is sent to the
