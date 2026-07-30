@@ -96,11 +96,16 @@ export function loadQuestions(path = questionsPath()): Question[] {
     ) {
       continue;
     }
+    // The spread must come FIRST: it carries every optional field through, and
+    // the sanitized values below then override whatever the entry had. Written
+    // the other way round (2026-07-07 to 2026-07-30) the spread overwrote the
+    // defaults, so this validation was dead code and a numeric category or a
+    // tags string passed straight into the bank.
     out.push({
+      ...(q as unknown as Question),
       category: typeof q.category === "string" ? q.category : "",
       source: typeof q.source === "string" ? q.source : "",
       tags: Array.isArray(q.tags) ? q.tags.filter((t) => typeof t === "string") : [],
-      ...(q as unknown as Question),
     });
   }
   return out;
