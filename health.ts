@@ -110,7 +110,9 @@ async function serviceActive(): Promise<boolean> {
   return out === "active";
 }
 
-/** Cheapest possible round trip that proves the CLI can still authenticate. */
+/** Cheapest possible round trip that proves the CLI can still reach the API.
+ *  Covers auth failures (2026-06-20) and upstream overload (2026-07-29) — both
+ *  can arrive as printed output on a zero exit code. */
 async function claudeAuthOk(): Promise<boolean> {
   const p = Bun.spawn(["claude", "-p", "reply with the single word ok"], {
     stdout: "pipe", stderr: "pipe",
@@ -123,8 +125,12 @@ async function claudeAuthOk(): Promise<boolean> {
       new Response(p.stderr).text().catch(() => ""),
     ]);
     if (code !== 0) return false;
-    // An auth failure can still exit 0 while printing the error as the answer.
-    return !/401|invalid authentication|unauthorized|please run .*login/i.test(out + err);
+    // The CLI can exit 0 while printing the API error as its answer, so the
+    // text is the real signal. 529/overloaded is included: on 2026-07-29 that
+    // shape replaced three real replies and no monitor noticed.
+    return !/401|invalid authentication|unauthorized|please run .*login|529|overloaded|api error/i.test(
+      out + err,
+    );
   } finally {
     clearTimeout(killer);
   }

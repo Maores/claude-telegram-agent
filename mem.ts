@@ -53,7 +53,7 @@ const MEMORY_MD = join(import.meta.dir, "memory", "MEMORY.md");
 
 /** Mutations target either an explicit --id or a unique --old substring.
  *  --id is the only way to single out one of two identical entries. */
-export function selector(f: { id?: unknown; old?: unknown }): { id?: number; old?: string } {
+export function selector(f: Record<string, unknown>): { id?: number; old?: string } {
   if (f.id != null && f.id !== true) {
     const id = Number(f.id);
     if (!Number.isInteger(id)) die(`--id must be a whole number, got: ${String(f.id)}`);

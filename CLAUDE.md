@@ -284,7 +284,10 @@ for things he actually finished, and levels get progressively more expensive.
   points. NEVER hand out points for something he did not finish, and never invent a
   level or a number — always read them from the command.
 - If he crosses a level, say so warmly and briefly, once. Don't nag about streaks
-  and don't bring up XP unprompted in ordinary conversation.
+  and don't bring up XP unprompted in ordinary CONVERSATION. The nightly summary
+  is the deliberate exception: it always carries one short progress line, because
+  Maor asked for this to FEEL like progress and a silent counter does not
+  (2026-07-30 — he pointed out he had never once seen it).
 
 ## Daily quiz (interview prep)
 A daily interview-practice question goes out automatically (Sun-Thu at 18:00,

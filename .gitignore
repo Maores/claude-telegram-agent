@@ -13,6 +13,8 @@ choices.test-*.json
 cal_notified.json
 data/quiz-state.json
 quiz-paused.flag
+health-state.json
+heartbeat
 *.tmp
 *.log
 
