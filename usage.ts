@@ -113,3 +113,49 @@ export function limitHitReply(errText: string | undefined | null): string | null
   const base = "נראה שהגעת למגבלת השימוש כרגע.";
   return hint ? `${base} אפשר לנסות שוב בעוד ${hint}.` : `${base} נסה שוב מאוחר יותר.`;
 }
+
+// ---------------------------------------------------------------------------
+// Upstream API errors that arrive as the ANSWER rather than as a thrown error.
+//
+// Live incident 2026-07-29 23:25-23:40: the CLI answered three turns with
+// "API Error: 529 Overloaded". Because a reply was produced, the poller counted
+// each turn as a success — no [ERR] line, [MSG] and [DONE] perfectly balanced,
+// and Maor received a raw English error in the middle of a Hebrew conversation.
+// Every monitoring signal reported green. Hence this check on the ANSWER.
+// ---------------------------------------------------------------------------
+
+export type UpstreamKind = "overloaded" | "auth" | "server";
+export interface UpstreamError { kind: UpstreamKind; retryable: boolean }
+
+/** How much of a reply may surround the signature before we assume the model is
+ *  merely *discussing* an error instead of having hit one. The real failures are
+ *  short and consist of nothing else. */
+const MAX_ERROR_REPLY_CHARS = 300;
+
+export function detectUpstreamError(answer: string | undefined | null): UpstreamError | null {
+  const text = (answer ?? "").trim();
+  if (!text || text.length > MAX_ERROR_REPLY_CHARS) return null;
+  // Require the API-error shape, not a bare status number: a short reply could
+  // legitimately mention 529 while explaining something.
+  const hasShape = /\bAPI Error\b|overloaded_error|status\.claude\.com|Failed to authenticate/i.test(text);
+  if (!hasShape) return null;
+
+  if (/\b529\b|overloaded/i.test(text)) return { kind: "overloaded", retryable: true };
+  if (/\b401\b|invalid authentication|unauthorized|Failed to authenticate/i.test(text)) {
+    return { kind: "auth", retryable: false };
+  }
+  if (/\b5\d\d\b/.test(text)) return { kind: "server", retryable: true };
+  return null;
+}
+
+/** What Maor sees instead of the raw error. Plain Hebrew, no LTR tokens, per the
+ *  bidi rule in CLAUDE.md. */
+export function upstreamErrorReply(e: UpstreamError): string {
+  if (e.kind === "auth") {
+    return "יש בעיית התחברות אצלי לשרת, וזה משהו שצריך טיפול ידני. שווה לבדוק את הטוקן.";
+  }
+  if (e.kind === "overloaded") {
+    return "השרת של המודל עמוס כרגע וזאת תקלה זמנית שלו, לא שלך. ניסיתי שוב ולא הסתדר. כדאי לשלוח לי את זה עוד רגע.";
+  }
+  return "השרת של המודל מחזיר שגיאה זמנית. ניסיתי שוב ולא הסתדר, אפשר לנסות עוד רגע.";
+}

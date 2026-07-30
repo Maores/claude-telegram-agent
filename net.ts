@@ -107,7 +107,9 @@ export function charsetFrom(contentType: string): string {
  *  Hebrew sites. An unknown label falls back to utf-8 rather than throwing. */
 export function decodeBody(buf: ArrayBuffer | Uint8Array, contentType: string): string {
   try {
-    return new TextDecoder(charsetFrom(contentType)).decode(buf);
+    // The label comes off the wire, so it cannot be narrowed to the typed
+    // Encoding union; an unsupported one throws and is caught below.
+    return new TextDecoder(charsetFrom(contentType) as ConstructorParameters<typeof TextDecoder>[0]).decode(buf);
   } catch {
     return new TextDecoder().decode(buf);
   }

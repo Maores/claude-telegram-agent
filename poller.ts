@@ -28,7 +28,7 @@ import { getDb, insertMessage, recentMessages, searchMessages, renderRecall, imp
 import { coreMemoryBlock, importMemoryMd } from "./memory";
 import { skillsIndexBlock } from "./skills";
 import { dueMonitors, performCheck, recordCheck, FAILURE_LIMIT, type Monitor, type CheckOutcome } from "./monitors";
-import { recordUsage, windowSpendUsd, shouldWarn, limitHitReply } from "./usage";
+import { recordUsage, windowSpendUsd, shouldWarn, limitHitReply, detectUpstreamError, upstreamErrorReply } from "./usage";
 import { scanThreats } from "./threats";
 import { redact } from "./redact";
 import { resolveBackend, transcribeVoice, shouldEchoTranscript, VOICE_MAX_SEC, type Backend } from "./transcribe";
@@ -45,6 +45,8 @@ const PROJECT_DIR = import.meta.dir;
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const CLAUDE_TIMEOUT_MS = Number(process.env.CLAUDE_TIMEOUT_MS ?? 240_000);
+// Pause before retrying a turn the API answered with a transient error (529).
+const UPSTREAM_RETRY_DELAY_MS = Number(process.env.UPSTREAM_RETRY_DELAY_MS ?? 8_000);
 
 const MODEL_IDS: Record<string, string> = {
   sonnet: "claude-sonnet-5",
@@ -966,6 +968,44 @@ let usageWarnArmed = true;
 
 /** Run `claude -p` in streaming mode and render the reply to Telegram live.
  *  Returns the final answer text. */
+/**
+ * streamClaude plus recovery from an upstream API error that arrives AS the
+ * answer (2026-07-29: three turns were answered with "API Error: 529
+ * Overloaded" and every monitor read them as successes).
+ *
+ * A retryable failure is re-run once after a short pause; because the renderer
+ * edits the same placeholder message, the retry overwrites the error text in
+ * place. If it fails again, or is not retryable, the caller gets a plain Hebrew
+ * explanation instead of the raw English error.
+ */
+async function streamClaudeResilient(
+  prompt: string,
+  chatId: number,
+  placeholderId: number | null,
+  model: string,
+  opts: SpawnOpts = {},
+): Promise<string> {
+  let answer = await streamClaude(prompt, chatId, placeholderId, model, opts);
+  let err = detectUpstreamError(answer);
+  if (!err) return answer;
+
+  console.error(`[ERR] upstream ${err.kind} answered the turn for chat ${chatId}`);
+  if (err.retryable) {
+    await sleep(UPSTREAM_RETRY_DELAY_MS);
+    answer = await streamClaude(prompt, chatId, placeholderId, model, opts);
+    const again = detectUpstreamError(answer);
+    if (!again) {
+      console.log(`[BOT] upstream ${err.kind} cleared on retry for chat ${chatId}`);
+      return answer;
+    }
+    console.error(`[ERR] upstream ${again.kind} persisted after retry for chat ${chatId}`);
+    err = again;
+  }
+  const msg = upstreamErrorReply(err);
+  await sendReply(chatId, placeholderId, msg).catch(() => {});
+  return msg;
+}
+
 async function streamClaude(
   prompt: string,
   chatId: number,
@@ -1371,7 +1411,7 @@ async function handleMessage(msg: TgMessage) {
     const turnId = newTurnId();
     const baseOpts = echoPrefix ? { renderPrefix: echoPrefix } : {};
     const answer =
-      (await streamClaude(
+      (await streamClaudeResilient(
         buildPrompt(history, name, messageForClaude, recall, loadMemory(), skills, directive, replyContext, recentUploadsBlock()),
         chatId,
         placeholderId,
@@ -1599,7 +1639,7 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
     const turnId = newTurnId();
     const batchOpts = echoes.length ? { renderPrefix: echoes.join("\n") + "\n\n" } : {};
     const answer =
-      (await streamClaude(
+      (await streamClaudeResilient(
         buildPrompt(history, name, userMsg, recall, loadMemory(), skills, directive, replyContext, recentUploadsBlock()),
         chatId,
         placeholderId,
@@ -1989,7 +2029,7 @@ async function answerChoice(chatId: number, choice: Choice, option: string) {
     const turnId = newTurnId();
     // 4 + 5. NORMAL interactive privileges — this is a real user-driven turn.
     const answer =
-      (await streamClaude(
+      (await streamClaudeResilient(
         buildPrompt(history, name, option, recall, loadMemory(), skills),
         chatId,
         placeholderId,
@@ -2254,7 +2294,7 @@ async function checkReminders() {
         // Unattended run → least-privilege: can't schedule reminders or file drafts.
         const turnId = newTurnId();
         const auto = autoSessionSpawn();
-        await streamClaude(fullPrompt, r.chatId, ph.message_id, "sonnet", {
+        await streamClaudeResilient(fullPrompt, r.chatId, ph.message_id, "sonnet", {
           ...auto,
           env: { ...(auto.env ?? {}), TELEGRAM_TURN_ID: turnId },
         });
@@ -2418,7 +2458,7 @@ async function fireMonitor(m: Monitor, outcome: CheckOutcome, threat: string[]) 
     `tell Maor briefly what it now says / what looks new. Plain text, no markdown.\n\n${fenced}`;
   const fullPrompt = buildPrompt([], "Maor", ask, [], loadMemory(), "");
   const auto = autoSessionSpawn();
-  await streamClaude(fullPrompt, m.chat_id, ph.message_id, "sonnet", auto);
+  await streamClaudeResilient(fullPrompt, m.chat_id, ph.message_id, "sonnet", auto);
 }
 
 /** Nudge the owner ~CAL_LEAD_MIN before each upcoming iCloud event (deduped). */

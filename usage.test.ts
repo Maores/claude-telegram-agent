@@ -6,6 +6,8 @@ import {
   shouldWarn,
   isLimitHitStderr,
   parseRetryAfter,
+  detectUpstreamError,
+  upstreamErrorReply,
   limitHitReply,
 } from "./usage";
 
@@ -77,5 +79,81 @@ describe("limit-hit classification", () => {
     expect(m).toContain("מגבלת השימוש");
     expect(m).toContain("2 hours");
     expect(limitHitReply("ECONNRESET")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Upstream API errors that arrive as the ANSWER, not as a thrown error.
+// Live incident 2026-07-29 23:25-23:40: three turns had their reply replaced by
+// "API Error: 529 Overloaded". The poller treated each as a successful turn, so
+// no [ERR] was logged, [MSG]/[DONE] stayed balanced, and Maor was handed a raw
+// English error mid-Hebrew conversation. Nothing anywhere noticed.
+// ---------------------------------------------------------------------------
+
+describe("detectUpstreamError", () => {
+  const REAL_529 =
+    "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com.";
+  const REAL_401 = "Failed to authenticate. API Error: 401 Invalid authentication credentials";
+
+  test("catches the exact 529 text from the live incident and marks it retryable", () => {
+    const d = detectUpstreamError(REAL_529);
+    expect(d).not.toBeNull();
+    expect(d!.kind).toBe("overloaded");
+    expect(d!.retryable).toBe(true);
+  });
+
+  test("catches the exact 401 text from the 2026-06-20 outage, not retryable", () => {
+    const d = detectUpstreamError(REAL_401);
+    expect(d!.kind).toBe("auth");
+    expect(d!.retryable).toBe(false);
+  });
+
+  test("treats other 5xx as retryable server trouble", () => {
+    expect(detectUpstreamError("API Error: 503 Service Unavailable")!.retryable).toBe(true);
+    expect(detectUpstreamError("API Error: 500 Internal Server Error")!.retryable).toBe(true);
+  });
+
+  test("catches a bare overloaded_error payload", () => {
+    expect(detectUpstreamError('{"type":"overloaded_error"}')!.kind).toBe("overloaded");
+  });
+
+  test("ignores a normal answer, including one that merely discusses errors", () => {
+    expect(detectUpstreamError("קבעתי לך תזכורת למחר ב-9")).toBeNull();
+    expect(detectUpstreamError("")).toBeNull();
+    // A turn that explains HTTP status codes must not be mistaken for a failure.
+    expect(
+      detectUpstreamError("קוד 529 באמת אומר שהשרת עמוס, וזה מה שהסברתי לך על תקני HTTP בהרחבה רבה מאוד"),
+    ).toBeNull();
+  });
+
+  test("only fires when the error dominates the reply, not when quoted inside a long answer", () => {
+    // The signature must be the whole reply, otherwise a genuine explanation
+    // that quotes the error would be silently retried and overwritten.
+    const long = "הסבר ארוך: ".repeat(40) + "API Error: 529 Overloaded";
+    expect(detectUpstreamError(long)).toBeNull();
+  });
+
+  test("survives the placeholder the poller substitutes for empty output", () => {
+    expect(detectUpstreamError("(no output)")).toBeNull();
+  });
+});
+
+describe("upstreamErrorReply", () => {
+  test("explains an overload in Hebrew and blames the right thing", () => {
+    const m = upstreamErrorReply({ kind: "overloaded", retryable: true });
+    expect(m).toMatch(/עמוס|זמנית/);
+    expect(m).not.toMatch(/API Error|529/); // never hand the raw error back
+  });
+
+  test("an auth failure tells him it needs attention rather than a retry", () => {
+    const m = upstreamErrorReply({ kind: "auth", retryable: false });
+    expect(m).toMatch(/התחברות|הרשאה|טוקן/);
+  });
+
+  test("every message is plain Hebrew with no LTR tokens (bidi rule)", () => {
+    for (const kind of ["overloaded", "auth", "server"] as const) {
+      const m = upstreamErrorReply({ kind, retryable: kind !== "auth" });
+      expect(m).not.toMatch(/[A-Za-z]{3,}/);
+    }
   });
 });
