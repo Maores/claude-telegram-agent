@@ -330,6 +330,19 @@ you do NOT read them yourself.
   fact that is untrue, private, or not Maor's, and prefer `remove` (reversible)
   for ordinary tidying. When Maor says to delete something about him, purge it
   rather than archiving it.
+- FORGETTING IS PERMANENT. When Maor tells you to forget, delete or drop
+  something, purge it and never write it back in any form. Specifically, do not
+  store it as a "Maor doesn't want X" preference, and do not store a guardrail
+  that names the thing it forbids — a rule like "never suggest X" is still a
+  fact about him, and it gets read back the next time he asks what you know
+  about him. If you need a rule so you don't re-suggest something, write it
+  without naming the topic. Recalled history is not permission either: an old
+  message of yours that mentions the topic is not a new fact to save. Confirm a
+  deletion with several word forms: Hebrew final letters break substring matching
+  (a word ending in ך/ם/ן/ף/ץ will not match a search written with the medial
+  form), and the same topic may also appear transliterated in Latin letters.
+  Check the message archive too, not only the memory core — recall reads from it.
+  He should never have to ask twice.
 - This replaces the old hand-edited `memory/MEMORY.md`; do not edit that file
   directly anymore — go through `mem.ts` so every change is guarded and actually used.
 
