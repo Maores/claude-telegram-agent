@@ -168,7 +168,7 @@ test("groqTranscribe sends auth, model, verbose_json — and parses the reply", 
       text: " תזכיר לי מחר ",
       segments: [{ avg_logprob: Math.log(0.9), start: 0, end: 2 }],
     });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   const tr = await groqTranscribe(AUDIO_TMP, { apiKey: "gsk_test", fetchFn });
   expect(tr.text).toBe("תזכיר לי מחר");
@@ -210,7 +210,7 @@ test("groqTranscribe uploads an .mp3 under its own extension (Groq validates by 
     const fetchFn = (async (_url: any, init: any) => {
       calls.push({ init });
       return groqOk({ text: "hi" });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     await groqTranscribe(MP3_TMP, { apiKey: "k", fetchFn });
     const file = (calls[0].init.body as FormData).get("file") as File;
     expect(file.name).toBe("voice.mp3");
@@ -221,7 +221,7 @@ test("groqTranscribe uploads an .mp3 under its own extension (Groq validates by 
 });
 
 test("groqTranscribe yields null confidence when segments are absent", async () => {
-  const fetchFn = (async () => groqOk({ text: "hi" })) as typeof fetch;
+  const fetchFn = (async () => groqOk({ text: "hi" })) as unknown as typeof fetch;
   const tr = await groqTranscribe(AUDIO_TMP, { apiKey: "k", fetchFn });
   expect(tr).toEqual({ text: "hi", confidence: null });
 });
@@ -232,7 +232,7 @@ test("groqTranscribe retries once on a 5xx and then succeeds", async () => {
     n++;
     if (n === 1) return new Response("boom", { status: 500 });
     return groqOk({ text: "ok" });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   const tr = await groqTranscribe(AUDIO_TMP, { apiKey: "k", fetchFn });
   expect(tr.text).toBe("ok");
   expect(n).toBe(2);
@@ -243,7 +243,7 @@ test("groqTranscribe does NOT retry a 4xx (e.g. 429) and throws with the status"
   const fetchFn = (async () => {
     n++;
     return new Response('{"error": "rate limit"}', { status: 429 });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   await expect(groqTranscribe(AUDIO_TMP, { apiKey: "k", fetchFn })).rejects.toThrow(
     /groq HTTP 429/,
   );
@@ -255,7 +255,7 @@ test("groqTranscribe retries once on a network error, then surfaces it", async (
   const fetchFn = (async () => {
     n++;
     throw new Error("connect ECONNREFUSED");
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   await expect(groqTranscribe(AUDIO_TMP, { apiKey: "k", fetchFn })).rejects.toThrow(
     /ECONNREFUSED/,
   );
@@ -263,14 +263,14 @@ test("groqTranscribe retries once on a network error, then surfaces it", async (
 });
 
 test("groqTranscribe throws without an api key", async () => {
-  const fetchFn = (async () => groqOk({ text: "x" })) as typeof fetch;
+  const fetchFn = (async () => groqOk({ text: "x" })) as unknown as typeof fetch;
   await expect(
     groqTranscribe(AUDIO_TMP, { apiKey: "", fetchFn }),
   ).rejects.toThrow(/GROQ_API_KEY/);
 });
 
 test("groqTranscribe throws on a 200 whose body has no text field", async () => {
-  const fetchFn = (async () => groqOk({ uh: "oh" })) as typeof fetch;
+  const fetchFn = (async () => groqOk({ uh: "oh" })) as unknown as typeof fetch;
   await expect(groqTranscribe(AUDIO_TMP, { apiKey: "k", fetchFn })).rejects.toThrow(
     /no text field/,
   );
@@ -281,7 +281,7 @@ test("groqTranscribe gives up after two 5xx attempts and throws the last error",
   const fetchFn = (async () => {
     n++;
     return new Response("boom", { status: 500 });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   await expect(groqTranscribe(AUDIO_TMP, { apiKey: "k", fetchFn })).rejects.toThrow(
     /groq HTTP 500/,
   );
@@ -293,7 +293,7 @@ test("groqTranscribe treats a malformed 200 body as final (no retry)", async () 
   const fetchFn = (async () => {
     n++;
     return new Response("<html>not json</html>", { status: 200 });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   await expect(groqTranscribe(AUDIO_TMP, { apiKey: "k", fetchFn })).rejects.toThrow(
     /malformed body/,
   );
@@ -380,7 +380,7 @@ test("transcribeVoice dispatches to local when only a command is configured", as
 
 test("transcribeVoice dispatches to groq when a key is configured", async () => {
   const fetchFn = (async () =>
-    new Response(JSON.stringify({ text: "hey" }), { status: 200 })) as typeof fetch;
+    new Response(JSON.stringify({ text: "hey" }), { status: 200 })) as unknown as typeof fetch;
   const tr = await transcribeVoice(AUDIO_TMP, { GROQ_API_KEY: "k" }, { fetchFn });
   expect(tr.text).toBe("hey");
 });
@@ -413,7 +413,7 @@ test("groqTranscribe re-transcribes ONCE with forced language on unexpected dete
       return groqOk({ text: "نص", language: "arabic", segments: [{ avg_logprob: Math.log(0.5), start: 0, end: 2 }] });
     }
     return groqOk({ text: "טקסט עברי תקין", language: "hebrew", segments: [{ avg_logprob: Math.log(0.9), start: 0, end: 2 }] });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   const tr = await groqTranscribe(AUDIO_TMP, { apiKey: "k", fetchFn, allowedLangs: ["he", "en"] });
   expect(forms.length).toBe(2);
@@ -428,7 +428,7 @@ test("groqTranscribe accepts allowed detections with a single call", async () =>
   const fetchFn = (async () => {
     calls++;
     return groqOk({ text: "hello", language: "english" });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   const tr = await groqTranscribe(AUDIO_TMP, { apiKey: "k", fetchFn, allowedLangs: ["he", "en"] });
   expect(calls).toBe(1);
   expect(tr.text).toBe("hello");
@@ -439,7 +439,7 @@ test("groqTranscribe tolerates a missing language field (single call)", async ()
   const fetchFn = (async () => {
     calls++;
     return groqOk({ text: "hi" });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   await groqTranscribe(AUDIO_TMP, { apiKey: "k", fetchFn, allowedLangs: ["he", "en"] });
   expect(calls).toBe(1);
 });
@@ -449,7 +449,7 @@ test("the forced retry's result is final even if still off-language (no loops)",
   const fetchFn = (async () => {
     calls++;
     return groqOk({ text: "??", language: "arabic" });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   const tr = await groqTranscribe(AUDIO_TMP, { apiKey: "k", fetchFn, allowedLangs: ["he"] });
   expect(calls).toBe(2); // exactly one guard retry, never more
   expect(tr.text).toBe("??");

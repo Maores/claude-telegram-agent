@@ -395,6 +395,77 @@ test("loadQuestions parses a JSON array and drops malformed entries", () => {
   expect(loaded.map((x) => x.id)).toEqual(["ok-1"]);
 });
 
+// The loader's sanitizing of category/source/tags was dead code from 2026-07-07
+// (commit dcd7a7c) until 2026-07-30: the raw entry was spread AFTER the defaults,
+// so it overwrote them and malformed values passed straight through. tsc flagged
+// it as three TS2783 "specified more than once" errors for three weeks.
+test("loadQuestions sanitizes a non-string category and source", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qzs-"));
+  const file = join(dir, "questions.json");
+  const bad = { ...q({ id: "bad-cat" }), category: 123, source: 42 };
+  require("node:fs").writeFileSync(file, JSON.stringify([bad]));
+  const [loaded] = loadQuestions(file);
+  expect(loaded.id).toBe("bad-cat");
+  expect(loaded.category).toBe("");
+  expect(loaded.source).toBe("");
+});
+
+test("loadQuestions drops non-string tags instead of passing them through", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qzt-"));
+  const file = join(dir, "questions.json");
+  const bad = { ...q({ id: "bad-tags" }), tags: ["ok", null, 5, "fine", { a: 1 }] };
+  require("node:fs").writeFileSync(file, JSON.stringify([bad]));
+  const [loaded] = loadQuestions(file);
+  expect(loaded.tags).toEqual(["ok", "fine"]);
+});
+
+test("loadQuestions replaces a tags value that is not an array at all", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qzt2-"));
+  const file = join(dir, "questions.json");
+  const bad = { ...q({ id: "tags-string" }), tags: "arrays,hashing" };
+  require("node:fs").writeFileSync(file, JSON.stringify([bad]));
+  expect(loadQuestions(file)[0].tags).toEqual([]);
+});
+
+test("loadQuestions keeps GOOD category/source/tags untouched", () => {
+  // Guards the fix from over-correcting: sanitizing must not blank real values.
+  const dir = mkdtempSync(join(tmpdir(), "qzg-"));
+  const file = join(dir, "questions.json");
+  const good = q({ id: "good-1", category: "graphs", source: "blind75", tags: ["bfs", "dfs"] });
+  require("node:fs").writeFileSync(file, JSON.stringify([good]));
+  const [loaded] = loadQuestions(file);
+  expect(loaded.category).toBe("graphs");
+  expect(loaded.source).toBe("blind75");
+  expect(loaded.tags).toEqual(["bfs", "dfs"]);
+});
+
+test("loadQuestions still preserves every other field on the question", () => {
+  // The fix reorders a spread, so prove nothing else got dropped in the process.
+  const dir = mkdtempSync(join(tmpdir(), "qzf-"));
+  const file = join(dir, "questions.json");
+  const full = q({
+    id: "full-1",
+    title: "Merge Intervals",
+    prompt: "Solve it",
+    answer: "Sort by start",
+    hint: "a||b||c",
+    time_complexity: "O(n log n)",
+    leetcode_url: "https://leetcode.com/problems/merge-intervals/",
+    difficulty: "medium",
+    diagram_url: "https://example.com/d.png",
+    pattern: "intervals",
+  });
+  require("node:fs").writeFileSync(file, JSON.stringify([full]));
+  const [loaded] = loadQuestions(file);
+  expect(loaded.title).toBe("Merge Intervals");
+  expect(loaded.hint).toBe("a||b||c");
+  expect(loaded.time_complexity).toBe("O(n log n)");
+  expect(loaded.leetcode_url).toContain("merge-intervals");
+  expect(loaded.difficulty).toBe("medium");
+  expect(loaded.diagram_url).toContain("d.png");
+  expect(loaded.pattern).toBe("intervals");
+});
+
 test("loadQuestions accepts an explicit path, ignoring the env override", () => {
   const dir = mkdtempSync(join(tmpdir(), "qzp-"));
   const file = join(dir, "incoming.json");
