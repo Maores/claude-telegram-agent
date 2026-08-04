@@ -89,7 +89,27 @@ Details:
 - **If the answer turns out not to qualify** (over the length cap, `/voice off` flipped mid-turn), the waiting process is killed.
 - **Fast answers get partial benefit.** A 6-second answer will not hide a 9.3-second load, so 2–3 extra seconds remain. Slower answers hide it entirely.
 
-**Rejected: an always-on speech process.** It would be 1–2 seconds better in the worst case, and the measured numbers rule it out. The droplet has 1,968 MB and **no swap**, the service has already peaked at **1,076 MB** during exactly the kind of rapid-fire exchange this feature invites, and a resident process would raise the peak to roughly 1,430 MB. With no swap an overrun kills a process outright rather than slowing anything down, and the OOM killer's usual choice is the largest process, which is the bot itself. Not worth 1–2 seconds.
+### Synthesis must be one-at-a-time — this is a crash fix, not an optimisation
+
+**One synthesis peaks at 668 MB** (measured with `/usr/bin/time -v`, not estimated). The droplet has **1,968 MB and no swap**. Nothing in the shipped code limits how many syntheses run at once, and the poller handles messages concurrently:
+
+| concurrent syntheses | memory | outcome |
+|---|---|---|
+| 1 | ~1,083 MB | fine — and this matches the observed peak of 1,076 MB exactly |
+| 2 | ~1,751 MB | ~200 MB margin, with no swap to absorb any spike |
+| 3 | ~2,419 MB | out of memory; the kernel kills the largest process, which is the bot |
+
+On 2026-08-04 Maor sent five recordings in a row and survived only because the replies happened to serialise. Nothing guaranteed that.
+
+**Therefore: a hard lock allowing exactly one synthesis at a time, queued behind it.** This bounds speech memory at 668 MB no matter what arrives. It is required for correctness regardless of which loading strategy is chosen, and it is why voice replies are currently disabled on the droplet (`voice-replies-off.flag`, set 2026-08-04).
+
+### Always-on was reconsidered and still rejected
+
+Once synthesis is serialised, both designs peak identically at ~1,083 MB. The only difference is whether the 668 MB is resident forever or released between recordings.
+
+Rejected because a third of the machine held permanently buys 1–2 seconds on fast answers, and it leaves the bot running with a permanently smaller margin on a box that cannot swap. Load-while-thinking gives the same peak and the same speed benefit on slower answers, frees the memory in between, and needs no second service.
+
+*(An earlier draft of this document rejected always-on using a 350 MB figure and reasoning that double-counted the peak. Maor pushed back, the process was measured properly at 668 MB, and the measurement is what surfaced the concurrency bug above. The conclusion survived; the reasoning behind it did not.)*
 
 **Must be measured, not assumed:** whether the parallel load slows the answer on that single core. The assumption is that a claude turn is mostly network wait and leaves CPU idle. If measurement contradicts that, fall back to loading after the answer and accept the slower path.
 
@@ -118,10 +138,17 @@ Plus one measurement that is not a unit test: parallel-load impact on answer lat
 
 ## What changes in the shipped code
 
-The current implementation (PR #74) survives in outline. Changes required:
+The current implementation (PR #74) survives in outline. Changes required, most urgent first:
 
-1. Add the 4-second input gate.
-2. Add the confirmation flow, and retire the now-unreachable echo path for voice notes.
-3. Add the impossible-language check.
-4. Move model loading to run in parallel with the answer.
-5. Keep `/voice`, the length cap, and silent failure exactly as they are.
+1. **Serialise synthesis behind a one-at-a-time lock.** Fixes a live crash risk, not a nicety. Voice replies stay disabled on the droplet until this ships.
+2. Add the 4-second input gate.
+3. Add the confirmation flow, and retire the now-unreachable echo path for voice notes.
+4. Add the impossible-language check.
+5. Move model loading to run in parallel with the answer.
+6. Keep `/voice`, the length cap, and silent failure exactly as they are.
+
+Item 1 stands alone and could ship before the rest. Items 2 and 3 must ship together, per section 1.
+
+## Testing note on the memory limit
+
+The one-at-a-time lock is testable without synthesising anything: assert that a second request while one is in flight waits rather than starting, and that the lock is released when a synthesis fails or times out (a lock that leaks on the error path would silence voice replies permanently, which is worse than the bug it fixes).
