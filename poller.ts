@@ -22,7 +22,7 @@ import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWi
 import { takePending, consumeAction, validateArgv, pruneActions, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
 import { StreamParser, displayText } from "./stream.ts";
-import { parseVoiceCommand, synthesize, ttsAvailable, shouldSpeak, shouldSpeakForInput, type VoiceCommand } from "./tts.ts";
+import { parseVoiceCommand, ttsAvailable, shouldSpeakForInput, startEngine, type TtsEngine, type VoiceCommand } from "./tts.ts";
 import { addPending, consumePending, parseVcCallback, vcKeyboard, type PendingVoice } from "./voice-confirm.ts";
 import { pickModel, detectDevIntent } from "./model.ts";
 import { upcomingEvents, nudgeKey, loadNotified, saveNotified, pruneNotified } from "./calendar.ts";
@@ -1223,6 +1223,11 @@ async function handleMessage(msg: TgMessage) {
   /** Length of the recording Maor sent, which decides whether he gets a spoken
    *  reply during the test phase. Null for typed messages. */
   let voiceDurationSec: number | null = null;
+  /** A synthesizer started early so its ~9.3s model load runs while the answer
+   *  is being written. Must be killed on every path that doesn't feed it, or
+   *  the synthesis slot leaks and voice replies go permanently silent. */
+  let enginePromise: Promise<TtsEngine | null> | null = null;
+  let ttsOutPath: string | null = null;
   if (voice) {
     if (resolveBackend() === "off") {
       await tg("sendMessage", {
@@ -1309,6 +1314,14 @@ async function handleMessage(msg: TgMessage) {
       return;
     }
     voiceDurationSec = voice.duration;
+    // A qualifying recording means a spoken reply is coming, so start loading
+    // the models now instead of after the answer. The load is 9.3s of the 11-19s
+    // a voice reply used to take, and the turn ahead spends most of its 6-34s
+    // waiting on the network with the core idle.
+    if (shouldSpeakForInput(voiceDurationSec) && voiceRepliesEnabled() && ttsAvailable()) {
+      ttsOutPath = join(UPLOADS_DIR, `tts-reply-${Date.now()}.ogg`);
+      enginePromise = startEngine(ttsOutPath);
+    }
   }
 
   // Identify a readable photo/document before downloading, so we can reject an
@@ -1466,7 +1479,11 @@ async function handleMessage(msg: TgMessage) {
     // Voice in, voice out: a spoken copy of the answer, only for a message that
     // arrived as a recording. The text is already delivered above, so this is
     // pure bonus — it runs last and can never fail the turn.
-    if (shouldSpeakForInput(voiceDurationSec)) await speakReply(chatId, answer);
+    if (enginePromise) {
+      const engine = await enginePromise.catch(() => null);
+      enginePromise = null; // owned by speakWithEngine from here; don't double-kill
+      await speakWithEngine(chatId, engine, answer, ttsOutPath!);
+    }
     // Self-improvement pass (Phase 7): detached, cooldown-gated, never blocks.
     if (shouldReview(chatId, Math.floor(Date.now() / 1000))) {
       try {
@@ -1502,6 +1519,14 @@ async function handleMessage(msg: TgMessage) {
   } finally {
     // Documents and images are kept on disk for future sessions.
     // Audio transcripts are deleted immediately (they've already been transcribed).
+    // A pre-warmed engine the turn never reached (it threw, or /stop killed it)
+    // is still holding 668MB and the synthesis slot. Releasing it here is what
+    // stops one failed turn from silencing voice replies for good.
+    if (enginePromise) {
+      const orphan = await enginePromise.catch(() => null);
+      orphan?.kill();
+      if (ttsOutPath) rmSync(ttsOutPath, { force: true });
+    }
   }
 }
 
@@ -2397,26 +2422,31 @@ async function sendVoiceFile(chatId: number, path: string): Promise<void> {
   if (!data.ok) throw new Error(`sendVoice ${data.error_code}: ${data.description}`);
 }
 
-/** Speak an answer already delivered as text. Never throws: the text reply is
- *  the product, and speech is the bonus on top of it. */
-async function speakReply(chatId: number, answer: string): Promise<void> {
-  if (!voiceRepliesEnabled() || !ttsAvailable()) return;
-  if (!shouldSpeak(answer)) {
-    console.log(`[TTS] skipped for ${chatId} (too long or nothing to say)`);
+/** Hand a pre-warmed engine the answer and send the audio. Never throws: the
+ *  text reply is the product and is already delivered, so speech is a bonus.
+ *  Takes ownership of the engine, releasing its slot however this ends. */
+async function speakWithEngine(
+  chatId: number,
+  engine: TtsEngine | null,
+  answer: string,
+  outPath: string,
+): Promise<void> {
+  if (!engine) return;
+  if (!voiceRepliesEnabled()) {
+    engine.kill(); // flipped off mid-turn
     return;
   }
-  const out = join(UPLOADS_DIR, `tts-reply-${Date.now()}.ogg`);
   try {
     void sendTyping(chatId);
     const started = Date.now();
-    const spoken = await synthesize(answer, out);
+    const spoken = await engine.speak(answer); // releases the slot itself
     if (!spoken) return;
     await sendVoiceFile(chatId, spoken.path);
-    console.log(`[TTS] spoke ${spoken.seconds}s for ${chatId} in ${Date.now() - started}ms`);
+    console.log(`[TTS] spoke ${spoken.seconds}s for ${chatId} in ${Date.now() - started}ms (pre-warmed)`);
   } catch (e: any) {
     console.error(`[ERR] voice reply for ${chatId}: ${e?.message ?? e}`);
   } finally {
-    rmSync(out, { force: true });
+    rmSync(outPath, { force: true });
   }
 }
 
