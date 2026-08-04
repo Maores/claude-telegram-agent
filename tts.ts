@@ -21,6 +21,21 @@ import { join } from "node:path";
 
 /** Longer answers make unbearable voice notes; past this we send text only. */
 export const TTS_MAX_CHARS = Number(process.env.TTS_MAX_CHARS) || 1200;
+
+/** Phase-1 scaffolding: only a SHORT recording earns a spoken reply, so trust
+ *  is built on cheap exchanges first. Comes out in phase 2, when any recording
+ *  gets audio with the text behind a button (see the design doc).
+ *
+ *  This only ships alongside the confirmation flow. On its own it would aim
+ *  speech squarely at Maor's least reliable input — both 2026-08-04 failures
+ *  were his shortest recordings. */
+export const VOICE_REPLY_MAX_INPUT_SEC = Number(process.env.VOICE_REPLY_MAX_INPUT_SEC) || 4;
+
+/** Whether a recording of this length earns a spoken reply. An unknown duration
+ *  stays quiet: silence beats a surprise voice note. */
+export function shouldSpeakForInput(durationSec: number | null | undefined): boolean {
+  return typeof durationSec === "number" && durationSec > 0 && durationSec <= VOICE_REPLY_MAX_INPUT_SEC;
+}
 /** Hard ceiling on one synthesis, so a wedged child can't stall the poller. */
 export const TTS_TIMEOUT_MS = Number(process.env.TTS_TIMEOUT_MS) || 120_000;
 

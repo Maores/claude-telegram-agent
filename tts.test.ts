@@ -167,3 +167,21 @@ test("TTS_DISABLED=1 turns the feature off even with models present", () => {
     else process.env.TTS_DISABLED = prev;
   }
 });
+
+// --- the phase-1 input gate ------------------------------------------------
+
+import { shouldSpeakForInput } from "./tts.ts";
+
+test("only short recordings earn a spoken reply during the test phase", () => {
+  expect(shouldSpeakForInput(1)).toBe(true);
+  expect(shouldSpeakForInput(4)).toBe(true);
+  expect(shouldSpeakForInput(5)).toBe(false);
+  expect(shouldSpeakForInput(60)).toBe(false);
+});
+
+test("an unknown or nonsense duration stays quiet rather than guessing", () => {
+  expect(shouldSpeakForInput(null)).toBe(false);
+  expect(shouldSpeakForInput(undefined)).toBe(false);
+  expect(shouldSpeakForInput(0)).toBe(false);
+  expect(shouldSpeakForInput(-3)).toBe(false);
+});

@@ -22,7 +22,8 @@ import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWi
 import { takePending, consumeAction, validateArgv, pruneActions, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
 import { StreamParser, displayText } from "./stream.ts";
-import { parseVoiceCommand, synthesize, ttsAvailable, shouldSpeak, type VoiceCommand } from "./tts.ts";
+import { parseVoiceCommand, synthesize, ttsAvailable, shouldSpeak, shouldSpeakForInput, type VoiceCommand } from "./tts.ts";
+import { addPending, consumePending, parseVcCallback, vcKeyboard, type PendingVoice } from "./voice-confirm.ts";
 import { pickModel, detectDevIntent } from "./model.ts";
 import { upcomingEvents, nudgeKey, loadNotified, saveNotified, pruneNotified } from "./calendar.ts";
 import { getDb, insertMessage, recentMessages, searchMessages, renderRecall, importHistoryJson, type RecallHit } from "./db";
@@ -32,7 +33,7 @@ import { dueMonitors, performCheck, recordCheck, FAILURE_LIMIT, type Monitor, ty
 import { recordUsage, windowSpendUsd, shouldWarn, limitHitReply, detectUpstreamError, upstreamErrorReply } from "./usage";
 import { scanThreats } from "./threats";
 import { redact } from "./redact";
-import { resolveBackend, transcribeVoice, shouldEchoTranscript, VOICE_MAX_SEC, type Backend } from "./transcribe";
+import { resolveBackend, transcribeVoice, shouldEchoTranscript, needsConfirmation, hasImpossibleChars, VOICE_MAX_SEC, type Backend } from "./transcribe";
 import { HEARTBEAT_FILE } from "./health.ts";
 import { shouldReview, runReview } from "./review";
 import { classifyUpdate, ChatQueues, SerialChain, Debouncer, isStopCommand } from "./dispatch";
@@ -1219,6 +1220,9 @@ async function handleMessage(msg: TgMessage) {
   const voice = voiceInfo(msg);
   let voiceText: string | null = null;
   let voiceConfidence: number | null = null;
+  /** Length of the recording Maor sent, which decides whether he gets a spoken
+   *  reply during the test phase. Null for typed messages. */
+  let voiceDurationSec: number | null = null;
   if (voice) {
     if (resolveBackend() === "off") {
       await tg("sendMessage", {
@@ -1286,6 +1290,25 @@ async function handleMessage(msg: TgMessage) {
       }).catch(() => {});
       return;
     }
+    // A transcript we can't trust never becomes an answer. Show it, wait for a
+    // tap. (2026-08-04: Maor's Hebrew came back as "Hola, ¿qué te pasa?" at 0.40
+    // confidence, the agent answered the invented Spanish, and the speech engine
+    // read the nonsense aloud.) He chose a tap over re-recording, because when
+    // the transcript is close enough, confirming beats saying it all again.
+    if (needsConfirmation(voiceText, voiceConfidence)) {
+      const pending = addPending(chatId, voiceText, voice.kind);
+      console.log(
+        `[VOICE] confirm ${pending.id} conf=${voiceConfidence?.toFixed(3) ?? "n/a"} impossible=${hasImpossibleChars(voiceText)}`,
+      );
+      void setReaction(chatId, msg.message_id, "");
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: `לא בטוח שהבנתי נכון. זה מה ששמעתי:\n\n🎤 «${voiceText}»`,
+        reply_markup: vcKeyboard(pending.id),
+      }).catch(() => {});
+      return;
+    }
+    voiceDurationSec = voice.duration;
   }
 
   // Identify a readable photo/document before downloading, so we can reject an
@@ -1443,7 +1466,7 @@ async function handleMessage(msg: TgMessage) {
     // Voice in, voice out: a spoken copy of the answer, only for a message that
     // arrived as a recording. The text is already delivered above, so this is
     // pure bonus — it runs last and can never fail the turn.
-    if (voiceText !== null) await speakReply(chatId, answer);
+    if (shouldSpeakForInput(voiceDurationSec)) await speakReply(chatId, answer);
     // Self-improvement pass (Phase 7): detached, cooldown-gated, never blocks.
     if (shouldReview(chatId, Math.floor(Date.now() / 1000))) {
       try {
@@ -1709,9 +1732,10 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   const pa = qz ? null : parsePaCallback(cq.data ?? "");
   const ch = qz || pa ? null : parseChCallback(cq.data ?? "");
   const fuu = qz || pa || ch ? null : parseFuuCallback(cq.data ?? "");
-  const parsed = qz || pa || ch || fuu ? null : parseFuCallback(cq.data ?? "");
+  const vc = qz || pa || ch || fuu ? null : parseVcCallback(cq.data ?? "");
+  const parsed = qz || pa || ch || fuu || vc ? null : parseFuCallback(cq.data ?? "");
   console.log(
-    `[CB] ${qz ? `qz:${qz.kind}:${qz.choice}` : pa ? `pa:${pa.action}:${pa.id}` : ch ? `ch:${ch.id}:${ch.idx}` : fuu ? `undo:${fuu.fuId}` : parsed ? `${parsed.action}:${parsed.id}` : `?:${(cq.data ?? "").slice(0, 24)}`} from ${cq.from.id}`,
+    `[CB] ${qz ? `qz:${qz.kind}:${qz.choice}` : pa ? `pa:${pa.action}:${pa.id}` : ch ? `ch:${ch.id}:${ch.idx}` : fuu ? `undo:${fuu.fuId}` : vc ? `vc:${vc.id}:${vc.ok ? "y" : "n"}` : parsed ? `${parsed.action}:${parsed.id}` : `?:${(cq.data ?? "").slice(0, 24)}`} from ${cq.from.id}`,
   );
   const ack = (text?: string) =>
     tg("answerCallbackQuery", { callback_query_id: cq.id, ...(text ? { text } : {}) }).catch(() => {});
@@ -1721,7 +1745,7 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   }
   const chatId = cq.message?.chat.id;
   const messageId = cq.message?.message_id;
-  if (chatId == null || messageId == null || (!qz && !pa && !ch && !fuu && !parsed)) {
+  if (chatId == null || messageId == null || (!qz && !pa && !ch && !fuu && !vc && !parsed)) {
     await ack(); // unknown namespace — ignore
     return;
   }
@@ -1739,6 +1763,10 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   }
   if (fuu) {
     await handleFuuCallback(cq, fuu, chatId, messageId, ack);
+    return;
+  }
+  if (vc) {
+    await handleVcCallback(vc, chatId, messageId, ack);
     return;
   }
   // Only fu-callbacks remain here (pa/ch handled+returned above, and the top
@@ -2070,6 +2098,110 @@ async function answerChoice(chatId: number, choice: Choice, option: string) {
       placeholderId,
       "⚠️ Sorry, something went wrong handling that. Please try again.",
     ).catch(() => {});
+  }
+}
+
+/** ✓/✗ on a transcript the backend wasn't confident about. ✗ costs nothing; ✓
+ *  runs the turn Maor meant. Mirrors handleChCallback's consume-once shape. */
+async function handleVcCallback(
+  parsed: { id: string; ok: boolean },
+  chatId: number,
+  messageId: number,
+  ack: (text?: string) => Promise<unknown>,
+) {
+  const r = consumePending(parsed.id, Math.floor(Date.now() / 1000));
+  if (r.outcome === "stale") {
+    await ack("הכפתור הזה כבר טופל");
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    return;
+  }
+  if (r.outcome === "expired") {
+    await ack("פג תוקף — תשלח שוב");
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    return;
+  }
+  const pending = r.pending;
+  if (pending.chatId !== chatId) {
+    // Forged/cross-chat callback_data: consume but never act on it (fail-safe).
+    console.error(`[VOICE] chat mismatch ${pending.id}: entry ${pending.chatId} vs tap ${chatId}`);
+    await ack("הכפתור הזה כבר טופל");
+    return;
+  }
+  await ack();
+  if (!parsed.ok) {
+    console.log(`[VOICE] rejected ${pending.id}`);
+    await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: "בסדר, לא עניתי על זה. תשלח שוב 🎤" }).catch(() => {});
+    return;
+  }
+  console.log(redact(`[VOICE] confirmed ${pending.id}`));
+  await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: `🎤 «${pending.text}»` }).catch(() => {});
+  // Hop to the per-chat queue so the new turn keeps per-chat ordering and does
+  // not block the global callback chain, exactly as the choice buttons do.
+  chatQueues.enqueue(chatId, () => answerConfirmedVoice(chatId, pending));
+}
+
+/** A confirmed transcript becomes a fresh, normal interactive turn. A trimmed
+ *  copy of the handleMessage tail — self-contained, NOT a refactor of it.
+ *
+ *  No speech is produced here. The recording's duration isn't carried on the
+ *  pending record, and a transcript that needed confirming is by definition one
+ *  the backend struggled with, so reading the answer aloud is the last thing
+ *  that shape of turn deserves. */
+async function answerConfirmedVoice(chatId: number, pending: PendingVoice) {
+  const name = "Maor";
+  const db = getDb();
+  const prompt = voicePromptText(pending.text, pending.kind);
+  const { model } = pickModel(pending.text);
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    insertMessage(db, { chatId, role: "user", content: voiceHistoryNote(pending.text, pending.kind), ts: now, model });
+  } catch (e: any) {
+    console.error(`[ERR] persist confirmed voice: ${e?.message ?? e}`);
+  }
+  let placeholderId: number | null = null;
+  try {
+    const ph = await tg("sendMessage", { chat_id: chatId, text: "⏳" });
+    placeholderId = ph.message_id;
+  } catch {}
+  try {
+    const history = recentMessages(db, chatId, HISTORY_MAX);
+    const beforeId = history.length ? history[0].id : Number.MAX_SAFE_INTEGER;
+    let recall: RecallHit[] = [];
+    try {
+      recall = searchMessages(db, chatId, pending.text, RECALL_K, beforeId);
+    } catch (e: any) {
+      console.error(`[ERR] recall: ${e?.message ?? e}`);
+    }
+    let skills = "";
+    try {
+      skills = skillsIndexBlock(db, pending.text);
+    } catch (e: any) {
+      console.error(`[ERR] skills: ${e?.message ?? e}`);
+    }
+    const turnId = newTurnId();
+    const answer =
+      (await streamClaudeResilient(
+        buildPrompt(history, name, prompt, recall, loadMemory(), skills, "", "", recentUploadsBlock()),
+        chatId,
+        placeholderId,
+        model,
+        { env: { TELEGRAM_TURN_ID: turnId } },
+      )).trim() || "(no output)";
+    try {
+      insertMessage(db, { chatId, role: "assistant", content: answer, ts: Math.floor(Date.now() / 1000), model });
+    } catch (e: any) {
+      console.error(`[ERR] persist message: ${e?.message ?? e}`);
+    }
+    await sendPendingProposals(chatId, turnId);
+    await sendPendingChoices(chatId, turnId);
+    console.log(`[VOICE] answered confirmed turn for ${chatId}`);
+  } catch (e: any) {
+    if (e instanceof TurnStopped) {
+      console.log(`[STOP] confirmed-voice turn for ${chatId} stopped mid-answer`);
+      return;
+    }
+    console.error(`[ERR] answerConfirmedVoice for ${chatId}: ${e?.message ?? e}`);
+    await sendReply(chatId, placeholderId, "⚠️ משהו השתבש בטיפול בהקלטה. אפשר לנסות שוב.").catch(() => {});
   }
 }
 
