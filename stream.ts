@@ -37,32 +37,11 @@ export class StreamParser {
   text = "";
   done = false;
   private result: string | null = null;
-  /** Text from segments before the most recent tool call. Kept only as a fallback
-   *  for a turn that never speaks again after its tools; never part of a normal
-   *  answer. See beginTool. */
-  private carried = "";
   // Usage from the terminal result event (agenda #5). Null when claude -p doesn't
   // report them or the format changes — callers must treat these as optional.
   costUsd: number | null = null;
   inputTokens: number | null = null;
   outputTokens: number | null = null;
-
-  /** A tool call starts a new answer segment. Whatever the model said before
-   *  reaching for the tool was narration ("I'll check the calendar…"), not the
-   *  reply, so park it as a fallback and hand the message back to the status
-   *  line until the real answer streams in.
-   *
-   *  Without this, text accumulated straight across tool calls: about one reply
-   *  in eleven shipped its own English preamble welded onto the Hebrew answer
-   *  with no separator ("…before answering.יש כיוון שפספסתי"), and some leaked
-   *  internal machinery ("I'll load the Hebrew-English formatting skill").
-   *  Found 2026-08-04. */
-  private beginTool(name: string): void {
-    this.status = toolLabel(name);
-    const seg = this.text.trim();
-    if (seg) this.carried = this.carried ? `${this.carried}\n\n${seg}` : seg;
-    this.text = "";
-  }
 
   /** Feed one NDJSON line. Malformed/unknown lines are ignored. */
   push(line: string): void {
@@ -89,7 +68,7 @@ export class StreamParser {
     }
     if (o.type === "assistant") {
       for (const b of o.message?.content ?? []) {
-        if (b?.type === "tool_use" && b.name) this.beginTool(b.name);
+        if (b?.type === "tool_use" && b.name) this.status = toolLabel(b.name);
       }
       return;
     }
@@ -97,7 +76,7 @@ export class StreamParser {
       const ev = o.event;
       if (!ev) return;
       if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
-        this.beginTool(ev.content_block.name ?? "");
+        this.status = toolLabel(ev.content_block.name ?? "");
       } else if (ev.type === "content_block_delta") {
         const d = ev.delta;
         if (d?.type === "text_delta" && typeof d.text === "string") {
@@ -110,11 +89,10 @@ export class StreamParser {
     }
   }
 
-  /** Best final answer: the text streamed since the last tool call, falling back
-   *  to earlier segments (a turn that only spoke before its tools, so dropping
-   *  them would send an empty reply), then to the result event's text. */
+  /** Best final answer: the streamed text, falling back to the result event's text. */
   finalText(): string {
-    return this.text.trim() || this.carried.trim() || (this.result ?? "").trim();
+    const t = this.text.trim();
+    return t || (this.result ?? "").trim();
   }
 
   /** Cost + token usage from the result event, or nulls if not reported. */
