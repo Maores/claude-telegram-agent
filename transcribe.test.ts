@@ -454,3 +454,53 @@ test("the forced retry's result is final even if still off-language (no loops)",
   expect(calls).toBe(2); // exactly one guard retry, never more
   expect(tr.text).toBe("??");
 });
+
+// --- trusting a transcript (2026-08-04) ------------------------------------
+// Maor speaks Hebrew with English words mixed in and nothing else. His Hebrew
+// came back as "Hola, ¿qué te pasa?" at 0.40 confidence and the agent answered
+// the invented Spanish out loud.
+
+import { hasImpossibleChars, needsConfirmation, VOICE_CONFIRM_BELOW } from "./transcribe";
+
+test("hasImpossibleChars accepts Hebrew, English, and a mix of both", () => {
+  expect(hasImpossibleChars("שלום מאור")).toBe(false);
+  expect(hasImpossibleChars("Okay.")).toBe(false);
+  expect(hasImpossibleChars("תריץ לי bun run cal.ts list בבקשה")).toBe(false);
+  expect(hasImpossibleChars("יש לי פגישה ב-10:30, נכון? (כן!)")).toBe(false);
+  expect(hasImpossibleChars("עולה 50₪ או $12 + 5%")).toBe(false);
+  expect(hasImpossibleChars("בדיקה עם ניקוד: בָּדַקְתִּי")).toBe(false);
+  expect(hasImpossibleChars('אמר לי "שלום" ואז הלך…')).toBe(false);
+});
+
+test("hasImpossibleChars rejects languages Maor does not speak", () => {
+  expect(hasImpossibleChars("Hola, ¿qué te pasa?")).toBe(true); // the real 2026-08-04 failure
+  expect(hasImpossibleChars("مرحبا كيف حالك")).toBe(true);
+  expect(hasImpossibleChars("Привет как дела")).toBe(true);
+  expect(hasImpossibleChars("señor")).toBe(true);
+  expect(hasImpossibleChars("お元気ですか")).toBe(true);
+});
+
+test("needsConfirmation fires below the confidence threshold", () => {
+  expect(needsConfirmation("שלום", 0.4)).toBe(true); // the real 20:54:17 note
+  expect(needsConfirmation("שלום", 0.58)).toBe(true); // the real 20:53:55 note
+  expect(needsConfirmation("שלום", 0.76)).toBe(false);
+  expect(needsConfirmation("שלום", 0.85)).toBe(false);
+});
+
+test("needsConfirmation fires on impossible characters however confident the backend claims to be", () => {
+  expect(needsConfirmation("Hola, ¿qué te pasa?", 0.99)).toBe(true);
+});
+
+test("an unknown confidence is not by itself evidence of a problem", () => {
+  expect(needsConfirmation("שלום מאור", null)).toBe(false);
+  expect(needsConfirmation("¿qué?", null)).toBe(true); // the language check still applies
+});
+
+test("an empty transcript never asks for confirmation", () => {
+  expect(needsConfirmation("", 0.1)).toBe(false);
+  expect(needsConfirmation("   ", null)).toBe(false);
+});
+
+test("the confirm threshold sits above the echo threshold, so it subsumes it", () => {
+  expect(VOICE_CONFIRM_BELOW).toBeGreaterThan(0.6);
+});

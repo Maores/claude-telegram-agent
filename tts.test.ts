@@ -1,5 +1,58 @@
 import { test, expect } from "bun:test";
-import { speakableText, shouldSpeak, parseVoiceCommand, parseSynthOutput, ttsAvailable } from "./tts.ts";
+import { speakableText, shouldSpeak, parseVoiceCommand, parseSynthOutput, ttsAvailable, withSynthLock } from "./tts.ts";
+
+// --- the synthesis lock (2026-08-04 crash fix) ------------------------------
+// One synthesis peaks at 668MB on a 1968MB droplet with no swap. Two at once
+// leaves ~200MB of margin; three is an OOM and the kernel takes the largest
+// process, which is the bot. Nothing else bounds this — the poller handles
+// messages concurrently.
+
+test("withSynthLock runs one at a time", async () => {
+  const order: string[] = [];
+  const slow = () =>
+    withSynthLock(async () => {
+      order.push("a-start");
+      await new Promise((r) => setTimeout(r, 30));
+      order.push("a-end");
+    });
+  const fast = () =>
+    withSynthLock(async () => {
+      order.push("b-start");
+      order.push("b-end");
+    });
+  await Promise.all([slow(), fast()]);
+  expect(order).toEqual(["a-start", "a-end", "b-start", "b-end"]);
+});
+
+test("a failed synthesis releases the lock instead of wedging it shut forever", async () => {
+  await withSynthLock(async () => {
+    throw new Error("boom");
+  }).catch(() => {});
+  const ran = await withSynthLock(async () => "second ran");
+  expect(ran).toBe("second ran");
+});
+
+test("the caller still sees its own rejection", async () => {
+  await expect(
+    withSynthLock(async () => {
+      throw new Error("boom");
+    }),
+  ).rejects.toThrow("boom");
+});
+
+test("a slow synthesis does not swallow the one queued behind it", async () => {
+  const done: string[] = [];
+  await Promise.all([
+    withSynthLock(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      done.push("first");
+    }),
+    withSynthLock(async () => {
+      done.push("second");
+    }),
+  ]);
+  expect(done).toEqual(["first", "second"]);
+});
 
 // --- what gets spoken ------------------------------------------------------
 
@@ -113,4 +166,93 @@ test("TTS_DISABLED=1 turns the feature off even with models present", () => {
     if (prev === undefined) delete process.env.TTS_DISABLED;
     else process.env.TTS_DISABLED = prev;
   }
+});
+
+// --- the phase-1 input gate ------------------------------------------------
+
+import { shouldSpeakForInput } from "./tts.ts";
+
+test("only short recordings earn a spoken reply during the test phase", () => {
+  expect(shouldSpeakForInput(1)).toBe(true);
+  expect(shouldSpeakForInput(4)).toBe(true);
+  expect(shouldSpeakForInput(5)).toBe(false);
+  expect(shouldSpeakForInput(60)).toBe(false);
+});
+
+test("an unknown or nonsense duration stays quiet rather than guessing", () => {
+  expect(shouldSpeakForInput(null)).toBe(false);
+  expect(shouldSpeakForInput(undefined)).toBe(false);
+  expect(shouldSpeakForInput(0)).toBe(false);
+  expect(shouldSpeakForInput(-3)).toBe(false);
+});
+
+// --- the synthesis slot, held across a pre-warm ----------------------------
+// An engine that is only pre-loading still owns 668MB, so it must hold the slot
+// from spawn, not from synthesis. A slot that leaks silences voice replies
+// permanently — worse than the crash the lock prevents.
+
+import { acquireSynthSlot } from "./tts.ts";
+
+test("the slot is exclusive and is handed on when released", async () => {
+  const order: string[] = [];
+  const releaseA = await acquireSynthSlot();
+  order.push("a-held");
+  let bHeld = false;
+  const bp = acquireSynthSlot().then((r) => {
+    bHeld = true;
+    order.push("b-held");
+    r();
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(bHeld).toBe(false); // B must still be waiting on A
+  releaseA();
+  await bp;
+  expect(order).toEqual(["a-held", "b-held"]);
+});
+
+test("releasing twice does not hand the slot to two holders at once", async () => {
+  const release = await acquireSynthSlot();
+  release();
+  release();
+  const second = await acquireSynthSlot();
+  second();
+  expect(true).toBe(true); // reaching here means the chain did not deadlock or double-grant
+});
+
+test("withSynthLock still serialises after being rebuilt on the slot", async () => {
+  const order: string[] = [];
+  await Promise.all([
+    withSynthLock(async () => {
+      order.push("1-start");
+      await new Promise((r) => setTimeout(r, 20));
+      order.push("1-end");
+    }),
+    withSynthLock(async () => {
+      order.push("2-start");
+      order.push("2-end");
+    }),
+  ]);
+  expect(order).toEqual(["1-start", "1-end", "2-start", "2-end"]);
+});
+
+// --- the ready handshake ---------------------------------------------------
+// The engine prints a ready line once its models are loaded, so the poller can
+// start it while the answer is still being written.
+
+test("parseSynthOutput ignores the ready line and returns the audio result", () => {
+  const stdout = ['{"ok": true, "ready": true}', '{"ok": true, "path": "/tmp/a.ogg", "seconds": 3.2}'].join("\n");
+  expect(parseSynthOutput(stdout)).toEqual({ path: "/tmp/a.ogg", seconds: 3.2 });
+});
+
+test("parseSynthOutput returns null when only the ready line arrived (engine died mid-turn)", () => {
+  expect(parseSynthOutput('{"ok": true, "ready": true}')).toBeNull();
+});
+
+test("parseSynthOutput still finds the result under runtime warnings after a ready line", () => {
+  const stdout = [
+    '{"ok": true, "ready": true}',
+    "W:onnxruntime: transpose node warning",
+    '{"ok": true, "path": "/tmp/b.ogg", "seconds": 5.0}',
+  ].join("\n");
+  expect(parseSynthOutput(stdout)).toEqual({ path: "/tmp/b.ogg", seconds: 5.0 });
 });

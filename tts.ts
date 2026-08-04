@@ -21,6 +21,21 @@ import { join } from "node:path";
 
 /** Longer answers make unbearable voice notes; past this we send text only. */
 export const TTS_MAX_CHARS = Number(process.env.TTS_MAX_CHARS) || 1200;
+
+/** Phase-1 scaffolding: only a SHORT recording earns a spoken reply, so trust
+ *  is built on cheap exchanges first. Comes out in phase 2, when any recording
+ *  gets audio with the text behind a button (see the design doc).
+ *
+ *  This only ships alongside the confirmation flow. On its own it would aim
+ *  speech squarely at Maor's least reliable input — both 2026-08-04 failures
+ *  were his shortest recordings. */
+export const VOICE_REPLY_MAX_INPUT_SEC = Number(process.env.VOICE_REPLY_MAX_INPUT_SEC) || 4;
+
+/** Whether a recording of this length earns a spoken reply. An unknown duration
+ *  stays quiet: silence beats a surprise voice note. */
+export function shouldSpeakForInput(durationSec: number | null | undefined): boolean {
+  return typeof durationSec === "number" && durationSec > 0 && durationSec <= VOICE_REPLY_MAX_INPUT_SEC;
+}
 /** Hard ceiling on one synthesis, so a wedged child can't stall the poller. */
 export const TTS_TIMEOUT_MS = Number(process.env.TTS_TIMEOUT_MS) || 120_000;
 
@@ -104,11 +119,69 @@ export function parseSynthOutput(stdout: string): Spoken | null {
 }
 
 /**
+ * Serialises synthesis. One process peaks at 668MB (measured 2026-08-04) on a
+ * 1968MB droplet with NO SWAP, so two at once leaves ~200MB of margin and three
+ * is an OOM — and the kernel kills the largest process, which is the bot. The
+ * poller handles messages concurrently and nothing else bounds this, so five
+ * recordings in a row survived that evening purely by luck of scheduling.
+ *
+ * The chain deliberately swallows outcomes so a failed synthesis can never
+ * wedge the lock shut: a leaked lock would silence voice replies permanently,
+ * which is worse than the crash it prevents. The caller still sees its own
+ * rejection.
+ */
+let synthChain: Promise<unknown> = Promise.resolve();
+
+/**
+ * Take the single synthesis slot; resolves with the function that gives it back.
+ *
+ * Everything holding a loaded model must hold this — including a process that is
+ * only PRE-loading, since 668MB is owned from the moment it starts reading
+ * weights, not from the moment it speaks. Two pre-warmed engines would blow the
+ * exact budget this exists to protect.
+ *
+ * Release is idempotent, and callers must release in a `finally`: a leaked slot
+ * silences voice replies permanently, which is worse than the crash it prevents.
+ */
+export function acquireSynthSlot(): Promise<() => void> {
+  let release!: () => void;
+  let released = false;
+  const held = new Promise<void>((resolve) => {
+    release = () => {
+      if (released) return;
+      released = true;
+      resolve();
+    };
+  });
+  const myTurn = synthChain.then(
+    () => undefined,
+    () => undefined,
+  );
+  synthChain = myTurn.then(() => held);
+  return myTurn.then(() => release);
+}
+
+export async function withSynthLock<T>(fn: () => Promise<T>): Promise<T> {
+  const release = await acquireSynthSlot();
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
+/**
  * Speak `text` into `outPath` (an .ogg). Returns null on anything going wrong —
  * a voice reply is a bonus on top of a text answer already delivered, so it
  * must never turn into an error the user sees.
+ *
+ * Serialised: only one synthesis runs at a time, the rest queue behind it.
  */
 export async function synthesize(text: string, outPath: string): Promise<Spoken | null> {
+  return withSynthLock(() => synthesizeUnlocked(text, outPath));
+}
+
+async function synthesizeUnlocked(text: string, outPath: string): Promise<Spoken | null> {
   if (!ttsAvailable()) return null;
   const speech = speakableText(text);
   if (!shouldSpeak(text)) return null;
@@ -143,6 +216,84 @@ export async function synthesize(text: string, outPath: string): Promise<Spoken 
     console.error(`[TTS] synth failed: ${e?.message ?? e}`);
     return null;
   }
+}
+
+/** A synthesizer already loading its models, waiting to be handed text. */
+export interface TtsEngine {
+  /** Feed the answer and get the audio. Releases the slot however it ends. */
+  speak(text: string): Promise<Spoken | null>;
+  /** Abandon it — the answer didn't qualify, or the turn failed. Releases too. */
+  kill(): void;
+}
+
+/**
+ * Start the synthesizer NOW, so its ~9.3s model load runs while the answer is
+ * still being written rather than after it. Measured 2026-08-04: loading is
+ * 9.3s of the 11–19s a voice reply used to take, and a claude turn spends
+ * 6–34s mostly waiting on the network, leaving the single core idle.
+ *
+ * Holds the synthesis slot from spawn, because a process that is merely
+ * pre-loading already owns 668MB. Returns null when speech isn't possible here,
+ * which keeps every caller's happy path unchanged.
+ */
+export async function startEngine(outPath: string): Promise<TtsEngine | null> {
+  if (!ttsAvailable()) return null;
+  const release = await acquireSynthSlot();
+  const script = join(import.meta.dir, "tts_synth.py");
+  let proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  try {
+    proc = Bun.spawn([ttsPython(), script, outPath], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, TTS_HOME: ttsHome() },
+    });
+  } catch (e: any) {
+    release(); // never strand the slot on a failed spawn
+    console.error(`[TTS] engine spawn failed: ${e?.message ?? e}`);
+    return null;
+  }
+  const killer = setTimeout(() => {
+    try {
+      proc.kill();
+    } catch {}
+  }, TTS_TIMEOUT_MS);
+  const finish = () => {
+    clearTimeout(killer);
+    release();
+  };
+  const kill = () => {
+    try {
+      proc.kill();
+    } catch {}
+    finish();
+  };
+  return {
+    kill,
+    async speak(text: string): Promise<Spoken | null> {
+      if (!shouldSpeak(text)) {
+        kill();
+        return null;
+      }
+      try {
+        proc.stdin.write(speakableText(text));
+        proc.stdin.end();
+        const stdout = await new Response(proc.stdout).text();
+        const code = await proc.exited;
+        if (code !== 0) {
+          const err = await new Response(proc.stderr).text().catch(() => "");
+          console.error(`[TTS] engine exited ${code}: ${err.trim().split("\n").slice(-2).join(" | ")}`);
+          return null;
+        }
+        return parseSynthOutput(stdout);
+      } catch (e: any) {
+        console.error(`[TTS] engine speak failed: ${e?.message ?? e}`);
+        return null;
+      } finally {
+        finish();
+      }
+    },
+  };
 }
 
 // --- the /voice command ----------------------------------------------------

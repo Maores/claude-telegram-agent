@@ -34,10 +34,11 @@ def main() -> None:
     out_path = sys.argv[1]
 
     home = os.environ.get("TTS_HOME") or os.path.join(os.path.expanduser("~"), "tts")
-    text = sys.stdin.read().strip()
-    if not text:
-        fail("empty text")
 
+    # Load BEFORE reading stdin. Loading costs ~9.3s on the droplet, and the
+    # caller starts this process the moment a qualifying recording arrives, so
+    # the load happens while the answer is still being written instead of after
+    # it. The ready line tells the caller the models are in memory.
     import numpy as np
     import soundfile as sf
     from phonikud_tts import Phonikud, phonemize, Piper
@@ -47,6 +48,11 @@ def main() -> None:
         os.path.join(home, "tts-model.onnx"),
         os.path.join(home, "tts-model.config.json"),
     )
+    print(json.dumps({"ok": True, "ready": True}), flush=True)
+
+    text = sys.stdin.read().strip()
+    if not text:
+        fail("empty text")
 
     phonemes = phonemize(phonikud.add_diacritics(text))
     samples, sample_rate = piper.create(phonemes, is_phonemes=True)

@@ -146,6 +146,40 @@ export function parseVoiceLangs(raw: string | undefined): string[] {
 }
 export const VOICE_LANGS = parseVoiceLangs(process.env.VOICE_LANGS);
 
+/** Below this, show Maor the transcript and wait for a tap before answering it.
+ *  Calibrated on the 2026-08-04 live run: the two wrong transcripts scored 0.40
+ *  and 0.58, the three right ones 0.76 to 0.85, so 0.65 sits in the gap with
+ *  margin on both sides. Five samples is not a calibration — hence the override.
+ *  Sits deliberately ABOVE VOICE_ECHO_BELOW (0.6), so for voice notes this gate
+ *  subsumes the echo rather than leaving two overlapping mechanisms. */
+export const VOICE_CONFIRM_BELOW = envNum(process.env.VOICE_CONFIRM_BELOW, 0.65);
+
+/** Everything Maor's speech can legitimately produce: Hebrew letters and points,
+ *  ASCII letters and digits, whitespace, bidi marks, and ordinary punctuation
+ *  including the curly quotes and ellipsis whisper likes to emit. */
+const POSSIBLE_CHARS =
+  /^[֐-׿‎‏A-Za-z0-9\s.,!?:;'"()\[\]{}\-–—\/\\%+=&@#₪$*^_~<>|`‘’“”…]*$/;
+
+/** True when the transcript contains a character Maor's speech cannot produce.
+ *
+ *  He speaks Hebrew with English words mixed in and nothing else, so anything
+ *  outside that set means the backend invented a language. This is a separate
+ *  signal from confidence and catches what confidence alone misses: whisper
+ *  reports its own `language` field, and on a short clip that field can disagree
+ *  with the text it actually wrote, which is how "Hola, ¿qué te pasa?" reached
+ *  an answer on 2026-08-04 without the language guard ever firing. */
+export function hasImpossibleChars(text: string): boolean {
+  return !POSSIBLE_CHARS.test(text);
+}
+
+/** Whether to show Maor the transcript and wait for a tap before answering.
+ *  Two independent triggers, because that failure had two separate tells. */
+export function needsConfirmation(text: string, confidence: number | null): boolean {
+  if (!text.trim()) return false; // nothing to confirm — the empty-transcript path owns this
+  if (hasImpossibleChars(text)) return true;
+  return confidence !== null && confidence < VOICE_CONFIRM_BELOW;
+}
+
 /** whisper's verbose_json `language` is an English name ("hebrew") on some
  *  backends and an ISO code ("he") on others — normalize the ones we expect;
  *  unknown values pass through raw (they won't match VOICE_LANGS, which is
