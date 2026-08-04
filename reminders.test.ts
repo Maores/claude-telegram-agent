@@ -219,6 +219,37 @@ test("resolveFollowup marks done/snoozed once; second resolve returns null", () 
   expect(getFollowup(f.id)!.status).toBe("done");
 });
 
+test("marking one done closes same-errand pending duplicates (2026-08-04)", () => {
+  freshFollowupFile();
+  const stale = addFollowup(7, "לשמוע את ההקלטה של מתן", 10, T0);
+  const latest = addFollowup(7, "לשמוע את ההקלטה של מתן", 11, T0 + 200_000);
+  const otherErrand = addFollowup(7, "להגיש משרות", 12, T0);
+  const otherChat = addFollowup(8, "לשמוע את ההקלטה של מתן", 13, T0);
+
+  expect(resolveFollowup(latest.id, "done")!.status).toBe("done");
+  expect(getFollowup(stale.id)!.status).toBe("done"); // the orphan the summary kept reporting
+  expect(getFollowup(otherErrand.id)!.status).toBe("pending");
+  expect(getFollowup(otherChat.id)!.status).toBe("pending");
+});
+
+test("snoozing does not cascade to duplicates", () => {
+  freshFollowupFile();
+  const a = addFollowup(7, "להגיש משרות", 10, T0);
+  const b = addFollowup(7, "להגיש משרות", 11, T0 + 100);
+  resolveFollowup(b.id, "snoozed");
+  expect(getFollowup(a.id)!.status).toBe("pending");
+});
+
+test("a done cascade leaves snoozed duplicates alone so undo still works", () => {
+  freshFollowupFile();
+  const a = addFollowup(7, "להגיש משרות", 10, T0);
+  const b = addFollowup(7, "להגיש משרות", 11, T0 + 100);
+  resolveFollowup(a.id, "snoozed");
+  resolveFollowup(b.id, "done");
+  expect(getFollowup(a.id)!.status).toBe("snoozed");
+  expect(revertFollowup(a.id, T0 + 500)!.status).toBe("pending");
+});
+
 test("revertFollowup turns a snoozed follow-up back to pending and resets the timer", () => {
   freshFollowupFile();
   const f = addFollowup(1, "x", 5, T0);

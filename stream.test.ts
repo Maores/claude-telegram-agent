@@ -88,6 +88,66 @@ test("full sequence thinking -> tool -> text -> done", () => {
   expect(p.finalText()).toBe("Here it is.");
 });
 
+// --- pre-tool narration must not reach the reply (2026-08-04) --------------
+
+test("a tool call drops the narration the model wrote before it", () => {
+  const p = new StreamParser();
+  p.push(textDelta("I'll check current pricing before answering."));
+  p.push(toolStart("WebSearch"));
+  expect(displayText(p.state())).toBe("🔍 searching the web…"); // narration off screen
+  p.push(textDelta("יש כיוון שפספסתי קודם."));
+  expect(p.finalText()).toBe("יש כיוון שפספסתי קודם.");
+});
+
+test("pre-tool text is never welded onto the answer that follows it", () => {
+  const p = new StreamParser();
+  p.push(textDelta("I'll check the file now."));
+  p.push(toolStart("Read"));
+  p.push(textDelta("הקובץ ריק."));
+  const out = p.finalText();
+  expect(out).not.toContain("I'll check");
+  expect(out).not.toContain("now.הקובץ"); // the exact glued shape Maor saw
+});
+
+test("only the last segment survives across several tool rounds", () => {
+  const p = new StreamParser();
+  p.push(textDelta("Let me look."));
+  p.push(toolStart("Read"));
+  p.push(textDelta("Now searching."));
+  p.push(toolStart("WebSearch"));
+  p.push(textDelta("final answer"));
+  expect(p.finalText()).toBe("final answer");
+});
+
+test("text before the only tool call survives when nothing streams after it", () => {
+  const p = new StreamParser();
+  p.push(textDelta("הנה התשובה."));
+  p.push(toolStart("Bash"));
+  p.push(JSON.stringify({ type: "result", result: "" }));
+  expect(p.finalText()).toBe("הנה התשובה."); // fallback beats an empty reply
+});
+
+test("tool_use seen only in the assistant event also resets the segment", () => {
+  const p = new StreamParser();
+  p.push(textDelta("narration"));
+  p.push(
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }] } }),
+  );
+  p.push(textDelta("answer"));
+  expect(p.finalText()).toBe("answer");
+});
+
+test("seeing the same tool twice (block start, then assistant event) is harmless", () => {
+  const p = new StreamParser();
+  p.push(textDelta("narration"));
+  p.push(toolStart("Bash"));
+  p.push(
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }] } }),
+  );
+  p.push(textDelta("answer"));
+  expect(p.finalText()).toBe("answer"); // not "narration\n\nanswer"
+});
+
 test("tool_use in a complete assistant event also sets status", () => {
   const p = new StreamParser();
   p.push(
