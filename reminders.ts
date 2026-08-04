@@ -295,13 +295,31 @@ export function getFollowup(id: string): Followup | null {
   return loadFollowups().find((f) => f.id === id) ?? null;
 }
 
-/** pending → done/snoozed exactly once; returns null if missing or resolved. */
+/** pending → done/snoozed exactly once; returns null if missing or resolved.
+ *
+ *  Marking one done also closes any OTHER still-pending follow-up for the same
+ *  errand in the same chat. Each fire of a reminder adds its own record, and
+ *  pruneFollowups deliberately never drops a pending one — so a fire Maor left
+ *  un-tapped outlives the errand itself and the nightly summary keeps listing it
+ *  as open (2026-08-04: "לשמוע את ההקלטה של מתן" was closed that morning under a
+ *  newer id while a 01/08 record stayed pending, three days and counting).
+ *
+ *  Snoozed duplicates are left alone: only pending ones reach the summary and the
+ *  nudge queue, and flipping a snoozed record would break its undo button. */
 export function resolveFollowup(id: string, status: "done" | "snoozed"): Followup | null {
   return withFileLock(followupsPath(), () => {
     const list = loadFollowups();
     const f = list.find((x) => x.id === id);
     if (!f || f.status !== "pending") return null;
     f.status = status;
+    if (status === "done") {
+      for (const other of list) {
+        if (other === f) continue;
+        if (other.status !== "pending") continue;
+        if (other.chatId !== f.chatId || other.text !== f.text) continue;
+        other.status = "done";
+      }
+    }
     saveFollowups(list);
     return f;
   });
