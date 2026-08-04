@@ -22,6 +22,7 @@ import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWi
 import { takePending, consumeAction, validateArgv, pruneActions, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
 import { StreamParser, displayText } from "./stream.ts";
+import { parseVoiceCommand, synthesize, ttsAvailable, shouldSpeak, type VoiceCommand } from "./tts.ts";
 import { pickModel, detectDevIntent } from "./model.ts";
 import { upcomingEvents, nudgeKey, loadNotified, saveNotified, pruneNotified } from "./calendar.ts";
 import { getDb, insertMessage, recentMessages, searchMessages, renderRecall, importHistoryJson, type RecallHit } from "./db";
@@ -1195,6 +1196,14 @@ async function handleMessage(msg: TgMessage) {
     return;
   }
 
+  // /voice on|off — handled here, before any claude spawn, so switching speech
+  // off never depends on the model reading the request correctly.
+  const voiceCmd = parseVoiceCommand(msg.text ?? "", botUsername);
+  if (voiceCmd) {
+    await handleVoiceCommand(voiceCmd, chatId);
+    return;
+  }
+
   // Quiz commands (/quiz, /hint, /reveal, /skip, /quiz_reset) never spawn claude.
   const quizCmd = parseQuizCommand(msg.text ?? "", botUsername);
   if (quizCmd) {
@@ -1431,6 +1440,10 @@ async function handleMessage(msg: TgMessage) {
     await sendPendingChoices(chatId, turnId);
     console.log(`[DONE] replied to ${fromId}`);
     void setReaction(chatId, msg.message_id, outcomeReaction(true));
+    // Voice in, voice out: a spoken copy of the answer, only for a message that
+    // arrived as a recording. The text is already delivered above, so this is
+    // pure bonus — it runs last and can never fail the turn.
+    if (voiceText !== null) await speakReply(chatId, answer);
     // Self-improvement pass (Phase 7): detached, cooldown-gated, never blocks.
     if (shouldReview(chatId, Math.floor(Date.now() / 1000))) {
       try {
@@ -2186,6 +2199,93 @@ async function sendQuizQuestion(
     sentAtS: Math.floor(Date.now() / 1000),
   });
   console.log(`[QUIZ] sent ${q.id} (${q.type}, ${kind}) -> ${chatId}`);
+}
+
+// --- voice replies (2026-08-04) --------------------------------------------
+// Maor records, the bot records back. Text always goes first; the spoken copy
+// follows a few seconds later. Off by a flag file, mirroring quiz-paused.flag,
+// so the setting survives restarts and needs no database.
+
+const VOICE_OFF_FLAG = join(PROJECT_DIR, "voice-replies-off.flag");
+
+export function voiceRepliesEnabled(): boolean {
+  return !existsSync(VOICE_OFF_FLAG);
+}
+
+async function handleVoiceCommand(cmd: VoiceCommand, chatId: number) {
+  try {
+    if (cmd === "on") {
+      rmSync(VOICE_OFF_FLAG, { force: true });
+      const ready = ttsAvailable();
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: ready
+          ? "מעכשיו כששולח לי הקלטה, אענה גם בהקלטה. לכיבוי: /voice off"
+          : "הפעלתי, אבל מנוע הדיבור לא מותקן על השרת כרגע, אז בינתיים תקבל רק טקסט.",
+      });
+      return;
+    }
+    if (cmd === "off") {
+      writeFileSync(VOICE_OFF_FLAG, new Date().toISOString());
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text: "הפסקתי לענות בהקלטות. מעכשיו רק טקסט. להחזרה: /voice on",
+      });
+      return;
+    }
+    const on = voiceRepliesEnabled();
+    const ready = ttsAvailable();
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: !ready
+        ? "מנוע הדיבור לא מותקן על השרת, אז אני עונה רק בטקסט."
+        : on
+          ? "תשובות קוליות פעילות: כששולח לי הקלטה אני עונה גם בהקלטה. לכיבוי: /voice off"
+          : "תשובות קוליות כבויות. להפעלה: /voice on",
+    });
+  } catch (e: any) {
+    console.error(`[ERR] /voice ${cmd}: ${e?.message ?? e}`);
+  }
+}
+
+/** Upload an OGG/Opus file as a Telegram voice note (multipart, so it can't go
+ *  through the JSON-only tg() helper). */
+async function sendVoiceFile(chatId: number, path: string): Promise<void> {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  // Eager named File — Bun's FormData drops filenames for lazy file blobs, the
+  // same trap the Groq upload hit in phase 6.
+  form.append("voice", new File([await Bun.file(path).arrayBuffer()], "reply.ogg", { type: "audio/ogg" }));
+  const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendVoice`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(TG_FETCH_TIMEOUT_MS),
+  });
+  const data: any = await res.json();
+  if (!data.ok) throw new Error(`sendVoice ${data.error_code}: ${data.description}`);
+}
+
+/** Speak an answer already delivered as text. Never throws: the text reply is
+ *  the product, and speech is the bonus on top of it. */
+async function speakReply(chatId: number, answer: string): Promise<void> {
+  if (!voiceRepliesEnabled() || !ttsAvailable()) return;
+  if (!shouldSpeak(answer)) {
+    console.log(`[TTS] skipped for ${chatId} (too long or nothing to say)`);
+    return;
+  }
+  const out = join(UPLOADS_DIR, `tts-reply-${Date.now()}.ogg`);
+  try {
+    void sendTyping(chatId);
+    const started = Date.now();
+    const spoken = await synthesize(answer, out);
+    if (!spoken) return;
+    await sendVoiceFile(chatId, spoken.path);
+    console.log(`[TTS] spoke ${spoken.seconds}s for ${chatId} in ${Date.now() - started}ms`);
+  } catch (e: any) {
+    console.error(`[ERR] voice reply for ${chatId}: ${e?.message ?? e}`);
+  } finally {
+    rmSync(out, { force: true });
+  }
 }
 
 async function handleQuizCommand(cmd: QuizCommand, chatId: number) {
