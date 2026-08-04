@@ -88,6 +88,90 @@ test("full sequence thinking -> tool -> text -> done", () => {
   expect(p.finalText()).toBe("Here it is.");
 });
 
+// --- opening narration must not reach the reply (2026-08-04) ---------------
+// Only the segment before the FIRST tool call is dropped. The earlier attempt
+// (PR #71, reverted) kept only the segment after the LAST tool call and threw
+// away real answers — archive reply 962 is the shape that caught it.
+
+test("the narration before the first tool call is dropped", () => {
+  const p = new StreamParser();
+  p.push(textDelta("I'll check current pricing before answering."));
+  p.push(toolStart("WebSearch"));
+  expect(displayText(p.state())).toBe("🔍 searching the web…"); // narration off screen
+  p.push(textDelta("יש כיוון שפספסתי קודם."));
+  expect(p.finalText()).toBe("יש כיוון שפספסתי קודם.");
+});
+
+test("opening narration is never welded onto the answer that follows", () => {
+  const p = new StreamParser();
+  p.push(textDelta("I'll check the file now."));
+  p.push(toolStart("Read"));
+  p.push(textDelta("הקובץ ריק."));
+  const out = p.finalText();
+  expect(out).not.toContain("I'll check");
+  expect(out).not.toContain("now.הקובץ"); // the exact glued shape Maor saw
+});
+
+test("reply 962: a mid-turn answer survives a later tool call", () => {
+  const p = new StreamParser();
+  p.push(textDelta('Found it — "pending" is the open status. Now let me tell Maor…'));
+  p.push(toolStart("Bash")); // reopens the follow-up
+  p.push(textDelta('"לשמוע את ההקלטה של מתן" חזר לפתוח אצלי.'));
+  p.push(toolStart("Bash")); // checks whether to offer buttons
+  p.push(textDelta("כבר שאלתי בטקסט - אין צורך בכפתורים כאן."));
+
+  const out = p.finalText();
+  expect(out).toContain("חזר לפתוח אצלי"); // the answer itself, the part #71 lost
+  expect(out).not.toContain("Found it"); // opening narration still dropped
+  expect(out).toBe('"לשמוע את ההקלטה של מתן" חזר לפתוח אצלי.\n\nכבר שאלתי בטקסט - אין צורך בכפתורים כאן.');
+});
+
+test("segments after the first tool are joined with a blank line, never glued", () => {
+  const p = new StreamParser();
+  p.push(textDelta("narration"));
+  p.push(toolStart("Read"));
+  p.push(textDelta("first part."));
+  p.push(toolStart("Bash"));
+  p.push(textDelta("second part."));
+  expect(p.finalText()).toBe("first part.\n\nsecond part.");
+});
+
+test("live view shows every kept segment, not just the newest", () => {
+  const p = new StreamParser();
+  p.push(textDelta("narration"));
+  p.push(toolStart("Read"));
+  p.push(textDelta("first part."));
+  p.push(toolStart("Bash"));
+  p.push(textDelta("second part."));
+  expect(displayText(p.state())).toBe("first part.\n\nsecond part.");
+});
+
+test("a turn that only narrates still sends something rather than nothing", () => {
+  const p = new StreamParser();
+  p.push(textDelta("הנה התשובה."));
+  p.push(toolStart("Bash"));
+  p.push(JSON.stringify({ type: "result", result: "" }));
+  expect(p.finalText()).toBe("הנה התשובה."); // last-resort fallback
+});
+
+test("text with no tool call at all is untouched", () => {
+  const p = new StreamParser();
+  p.push(textDelta("שלום, "));
+  p.push(textDelta("מה נשמע?"));
+  expect(p.finalText()).toBe("שלום, מה נשמע?");
+});
+
+test("seeing the same tool twice (block start, then assistant event) is harmless", () => {
+  const p = new StreamParser();
+  p.push(textDelta("narration"));
+  p.push(toolStart("Bash"));
+  p.push(
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }] } }),
+  );
+  p.push(textDelta("answer"));
+  expect(p.finalText()).toBe("answer"); // not "narration\n\nanswer"
+});
+
 test("tool_use in a complete assistant event also sets status", () => {
   const p = new StreamParser();
   p.push(
