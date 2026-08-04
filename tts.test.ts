@@ -1,5 +1,58 @@
 import { test, expect } from "bun:test";
-import { speakableText, shouldSpeak, parseVoiceCommand, parseSynthOutput, ttsAvailable } from "./tts.ts";
+import { speakableText, shouldSpeak, parseVoiceCommand, parseSynthOutput, ttsAvailable, withSynthLock } from "./tts.ts";
+
+// --- the synthesis lock (2026-08-04 crash fix) ------------------------------
+// One synthesis peaks at 668MB on a 1968MB droplet with no swap. Two at once
+// leaves ~200MB of margin; three is an OOM and the kernel takes the largest
+// process, which is the bot. Nothing else bounds this — the poller handles
+// messages concurrently.
+
+test("withSynthLock runs one at a time", async () => {
+  const order: string[] = [];
+  const slow = () =>
+    withSynthLock(async () => {
+      order.push("a-start");
+      await new Promise((r) => setTimeout(r, 30));
+      order.push("a-end");
+    });
+  const fast = () =>
+    withSynthLock(async () => {
+      order.push("b-start");
+      order.push("b-end");
+    });
+  await Promise.all([slow(), fast()]);
+  expect(order).toEqual(["a-start", "a-end", "b-start", "b-end"]);
+});
+
+test("a failed synthesis releases the lock instead of wedging it shut forever", async () => {
+  await withSynthLock(async () => {
+    throw new Error("boom");
+  }).catch(() => {});
+  const ran = await withSynthLock(async () => "second ran");
+  expect(ran).toBe("second ran");
+});
+
+test("the caller still sees its own rejection", async () => {
+  await expect(
+    withSynthLock(async () => {
+      throw new Error("boom");
+    }),
+  ).rejects.toThrow("boom");
+});
+
+test("a slow synthesis does not swallow the one queued behind it", async () => {
+  const done: string[] = [];
+  await Promise.all([
+    withSynthLock(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      done.push("first");
+    }),
+    withSynthLock(async () => {
+      done.push("second");
+    }),
+  ]);
+  expect(done).toEqual(["first", "second"]);
+});
 
 // --- what gets spoken ------------------------------------------------------
 

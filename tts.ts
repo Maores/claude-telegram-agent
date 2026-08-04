@@ -104,11 +104,40 @@ export function parseSynthOutput(stdout: string): Spoken | null {
 }
 
 /**
+ * Serialises synthesis. One process peaks at 668MB (measured 2026-08-04) on a
+ * 1968MB droplet with NO SWAP, so two at once leaves ~200MB of margin and three
+ * is an OOM — and the kernel kills the largest process, which is the bot. The
+ * poller handles messages concurrently and nothing else bounds this, so five
+ * recordings in a row survived that evening purely by luck of scheduling.
+ *
+ * The chain deliberately swallows outcomes so a failed synthesis can never
+ * wedge the lock shut: a leaked lock would silence voice replies permanently,
+ * which is worse than the crash it prevents. The caller still sees its own
+ * rejection.
+ */
+let synthChain: Promise<unknown> = Promise.resolve();
+
+export function withSynthLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = synthChain.then(fn, fn);
+  synthChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/**
  * Speak `text` into `outPath` (an .ogg). Returns null on anything going wrong —
  * a voice reply is a bonus on top of a text answer already delivered, so it
  * must never turn into an error the user sees.
+ *
+ * Serialised: only one synthesis runs at a time, the rest queue behind it.
  */
 export async function synthesize(text: string, outPath: string): Promise<Spoken | null> {
+  return withSynthLock(() => synthesizeUnlocked(text, outPath));
+}
+
+async function synthesizeUnlocked(text: string, outPath: string): Promise<Spoken | null> {
   if (!ttsAvailable()) return null;
   const speech = speakableText(text);
   if (!shouldSpeak(text)) return null;
