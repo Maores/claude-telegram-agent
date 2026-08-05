@@ -256,3 +256,129 @@ test("parseSynthOutput still finds the result under runtime warnings after a rea
   ].join("\n");
   expect(parseSynthOutput(stdout)).toEqual({ path: "/tmp/b.ogg", seconds: 5.0 });
 });
+
+// --- the engine timeout bounds synthesis, not the wait ----------------------
+// The engine is deliberately spawned when the recording arrives so the models
+// load during the answer. 2026-08-05: a 3.5-minute answer outlived the killer
+// that used to be armed at spawn — "engine exited 143", no voice note. The
+// timeout may only start once text is actually fed.
+
+import { engineFromProc, type EngineProc } from "./tts.ts";
+
+/** A controllable stand-in for the spawned python synthesizer. */
+function fakeProc(opts: { stdout?: string; exitCode?: number } = {}) {
+  let closeStdout!: () => void;
+  let resolveExited!: (code: number) => void;
+  const state = { killed: false, stdinData: "", stdinEnded: false };
+  const stdout = new ReadableStream<Uint8Array>({
+    start(controller) {
+      closeStdout = () => {
+        if (opts.stdout) controller.enqueue(new TextEncoder().encode(opts.stdout));
+        try {
+          controller.close();
+        } catch {}
+      };
+    },
+  });
+  const stderr = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.close();
+    },
+  });
+  const exited = new Promise<number>((r) => {
+    resolveExited = r;
+  });
+  const proc: EngineProc = {
+    stdin: {
+      write(s: string) {
+        state.stdinData += s;
+        return s.length;
+      },
+      end() {
+        state.stdinEnded = true;
+        // A real synthesizer answers after stdin closes; the fake answers only
+        // when the test says so via finishNow(), unless configured immediate.
+      },
+    },
+    stdout,
+    stderr,
+    exited,
+    kill() {
+      state.killed = true;
+      closeStdout();
+      resolveExited(143);
+    },
+  };
+  const finishNow = (code = opts.exitCode ?? 0) => {
+    closeStdout();
+    resolveExited(code);
+  };
+  return { proc, state, finishNow };
+}
+
+const OK_JSON = '{"ok": true, "path": "/tmp/fake.ogg", "seconds": 2.5}\n';
+
+test("an engine still waiting for the answer is NOT killed when the timeout passes", async () => {
+  const { proc, state } = fakeProc();
+  let released = false;
+  engineFromProc(proc, () => {
+    released = true;
+  }, 30);
+  await new Promise((r) => setTimeout(r, 90));
+  // Pre-warmed and idle: no text was fed yet, so no timer may be running.
+  expect(state.killed).toBe(false);
+  expect(released).toBe(false);
+});
+
+test("speak() bounds the synthesis: a wedged engine is killed after the timeout", async () => {
+  const { proc, state } = fakeProc();
+  let released = false;
+  const engine = engineFromProc(proc, () => {
+    released = true;
+  }, 30);
+  const spoken = await engine.speak("שלום מאור, הכל בסדר");
+  expect(spoken).toBeNull(); // killed mid-synthesis → no audio
+  expect(state.killed).toBe(true);
+  expect(released).toBe(true); // the slot must come back even on a timeout
+});
+
+test("a synthesis finishing inside the limit returns audio and is never killed", async () => {
+  const { proc, state, finishNow } = fakeProc({ stdout: OK_JSON });
+  let released = false;
+  const engine = engineFromProc(proc, () => {
+    released = true;
+  }, 5_000);
+  const speaking = engine.speak("שלום מאור, הכל בסדר");
+  finishNow();
+  const spoken = await speaking;
+  expect(spoken).toEqual({ path: "/tmp/fake.ogg", seconds: 2.5 });
+  expect(state.killed).toBe(false);
+  expect(released).toBe(true);
+  // The killer must be gone, not merely not-yet-fired.
+  await new Promise((r) => setTimeout(r, 20));
+  expect(state.killed).toBe(false);
+});
+
+test("kill() on an idle engine kills the process and releases the slot", () => {
+  const { proc, state } = fakeProc();
+  let released = false;
+  const engine = engineFromProc(proc, () => {
+    released = true;
+  }, 5_000);
+  engine.kill();
+  expect(state.killed).toBe(true);
+  expect(released).toBe(true);
+});
+
+test("speak() with an unspeakable answer kills the engine instead of feeding it", async () => {
+  const { proc, state } = fakeProc();
+  let released = false;
+  const engine = engineFromProc(proc, () => {
+    released = true;
+  }, 5_000);
+  const spoken = await engine.speak("https://example.com/only-a-link");
+  expect(spoken).toBeNull();
+  expect(state.killed).toBe(true);
+  expect(released).toBe(true);
+  expect(state.stdinData).toBe(""); // nothing was fed
+});

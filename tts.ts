@@ -226,6 +226,79 @@ export interface TtsEngine {
   kill(): void;
 }
 
+/** The slice of a spawned synthesizer the engine facade needs. Lets tests
+ *  drive the facade with a controllable fake process. */
+export interface EngineProc {
+  stdin: { write(s: string): unknown; end(): unknown };
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  exited: Promise<number>;
+  kill(): void;
+}
+
+/**
+ * Wrap a spawned synthesizer as a TtsEngine. Exported for tests.
+ *
+ * The timeout bounds SYNTHESIS only, so it is armed inside speak(), when text
+ * is actually fed. The engine is deliberately spawned when the recording
+ * arrives so the models load while the answer is being written — armed at
+ * spawn, the killer shot the pre-warmed engine whenever the answer took longer
+ * than the limit to write (2026-08-05: a 3.5-minute turn ended with "engine
+ * exited 143" and no voice note ever sent). The wait itself is unbounded here;
+ * the poller kills every engine it doesn't feed.
+ */
+export function engineFromProc(proc: EngineProc, release: () => void, timeoutMs = TTS_TIMEOUT_MS): TtsEngine {
+  let killer: ReturnType<typeof setTimeout> | null = null;
+  let timedOut = false;
+  const finish = () => {
+    if (killer) clearTimeout(killer);
+    killer = null;
+    release();
+  };
+  const kill = () => {
+    try {
+      proc.kill();
+    } catch {}
+    finish();
+  };
+  return {
+    kill,
+    async speak(text: string): Promise<Spoken | null> {
+      if (!shouldSpeak(text)) {
+        kill();
+        return null;
+      }
+      try {
+        killer = setTimeout(() => {
+          timedOut = true;
+          try {
+            proc.kill();
+          } catch {}
+        }, timeoutMs);
+        proc.stdin.write(speakableText(text));
+        proc.stdin.end();
+        const stdout = await new Response(proc.stdout).text();
+        const code = await proc.exited;
+        if (code !== 0) {
+          if (timedOut) {
+            console.error(`[TTS] synthesis timed out after ${timeoutMs}ms (engine killed)`);
+          } else {
+            const err = await new Response(proc.stderr).text().catch(() => "");
+            console.error(`[TTS] engine exited ${code}: ${err.trim().split("\n").slice(-2).join(" | ")}`);
+          }
+          return null;
+        }
+        return parseSynthOutput(stdout);
+      } catch (e: any) {
+        console.error(`[TTS] engine speak failed: ${e?.message ?? e}`);
+        return null;
+      } finally {
+        finish();
+      }
+    },
+  };
+}
+
 /**
  * Start the synthesizer NOW, so its ~9.3s model load runs while the answer is
  * still being written rather than after it. Measured 2026-08-04: loading is
@@ -253,47 +326,7 @@ export async function startEngine(outPath: string): Promise<TtsEngine | null> {
     console.error(`[TTS] engine spawn failed: ${e?.message ?? e}`);
     return null;
   }
-  const killer = setTimeout(() => {
-    try {
-      proc.kill();
-    } catch {}
-  }, TTS_TIMEOUT_MS);
-  const finish = () => {
-    clearTimeout(killer);
-    release();
-  };
-  const kill = () => {
-    try {
-      proc.kill();
-    } catch {}
-    finish();
-  };
-  return {
-    kill,
-    async speak(text: string): Promise<Spoken | null> {
-      if (!shouldSpeak(text)) {
-        kill();
-        return null;
-      }
-      try {
-        proc.stdin.write(speakableText(text));
-        proc.stdin.end();
-        const stdout = await new Response(proc.stdout).text();
-        const code = await proc.exited;
-        if (code !== 0) {
-          const err = await new Response(proc.stderr).text().catch(() => "");
-          console.error(`[TTS] engine exited ${code}: ${err.trim().split("\n").slice(-2).join(" | ")}`);
-          return null;
-        }
-        return parseSynthOutput(stdout);
-      } catch (e: any) {
-        console.error(`[TTS] engine speak failed: ${e?.message ?? e}`);
-        return null;
-      } finally {
-        finish();
-      }
-    },
-  };
+  return engineFromProc(proc, release);
 }
 
 // --- the /voice command ----------------------------------------------------
