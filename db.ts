@@ -154,9 +154,10 @@ export function initSchema(db: Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_usage_log_ts ON usage_log(ts);
 
-    -- Progress/XP ledger (gamification). Append-only: one row per thing Maor
-    -- actually finished. The ref column holds the source's own id (a followup
-    -- id, a task uid); the unique index is what makes re-running a sync safe.
+    -- Progress/XP ledger, from the gamification feature REMOVED on 2026-08-05.
+    -- Nothing reads or writes this any more (game.ts is gone). The table stays
+    -- so the existing rows on the droplet are not destroyed by a deploy; drop it
+    -- only if Maor asks for the history to be deleted.
     CREATE TABLE IF NOT EXISTS xp_events (
       id     INTEGER PRIMARY KEY AUTOINCREMENT,
       ts     INTEGER NOT NULL,   -- unix seconds, when the thing was completed
