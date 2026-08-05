@@ -446,6 +446,24 @@ export function paKeyboard(id: string): unknown {
   };
 }
 
+/** How long an approved proposal's command may run before it is killed.
+ *  2026-08-05: todo.ts took 32s per call (iCloud multiget penalty, since
+ *  fixed), the limit was 30s, and four successful deletes were reported as
+ *  failures. The execution is detached, so a generous limit blocks nothing —
+ *  this only bounds a truly wedged child. */
+export const PA_EXEC_TIMEOUT_MS = 120_000;
+
+/** The receipt text after an approved proposal ran. Exported for tests.
+ *  A clean exit is a success no matter what the killer did (the timer can fire
+ *  in the same tick the process finishes). A timeout means the outcome is
+ *  UNKNOWN — the work usually completed (all four 2026-08-05 kills had) — so
+ *  it must read as "couldn't confirm", never as a failure. */
+export function paResultText(summary: string, code: number, timedOut: boolean, firstLine: string): string {
+  if (code === 0) return `✓ ${summary}\n${firstLine}`;
+  if (timedOut) return `⏱ ${summary}\nלא הצלחתי לוודא שזה הסתיים בזמן — כנראה בוצע, כדאי לבדוק ברשימה`;
+  return `⚠️ נכשל — ${summary}\n${firstLine}`;
+}
+
 // ---------------------------------------------------------------------------
 // Inline-button callbacks: multiple-choice clarify questions (D3 choice buttons)
 // callback_data protocol (≤64 bytes): "ch:<choiceId>:<optionIndex>" (and ":o"
@@ -1961,11 +1979,13 @@ async function handlePaCallback(
   // once-only consumption above already guarantees this runs at most once.
   void (async () => {
     const proc = Bun.spawn(a.argv, { cwd: PROJECT_DIR, stdout: "pipe", stderr: "pipe" });
+    let timedOut = false;
     const killer = setTimeout(() => {
+      timedOut = true;
       try {
         proc.kill();
       } catch {}
-    }, 30_000);
+    }, PA_EXEC_TIMEOUT_MS);
     const [out, err, code] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),
@@ -1973,9 +1993,10 @@ async function handlePaCallback(
     ]);
     clearTimeout(killer);
     const firstLine = (code === 0 ? out : err || out).trim().split("\n")[0] ?? "";
-    const text = code === 0 ? `✓ ${a.summary}\n${firstLine}` : `⚠️ נכשל — ${a.summary}\n${firstLine}`;
+    const text = paResultText(a.summary, code, timedOut, firstLine);
     await tg("editMessageText", { chat_id: chatId, message_id: messageId, text }).catch(() => {});
-    console.log(redact(`[PA] ${code === 0 ? "executed" : "FAILED"} ${a.id}: ${firstLine}`));
+    const outcome = code === 0 ? "executed" : timedOut ? "TIMEOUT (outcome unknown)" : "FAILED";
+    console.log(redact(`[PA] ${outcome} ${a.id}: ${firstLine}`));
   })().catch((e: any) => console.error(`[ERR] pa exec ${a.id}: ${e?.message ?? e}`));
 }
 
