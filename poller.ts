@@ -1548,6 +1548,28 @@ async function handleMessage(msg: TgMessage) {
   }
 }
 
+/** One rendered message of a debounced burst. `transcript` and `needsConfirm`
+ *  are set only for recordings; typed messages and files never carry them. */
+export interface BatchItem {
+  part: string;
+  historyPart: string;
+  echo?: string;
+  transcript?: string;
+  needsConfirm?: boolean;
+}
+
+/** The confirmation message for a whole burst: every recording in it, in order,
+ *  with the doubtful ones marked. Maor picked confirm-the-batch-or-nothing on
+ *  2026-08-05, so he has to see the burst exactly as it will run, not only the
+ *  item that tripped the check — approving a fragment he cannot see would be
+ *  worse than the mishearing this guards against. Pure. */
+export function batchConfirmText(items: Pick<BatchItem, "transcript" | "needsConfirm">[]): string {
+  const lines = items
+    .filter((i) => typeof i.transcript === "string" && i.transcript.trim())
+    .map((i) => (i.needsConfirm ? `🎤 «${i.transcript}» ❓` : `🎤 «${i.transcript}»`));
+  return `לא בטוח שהבנתי נכון את כל ההקלטות. זה מה ששמעתי:\n\n${lines.join("\n")}`;
+}
+
 /** Render one message of a batch into its prompt part + history marker.
  *  Every branch returns SOMETHING for media: a message that fell through all
  *  branches used to vanish from the prompt, and Claude then denied the file
@@ -1560,7 +1582,7 @@ export async function renderBatchItem(
     download?: (fileId: string, preferredName?: string) => Promise<string>;
     transcribe?: (path: string) => Promise<{ text: string; confidence: number | null }>;
   } = {},
-): Promise<{ part: string; historyPart: string; echo?: string }> {
+): Promise<BatchItem> {
   const backend = io.backend ?? resolveBackend;
   const download = io.download ?? downloadFile;
   const transcribe = io.transcribe ?? transcribeVoice;
@@ -1594,6 +1616,10 @@ export async function renderBatchItem(
           historyPart: caption ? `${caption}\n${note}` : note,
           // Same low-confidence transcript echo the single-message path shows.
           echo: shouldEchoTranscript(tr.confidence) ? `🎤 «${tr.text}»` : undefined,
+          transcript: tr.text,
+          // A burst is confirmed as one unit, so this only votes; the caller
+          // decides for the whole batch.
+          needsConfirm: needsConfirmation(tr.text, tr.confidence),
         };
       }
       return { part: `[${noun} — empty]`, historyPart: `[${noun} — empty]` };
@@ -1658,9 +1684,11 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
   const parts: string[] = [];
   const historyParts: string[] = [];
   const echoes: string[] = [];
+  const items: BatchItem[] = [];
 
   for (const msg of msgs) {
     const item = await renderBatchItem(msg);
+    items.push(item);
     if (item.part) parts.push(item.part);
     if (item.historyPart) historyParts.push(item.historyPart);
     if (item.echo) echoes.push(item.echo);
@@ -1672,6 +1700,28 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
 
   // An open "זמן אחר…" snooze ask consumes the batch when it's a time answer.
   if (await consumeCustomSnooze(chatId, combined)) return;
+
+  // One shaky transcript holds the WHOLE burst for a tap (Maor's option 1,
+  // 2026-08-05). Until now a burst skipped confirmation entirely and a
+  // misheard recording inside it still became an answer — the exact failure
+  // the single-message path was built to stop. The merged prompt is carried on
+  // the pending record so the confirmed turn replays this burst verbatim.
+  if (items.some((i) => i.needsConfirm)) {
+    const transcripts = items.map((i) => i.transcript).filter((t): t is string => !!t?.trim());
+    const pending = addPending(chatId, transcripts.join("\n"), "voice", Math.floor(Date.now() / 1000), {
+      prompt: combined,
+      historyNote,
+      size: msgs.length,
+    });
+    console.log(`[VOICE] confirm ${pending.id} (batch:${msgs.length}, ${transcripts.length} recording(s))`);
+    void setReaction(chatId, last.message_id, "");
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: batchConfirmText(items),
+      reply_markup: vcKeyboard(pending.id),
+    }).catch(() => {});
+    return;
+  }
 
   const { model, prompt: userMsg } = pickModel(combined);
   console.log(redact(`[MSG] ${name} (${model}) [batch:${msgs.length}]: ${userMsg.slice(0, 100)}`));
@@ -2179,8 +2229,13 @@ async function handleVcCallback(
     await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: "בסדר, לא עניתי על זה. תשלח שוב 🎤" }).catch(() => {});
     return;
   }
-  console.log(redact(`[VOICE] confirmed ${pending.id}`));
-  await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: `🎤 «${pending.text}»` }).catch(() => {});
+  console.log(redact(`[VOICE] confirmed ${pending.id}${pending.batch ? ` (batch:${pending.batch.size})` : ""}`));
+  // A burst's receipt keeps one line per recording; a single «» wrapper around
+  // several transcripts reads as one run-on sentence.
+  const receipt = pending.batch
+    ? pending.text.split("\n").filter(Boolean).map((t) => `🎤 «${t}»`).join("\n")
+    : `🎤 «${pending.text}»`;
+  await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: receipt }).catch(() => {});
   // Hop to the per-chat queue so the new turn keeps per-chat ordering and does
   // not block the global callback chain, exactly as the choice buttons do.
   chatQueues.enqueue(chatId, () => answerConfirmedVoice(chatId, pending));
@@ -2196,11 +2251,15 @@ async function handleVcCallback(
 async function answerConfirmedVoice(chatId: number, pending: PendingVoice) {
   const name = "Maor";
   const db = getDb();
-  const prompt = voicePromptText(pending.text, pending.kind);
+  // A confirmed burst replays the prompt built when it was assembled: it already
+  // carries every message's own rendering (transcripts, captions, typed text,
+  // file notes), which re-wrapping a joined transcript would throw away.
+  const prompt = pending.batch ? pending.batch.prompt : voicePromptText(pending.text, pending.kind);
   const { model } = pickModel(pending.text);
   const now = Math.floor(Date.now() / 1000);
   try {
-    insertMessage(db, { chatId, role: "user", content: voiceHistoryNote(pending.text, pending.kind), ts: now, model });
+    const content = pending.batch ? pending.batch.historyNote : voiceHistoryNote(pending.text, pending.kind);
+    insertMessage(db, { chatId, role: "user", content, ts: now, model });
   } catch (e: any) {
     console.error(`[ERR] persist confirmed voice: ${e?.message ?? e}`);
   }

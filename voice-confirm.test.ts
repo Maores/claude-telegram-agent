@@ -97,3 +97,57 @@ test("the keyboard offers exactly one yes and one no", () => {
   expect(all.filter((b) => b.callback_data.endsWith(":y")).length).toBe(1);
   expect(all.filter((b) => b.callback_data.endsWith(":n")).length).toBe(1);
 });
+
+// --- a debounced burst held as ONE pending unit (2026-08-05) -----------------
+// Maor picked "confirm the whole batch or nothing", so the burst's already-built
+// prompt travels with the pending record and the confirmed turn replays it
+// verbatim instead of re-deriving it from a joined transcript.
+
+test("a batch entry carries the burst's prompt and history line through a round trip", () => {
+  freshFile();
+  const p = addPending(7, "תזכיר לי לשלם\nמה יש מחר", "voice", T0, {
+    prompt: "[voice note transcript]\nתזכיר לי לשלם\n[voice note transcript]\nמה יש מחר",
+    historyNote: "[voice] תזכיר לי לשלם\n[voice] מה יש מחר",
+    size: 2,
+  });
+  const r = consumePending(p.id, T0 + 10);
+  expect(r.outcome).toBe("ok");
+  if (r.outcome === "ok") {
+    expect(r.pending.batch?.size).toBe(2);
+    expect(r.pending.batch?.prompt).toContain("תזכיר לי לשלם");
+    expect(r.pending.batch?.prompt).toContain("מה יש מחר");
+    expect(r.pending.batch?.historyNote).toBe("[voice] תזכיר לי לשלם\n[voice] מה יש מחר");
+  }
+});
+
+test("a single-recording entry carries no batch payload, so the old path is untouched", () => {
+  freshFile();
+  const p = addPending(7, "מה יש לי מחר", "voice", T0);
+  expect(p.batch).toBeUndefined();
+  const r = consumePending(p.id, T0 + 1);
+  if (r.outcome === "ok") expect(r.pending.batch).toBeUndefined();
+});
+
+test("an entry written before batches existed still consumes cleanly", () => {
+  freshFile();
+  // Exactly the shape already sitting in voice-pending.json on the droplet.
+  const legacy = { id: "v1", chatId: 7, text: "ישן", kind: "voice" as const, createdAt: T0 };
+  require("node:fs").writeFileSync(process.env.VOICE_PENDING_FILE!, JSON.stringify([legacy]));
+  const r = consumePending("v1", T0 + 5);
+  expect(r.outcome).toBe("ok");
+  if (r.outcome === "ok") {
+    expect(r.pending.text).toBe("ישן");
+    expect(r.pending.batch).toBeUndefined();
+  }
+});
+
+test("a burst and a single recording can wait side by side without colliding", () => {
+  freshFile();
+  const a = addPending(7, "אחד", "voice", T0);
+  const b = addPending(7, "שניים\nשלוש", "voice", T0 + 1, { prompt: "p", historyNote: "h", size: 2 });
+  expect(loadPending()).toHaveLength(2);
+  const rb = consumePending(b.id, T0 + 2);
+  expect(rb.outcome === "ok" && rb.pending.batch?.size).toBe(2);
+  const ra = consumePending(a.id, T0 + 3);
+  expect(ra.outcome === "ok" && ra.pending.batch).toBeUndefined();
+});
