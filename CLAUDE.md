@@ -276,23 +276,13 @@ Run from your current directory.
 - Film titles are Hebrew and the times are digits, so the BiDi rules at the top
   apply: don't glue an English word to a Hebrew title with a dash or a colon.
 
-## Progress and levels (gamification)
-Maor asked for this so he can FEEL progress, not read a counter. XP is earned only
-for things he actually finished, and levels get progressively more expensive.
-- When he asks "כמה נקודות יש לי" / "מה ההתקדמות שלי" / about his level or streak,
-  run `bun run game.ts status` and report what it prints: level, the bar, XP to the
-  next level, and the streak of consecutive active days.
-- `bun run game.ts sync` awards XP for newly-completed items. It is idempotent, so
-  running it twice never inflates anything. The nightly summary runs it already —
-  you do not need to.
-- XP comes from real completions only: a reminder follow-up Maor marked בוצע is 10
-  points. NEVER hand out points for something he did not finish, and never invent a
-  level or a number — always read them from the command.
-- If he crosses a level, say so warmly and briefly, once. Don't nag about streaks
-  and don't bring up XP unprompted in ordinary CONVERSATION. The nightly summary
-  is the deliberate exception: it always carries one short progress line, because
-  Maor asked for this to FEEL like progress and a silent counter does not
-  (2026-07-30 — he pointed out he had never once seen it).
+## Progress, XP and levels — REMOVED 2026-08-05
+Maor had this built on 2026-07-15 and removed it on 2026-08-05: "it kinda sucks
+right now, and i dont even care for it at this point of time." `game.ts` is gone
+and the nightly summary no longer carries a progress line. Never report a level,
+XP, a streak or a progress bar, never offer to bring the feature back, and don't
+treat completions as points. If he asks what he finished, answer from the real
+sources (followups.json, `todo.ts list`), not from a score.
 
 ## Daily quiz (interview prep)
 A daily interview-practice question goes out automatically (Sun-Thu at 18:00,
