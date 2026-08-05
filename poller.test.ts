@@ -30,6 +30,8 @@ import {
   shouldDeclineUnreadable,
   parsePaCallback,
   paKeyboard,
+  paResultText,
+  PA_EXEC_TIMEOUT_MS,
   parseChCallback,
   choiceKeyboard,
   resolveChoiceOption,
@@ -689,6 +691,48 @@ test("paKeyboard carries the proposal id in both buttons", () => {
   const flat = kb.inline_keyboard.flat();
   expect(flat.map((b: any) => b.callback_data)).toEqual(["pa:ok:pa123", "pa:no:pa123"]);
   expect(flat.map((b: any) => b.text)).toEqual(["✓ אשר", "✗ בטל"]);
+});
+
+// ---------------------------------------------------------------------------
+// The receipt after an approved proposal runs. 2026-08-05: four todo deletes
+// were killed by the 30s exec timeout at second 31, every one had already
+// deleted its task, and every receipt said "נכשל". A timeout means the outcome
+// is UNKNOWN (and probably fine) — it must never be reported as a failure.
+// ---------------------------------------------------------------------------
+
+test("paResultText: clean exit is a ✓ receipt with the command's first line", () => {
+  const t = paResultText("למחוק את 'קניות'", 0, false, 'deleted "קניות"');
+  expect(t.startsWith("✓")).toBe(true);
+  expect(t).toContain("למחוק את 'קניות'");
+  expect(t).toContain('deleted "קניות"');
+});
+
+test("paResultText: a real failure still says נכשל", () => {
+  const t = paResultText("למחוק את 'קניות'", 1, false, "no matching task");
+  expect(t).toContain("נכשל");
+  expect(t).toContain("no matching task");
+});
+
+test("paResultText: a timeout is reported as unverified, never as a failure", () => {
+  const t = paResultText("למחוק את 'קניות'", 143, true, "");
+  expect(t).not.toContain("נכשל");
+  expect(t).toContain("למחוק את 'קניות'");
+  // Says the outcome could not be confirmed and likely succeeded.
+  expect(t).toContain("לא הצלחתי לוודא");
+  expect(t).toContain("כנראה בוצע");
+});
+
+test("paResultText: clean exit wins the race against the killer", () => {
+  // The killer can fire in the same tick the process finishes; exit 0 with
+  // output means the work completed no matter what the timer did.
+  const t = paResultText("להוסיף אירוע", 0, true, "created event");
+  expect(t.startsWith("✓")).toBe(true);
+});
+
+test("the pa exec timeout clears the real cost of a CalDAV write", () => {
+  // todo.ts list ran 32s before the multiget fix; the limit must sit far above
+  // any real write so a slow-but-successful command is never killed mid-work.
+  expect(PA_EXEC_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
 });
 
 // ---------------------------------------------------------------------------
