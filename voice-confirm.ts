@@ -28,6 +28,20 @@ export interface PendingVoice {
   text: string;
   kind: "voice" | "audio";
   createdAt: number;
+  /** A debounced burst confirmed as ONE unit (Maor's pick, 2026-08-05: "confirm
+   *  the whole batch or nothing"). The batch's prompt and history line are built
+   *  once, when the burst is assembled, and carried here so the confirmed turn
+   *  replays the burst exactly instead of re-deriving it from a single
+   *  transcript. Absent on ordinary single-recording entries, including any
+   *  already sitting in the store when this shipped. */
+  batch?: {
+    /** The exact merged prompt the turn should run. */
+    prompt: string;
+    /** The exact line history/recall should store for the burst. */
+    historyNote: string;
+    /** How many messages the burst contained, for the log line. */
+    size: number;
+  };
 }
 
 function pendingPath(): string {
@@ -63,12 +77,13 @@ export function addPending(
   text: string,
   kind: "voice" | "audio",
   nowEpoch = Math.floor(Date.now() / 1000),
+  batch?: PendingVoice["batch"],
 ): PendingVoice {
   const list = loadPending().filter((p) => p.createdAt + PENDING_TTL_S > nowEpoch);
   const taken = new Set(list.map((p) => p.id));
   let id = `v${Date.now()}`;
   while (taken.has(id)) id += "x"; // same-millisecond safety bump
-  const pending: PendingVoice = { id, chatId, text, kind, createdAt: nowEpoch };
+  const pending: PendingVoice = { id, chatId, text, kind, createdAt: nowEpoch, ...(batch ? { batch } : {}) };
   list.push(pending);
   save(list);
   return pending;

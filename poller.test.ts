@@ -25,6 +25,7 @@ import {
   voiceInfo,
   audioDownloadName,
   renderBatchItem,
+  batchConfirmText,
   voicePromptText,
   voiceHistoryNote,
   shouldDeclineUnreadable,
@@ -584,6 +585,71 @@ const batchNoIo = {
     throw new Error("unexpected transcribe");
   },
 };
+
+// --- a burst with a shaky transcript in it (2026-08-05, Maor's option 1) -----
+// Debounced bursts used to skip the confirmation entirely and fall back to the
+// old low-confidence echo, so a misheard recording inside a burst still became
+// an answer. His pick: confirm the whole batch as one unit, because in a burst
+// the cheap thing is one tap on everything, not one tap per recording.
+
+test("renderBatchItem flags a shaky transcript for confirmation", async () => {
+  const io = {
+    backend: () => "groq" as const,
+    download: async () => "/up/1-v.oga",
+    transcribe: async () => ({ text: "Hola, ¿qué te pasa?", confidence: 0.4 }),
+  };
+  const r = await renderBatchItem({ message_id: 1, chat: { id: 1 }, voice: { file_id: "v1", duration: 3 } }, io);
+  expect(r.needsConfirm).toBe(true);
+  expect(r.transcript).toBe("Hola, ¿qué te pasa?");
+});
+
+test("renderBatchItem does not flag a confident transcript", async () => {
+  const io = {
+    backend: () => "groq" as const,
+    download: async () => "/up/1-v.oga",
+    transcribe: async () => ({ text: "מה יש לי מחר ביומן", confidence: 0.95 }),
+  };
+  const r = await renderBatchItem({ message_id: 1, chat: { id: 1 }, voice: { file_id: "v1", duration: 3 } }, io);
+  expect(r.needsConfirm).toBeFalsy();
+  expect(r.transcript).toBe("מה יש לי מחר ביומן");
+});
+
+test("a typed message in a burst is never flagged for confirmation", async () => {
+  const r = await renderBatchItem({ message_id: 1, chat: { id: 1 }, text: "וגם תבדוק את הדואר" }, batchNoIo);
+  expect(r.needsConfirm).toBeFalsy();
+  expect(r.transcript).toBeUndefined();
+});
+
+test("batchConfirmText shows every recording in the burst, not only the shaky one", () => {
+  const t = batchConfirmText([
+    { transcript: "תזכיר לי לשלם", needsConfirm: false },
+    { transcript: "Hola, ¿qué te pasa?", needsConfirm: true },
+  ]);
+  // Both transcripts appear, in order, so Maor judges the burst as it will run.
+  expect(t.indexOf("תזכיר לי לשלם")).toBeGreaterThan(-1);
+  expect(t.indexOf("Hola, ¿qué te pasa?")).toBeGreaterThan(t.indexOf("תזכיר לי לשלם"));
+  expect(t).toContain("🎤");
+});
+
+test("batchConfirmText marks which item is the doubtful one", () => {
+  const t = batchConfirmText([
+    { transcript: "בסדר גמור", needsConfirm: false },
+    { transcript: "???", needsConfirm: true },
+  ]);
+  const lines = t.split("\n").filter((l) => l.includes("🎤"));
+  expect(lines).toHaveLength(2);
+  // The uncertain line is visibly distinguished from the confident one.
+  expect(lines[1]).not.toBe(lines[0].replace("בסדר גמור", "???"));
+});
+
+test("batchConfirmText handles a burst whose typed parts carry no transcript", () => {
+  const t = batchConfirmText([
+    { needsConfirm: false },
+    { transcript: "משהו לא ברור", needsConfirm: true },
+  ]);
+  expect(t).toContain("משהו לא ברור");
+  expect(t.split("\n").filter((l) => l.includes("🎤"))).toHaveLength(1);
+});
 
 test("renderBatchItem transcribes an audio file like a voice note", async () => {
   const io = {
