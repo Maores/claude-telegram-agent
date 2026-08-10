@@ -98,7 +98,7 @@ test("the keyboard offers exactly one yes and one no", () => {
   expect(all.filter((b) => b.callback_data.endsWith(":n")).length).toBe(1);
 });
 
-// --- a debounced burst held as ONE pending unit (2026-08-05) -----------------
+// --- a debounced burst held as ONE pending unit (2026-08-10) -----------------
 // Maor picked "confirm the whole batch or nothing", so the burst's already-built
 // prompt travels with the pending record and the confirmed turn replays it
 // verbatim instead of re-deriving it from a joined transcript.

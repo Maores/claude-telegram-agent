@@ -586,7 +586,7 @@ const batchNoIo = {
   },
 };
 
-// --- a burst with a shaky transcript in it (2026-08-05, Maor's option 1) -----
+// --- a burst with a shaky transcript in it (2026-08-10, Maor's option 1) -----
 // Debounced bursts used to skip the confirmation entirely and fall back to the
 // old low-confidence echo, so a misheard recording inside a burst still became
 // an answer. His pick: confirm the whole batch as one unit, because in a burst
