@@ -276,8 +276,8 @@ Run from your current directory.
 - Film titles are Hebrew and the times are digits, so the BiDi rules at the top
   apply: don't glue an English word to a Hebrew title with a dash or a colon.
 
-## Progress, XP and levels — REMOVED 2026-08-05
-Maor had this built on 2026-07-15 and removed it on 2026-08-05: "it kinda sucks
+## Progress, XP and levels — REMOVED 2026-08-10
+Maor had this built on 2026-07-15 and removed it on 2026-08-10: "it kinda sucks
 right now, and i dont even care for it at this point of time." `game.ts` is gone
 and the nightly summary no longer carries a progress line. Never report a level,
 XP, a streak or a progress bar, never offer to bring the feature back, and don't

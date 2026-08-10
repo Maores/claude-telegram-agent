@@ -1560,7 +1560,7 @@ export interface BatchItem {
 
 /** The confirmation message for a whole burst: every recording in it, in order,
  *  with the doubtful ones marked. Maor picked confirm-the-batch-or-nothing on
- *  2026-08-05, so he has to see the burst exactly as it will run, not only the
+ *  2026-08-10, so he has to see the burst exactly as it will run, not only the
  *  item that tripped the check — approving a fragment he cannot see would be
  *  worse than the mishearing this guards against. Pure. */
 export function batchConfirmText(items: Pick<BatchItem, "transcript" | "needsConfirm">[]): string {
@@ -1702,7 +1702,7 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
   if (await consumeCustomSnooze(chatId, combined)) return;
 
   // One shaky transcript holds the WHOLE burst for a tap (Maor's option 1,
-  // 2026-08-05). Until now a burst skipped confirmation entirely and a
+  // 2026-08-10). Until now a burst skipped confirmation entirely and a
   // misheard recording inside it still became an answer — the exact failure
   // the single-message path was built to stop. The merged prompt is carried on
   // the pending record so the confirmed turn replays this burst verbatim.

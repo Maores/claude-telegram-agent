@@ -28,7 +28,7 @@ export interface PendingVoice {
   text: string;
   kind: "voice" | "audio";
   createdAt: number;
-  /** A debounced burst confirmed as ONE unit (Maor's pick, 2026-08-05: "confirm
+  /** A debounced burst confirmed as ONE unit (Maor's pick, 2026-08-10: "confirm
    *  the whole batch or nothing"). The batch's prompt and history line are built
    *  once, when the burst is assembled, and carried here so the confirmed turn
    *  replays the burst exactly instead of re-deriving it from a single

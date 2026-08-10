@@ -154,7 +154,7 @@ export function initSchema(db: Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_usage_log_ts ON usage_log(ts);
 
-    -- Progress/XP ledger, from the gamification feature REMOVED on 2026-08-05.
+    -- Progress/XP ledger, from the gamification feature REMOVED on 2026-08-10.
     -- Nothing reads or writes this any more (game.ts is gone). The table stays
     -- so the existing rows on the droplet are not destroyed by a deploy; drop it
     -- only if Maor asks for the history to be deleted.

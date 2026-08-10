@@ -289,7 +289,7 @@ export async function listTodos(listName?: string): Promise<FoundTask[]> {
         filters: TODO_FILTERS,
         urlFilter: (url: string) => !!url,
         // iCloud answers a calendar-multiget on the Reminders collection in
-        // ~30s flat (measured 2026-08-05: 30.2s for 11 todos, while the same
+        // ~30s flat (measured 2026-08-10: 30.2s for 11 todos, while the same
         // data via a single calendar-query with calendar-data inline takes
         // ~0.5s; event collections don't have the penalty). useMultiGet:false
         // makes tsdav use that single query.
