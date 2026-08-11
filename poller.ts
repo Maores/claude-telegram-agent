@@ -17,7 +17,8 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
-import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt } from "./reminders.ts";
+import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt, loadStore } from "./reminders.ts";
+import { looksLikeDeferredPromise, UNBACKED_PROMISE_NOTE } from "./promise-check.ts";
 import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWindow, todayStr, typeForDay, pickByType, pickDiagram, pickPattern, markSeen, splitHints, formatQuestion, splitForCaption, quizStartKeyboard, quizNextKeyboard, parseQzCallback, quizEvalDirective, parseQuizCommand, shouldAttachQuizDirective, isPlaceholderAnswer, type QzCallback, type QuizCommand, type QuizState } from "./quiz";
 import { takePending, consumeAction, validateArgv, pruneActions, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
@@ -1033,6 +1034,20 @@ async function streamClaude(
   model: string,
   opts: SpawnOpts = {},
 ): Promise<string> {
+  // Snapshot [AUTO] reminder ids for this chat before the turn runs, so a
+  // deferred-work promise in the reply can be checked against whether the
+  // turn actually scheduled the only real "later" this agent has. Skipped
+  // for [AUTO] turns themselves — they're already blocked from scheduling
+  // more reminders (self-replication guard), so the check would always fail.
+  const isAutoSession = opts.env?.CLAUDE_AUTO_SESSION === "1";
+  const autoReminderIdsBefore = isAutoSession
+    ? null
+    : new Set(
+        loadStore()
+          .filter((r) => r.chatId === chatId && r.text.startsWith("[AUTO] "))
+          .map((r) => r.id),
+      );
+
   const proc = Bun.spawn(
     // prettier-ignore
     [CLAUDE_BIN, "-p", "--model", MODEL_IDS[model] ?? model, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions", ...(opts.extraArgs ?? [])],
@@ -1100,7 +1115,19 @@ async function streamClaude(
   if (buf.trim()) parser.push(buf);
 
   const code = await proc.exited;
-  const final = parser.finalText();
+  let final = parser.finalText();
+
+  // Backstop for CLAUDE.md's "no background execution" rule: a reply that
+  // promises to update/get back to Maor later is only honest if this turn
+  // actually scheduled an [AUTO] reminder to do it. If not, the promise is
+  // empty (nothing keeps running after this reply is sent) — flag it inline
+  // rather than let it read as a commitment that fulfills itself.
+  if (autoReminderIdsBefore && final && looksLikeDeferredPromise(final)) {
+    const scheduledNow = loadStore().some(
+      (r) => r.chatId === chatId && r.text.startsWith("[AUTO] ") && !autoReminderIdsBefore.has(r.id),
+    );
+    if (!scheduledNow) final += UNBACKED_PROMISE_NOTE;
+  }
 
   // Record this call's usage (agenda #5). Synchronous + fail-safe; the heads-up
   // ping is fire-and-forget so it never adds latency or blocks the reply path.
