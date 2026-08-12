@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { looksLikeDeferredPromise } from "./promise-check";
+import { classifyDeferredPromise, gainedBacking, looksLikeDeferredPromise } from "./promise-check";
 
 const MATCH: Array<[string, string]> = [
   // the actual incident text this module was built to catch
@@ -42,4 +42,77 @@ describe("looksLikeDeferredPromise", () => {
       expect(looksLikeDeferredPromise(text)).toBe(false);
     });
   }
+});
+
+describe("classifyDeferredPromise", () => {
+  // The model claiming it will act after the reply. Nothing survives the
+  // reply, so only a mechanism created this turn can back these.
+  const ACTS = [
+    "מכין סקירה מעמיקה. אשלח את הממצאים והשוואה כשהבדיקה תסתיים.",
+    "אני אעדכן אותך בהמשך.",
+    "I'll get back to you later.",
+    "I will follow up once it's ready.",
+  ];
+  for (const text of ACTS) {
+    test(`agent-acts: ${text.slice(0, 40)}`, () => {
+      expect(classifyDeferredPromise(text)).toBe("agent-acts");
+    });
+  }
+
+  // True statements about poller-owned monitors. Flagging these as unbacked
+  // was the live false positive: Maor has a standing dollar monitor, so a
+  // correct answer about it carried a note calling itself unreal.
+  const RUNS = [
+    "המוניטור רץ ברקע ויבדוק כל 15 דקות.",
+    "הגדרתי מוניטור שעובד ברקע ויתריע כשהדולר יעבור 3.93.",
+    "The monitor is running in the background and checks every 15 minutes.",
+    "I set a monitor that keeps checking the price every 15 minutes.",
+  ];
+  for (const text of RUNS) {
+    test(`mechanism-runs: ${text.slice(0, 40)}`, () => {
+      expect(classifyDeferredPromise(text)).toBe("mechanism-runs");
+    });
+  }
+
+  test("a text making both claims takes the stricter kind", () => {
+    expect(classifyDeferredPromise("אעדכן אותך כשזה יהיה מוכן, זה רץ ברקע.")).toBe("agent-acts");
+  });
+
+  test("ordinary text classifies as neither", () => {
+    expect(classifyDeferredPromise("הוספתי תזכורת למחר בתשע לקרוא לבנק.")).toBe(null);
+    expect(classifyDeferredPromise("מוזיקה ברקע יכולה לעזור להתרכז.")).toBe(null);
+  });
+});
+
+describe("gainedBacking", () => {
+  test("a new reminder id counts as backing", () => {
+    expect(gainedBacking(new Set(["r:r1"]), new Set(["r:r1", "r:r9"]))).toBe(true);
+  });
+
+  test("a new monitor id counts as backing", () => {
+    expect(gainedBacking(new Set(["r:r1"]), new Set(["r:r1", "m:abc"]))).toBe(true);
+  });
+
+  test("an unchanged set is not backing", () => {
+    expect(gainedBacking(new Set(["r:r1", "m:abc"]), new Set(["r:r1", "m:abc"]))).toBe(false);
+  });
+
+  test("a reminder firing and being deleted mid-turn is not backing", () => {
+    expect(gainedBacking(new Set(["r:r1", "r:r2"]), new Set(["r:r2"]))).toBe(false);
+  });
+
+  test("an empty chat that gains nothing is not backing", () => {
+    expect(gainedBacking(new Set(), new Set())).toBe(false);
+  });
+
+  // A storage read that throws must never append a note to a real reply.
+  test("an unreadable store fails open", () => {
+    expect(gainedBacking(new Set(["r:r1"]), null)).toBe(true);
+  });
+
+  // The id spaces are namespaced, so a reminder and a monitor that happen to
+  // share a raw id stay distinct.
+  test("reminder and monitor ids do not collide", () => {
+    expect(gainedBacking(new Set(["r:x1"]), new Set(["r:x1", "m:x1"]))).toBe(true);
+  });
 });

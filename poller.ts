@@ -18,7 +18,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt, loadStore } from "./reminders.ts";
-import { looksLikeDeferredPromise, UNBACKED_PROMISE_NOTE } from "./promise-check.ts";
+import { classifyDeferredPromise, gainedBacking, UNBACKED_PROMISE_NOTE } from "./promise-check.ts";
 import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWindow, todayStr, typeForDay, pickByType, pickDiagram, pickPattern, markSeen, splitHints, formatQuestion, splitForCaption, quizStartKeyboard, quizNextKeyboard, parseQzCallback, quizEvalDirective, parseQuizCommand, shouldAttachQuizDirective, isPlaceholderAnswer, type QzCallback, type QuizCommand, type QuizState } from "./quiz";
 import { takePending, consumeAction, validateArgv, pruneActions, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
@@ -30,7 +30,7 @@ import { upcomingEvents, nudgeKey, loadNotified, saveNotified, pruneNotified } f
 import { getDb, insertMessage, recentMessages, searchMessages, renderRecall, importHistoryJson, type RecallHit } from "./db";
 import { coreMemoryBlock, importMemoryMd } from "./memory";
 import { skillsIndexBlock } from "./skills";
-import { dueMonitors, performCheck, recordCheck, FAILURE_LIMIT, type Monitor, type CheckOutcome } from "./monitors";
+import { dueMonitors, listMonitors, performCheck, recordCheck, FAILURE_LIMIT, type Monitor, type CheckOutcome } from "./monitors";
 import { recordUsage, windowSpendUsd, shouldWarn, limitHitReply, detectUpstreamError, upstreamErrorReply } from "./usage";
 import { scanThreats } from "./threats";
 import { redact } from "./redact";
@@ -1027,6 +1027,36 @@ async function streamClaudeResilient(
   return msg;
 }
 
+/** Ids of every mechanism that can deliver work after a reply is sent:
+ *  reminders (both [AUTO] jobs and plain pings) and monitors, all owned by the
+ *  poller rather than by the model. Namespaced so the two id spaces cannot
+ *  collide. Returns null when either store cannot be read, which fails the
+ *  promise check open rather than risk a false note on a real reply. */
+function backingIds(chatId: number): Set<string> | null {
+  try {
+    const ids = new Set<string>();
+    for (const r of loadStore()) if (r.chatId === chatId) ids.add(`r:${r.id}`);
+    for (const m of listMonitors(getDb(), chatId)) ids.add(`m:${m.id}`);
+    return ids;
+  } catch {
+    return null;
+  }
+}
+
+/** True if this chat has a monitor that is genuinely still running. Backs a
+ *  "keeps checking / רץ ברקע" claim, which is true of a poller-owned monitor
+ *  whether or not this turn created it. Only monitors count here: reminders
+ *  fire once at a time rather than watching something, and Maor's chat always
+ *  holds a few [AUTO] jobs, so counting those would suppress the check
+ *  permanently. Fails open on a read error, as backingIds does. */
+function hasLiveMonitor(chatId: number): boolean {
+  try {
+    return listMonitors(getDb(), chatId).some((m) => m.status === "active");
+  } catch {
+    return true;
+  }
+}
+
 async function streamClaude(
   prompt: string,
   chatId: number,
@@ -1034,19 +1064,13 @@ async function streamClaude(
   model: string,
   opts: SpawnOpts = {},
 ): Promise<string> {
-  // Snapshot [AUTO] reminder ids for this chat before the turn runs, so a
-  // deferred-work promise in the reply can be checked against whether the
-  // turn actually scheduled the only real "later" this agent has. Skipped
-  // for [AUTO] turns themselves — they're already blocked from scheduling
-  // more reminders (self-replication guard), so the check would always fail.
+  // Snapshot the chat's backing mechanisms before the turn runs, so a
+  // deferred-work promise in the reply can be checked against whether the turn
+  // actually created something that fires later. Skipped for [AUTO] turns
+  // themselves: they're already blocked from scheduling reminders or monitors
+  // (self-replication guard), so the check would always fail.
   const isAutoSession = opts.env?.CLAUDE_AUTO_SESSION === "1";
-  const autoReminderIdsBefore = isAutoSession
-    ? null
-    : new Set(
-        loadStore()
-          .filter((r) => r.chatId === chatId && r.text.startsWith("[AUTO] "))
-          .map((r) => r.id),
-      );
+  const backingBefore = isAutoSession ? null : backingIds(chatId);
 
   const proc = Bun.spawn(
     // prettier-ignore
@@ -1117,16 +1141,20 @@ async function streamClaude(
   const code = await proc.exited;
   let final = parser.finalText();
 
-  // Backstop for CLAUDE.md's "no background execution" rule: a reply that
-  // promises to update/get back to Maor later is only honest if this turn
-  // actually scheduled an [AUTO] reminder to do it. If not, the promise is
-  // empty (nothing keeps running after this reply is sent) — flag it inline
-  // rather than let it read as a commitment that fulfills itself.
-  if (autoReminderIdsBefore && final && looksLikeDeferredPromise(final)) {
-    const scheduledNow = loadStore().some(
-      (r) => r.chatId === chatId && r.text.startsWith("[AUTO] ") && !autoReminderIdsBefore.has(r.id),
-    );
-    if (!scheduledNow) final += UNBACKED_PROMISE_NOTE;
+  // Backstop for CLAUDE.md's "no background execution" rule. Two different
+  // claims need two different proofs (see promise-check.ts): the model saying
+  // it will act later is honest only if this turn created a reminder or
+  // monitor to do it, while a reply saying something keeps running is honest
+  // whenever the chat has a live monitor, since the poller runs those and not
+  // the model. Anything unbacked gets flagged inline rather than left reading
+  // as a commitment that fulfils itself.
+  if (backingBefore && final) {
+    const kind = classifyDeferredPromise(final);
+    const backed =
+      kind === null ||
+      (kind === "mechanism-runs" && hasLiveMonitor(chatId)) ||
+      gainedBacking(backingBefore, backingIds(chatId));
+    if (!backed) final += UNBACKED_PROMISE_NOTE;
   }
 
   // Record this call's usage (agenda #5). Synchronous + fail-safe; the heads-up
