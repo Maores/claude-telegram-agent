@@ -198,3 +198,102 @@ test("displayText: text wins, else status, else ellipsis", () => {
   expect(displayText({ status: null, text: "", done: false })).toBe("…");
   expect(displayText({ status: "🔍 …", text: "answer", done: true })).toBe("answer");
 });
+
+// --- English self-narration scrub (2026-08-16) ------------------------------
+// Every MATCH case below is a real reply from the archive that shipped to
+// Maor with narration in it; the scrub must clean it. Every KEEP case is a
+// shape the scrub must never touch — above all, English deliverables inside
+// Hebrew replies and genuinely English conversations.
+
+import { stripNarration } from "./stream.ts";
+
+test("archive #1286: no-tool turn, English classification before the answer", () => {
+  const out = stripNarration("Popcorn direct question, no need for tools.\nעוצמה 10 (מקסימום) זה נכון לפופקורן.");
+  expect(out).toBe("עוצמה 10 (מקסימום) זה נכון לפופקורן.");
+});
+
+test("archive #1340: 'this is a question, just answering' paragraph is dropped", () => {
+  const out = stripNarration(
+    "This is a factual/casual explanation question, not a task — just answering directly.\n\nMarketing naming, plain and simple: MagSafe זה תכונה בפועל.",
+  );
+  expect(out).toBe("Marketing naming, plain and simple: MagSafe זה תכונה בפועל.");
+});
+
+test("archive #1348: kept-segment narration welded to the Hebrew answer", () => {
+  const out = stripNarration("Found it, it's an Apple Reminders task. I'll add eggs and milk to it.  עדכנתי את המשימה.");
+  expect(out).toBe("עדכנתי את המשימה.");
+});
+
+test("archive #1196: interior 'Now let me / Now I'll' lines vanish", () => {
+  const out = stripNarration(
+    "Now let me look at guard.test.ts style for the test format to match conventions, then write the new module.\n\nNow I'll create the detection module.\n\nהמודול מוכן.",
+  );
+  expect(out).toBe("המודול מוכן.");
+});
+
+test("archive #1252: leading progress mutter on a mixed line", () => {
+  const out = stripNarration("Loaded the structure. עכשיו רק תגיד לי את הרעיון של הסצנה.");
+  expect(out).toBe("עכשיו רק תגיד לי את הרעיון של הסצנה.");
+});
+
+test("archive #1206: trailing 'Let me verify…' announce is cut, the answer stays", () => {
+  const out = stripNarration("זה השלט של פרטנר, דגם JADE. This is the Partner TV JADE remote. Let me verify the exact steps for it.");
+  expect(out).toBe("זה השלט של פרטנר, דגם JADE. This is the Partner TV JADE remote.");
+});
+
+test("reply 962's welded shape: narration peels off, the Hebrew answer survives", () => {
+  const out = stripNarration('Found it — "pending" is the open status. Now let me tell Maor his voice note cut off while I wait."לשמוע את ההקלטה של מתן" חזר לפתוח אצלי.');
+  expect(out).toBe('"לשמוע את ההקלטה של מתן" חזר לפתוח אצלי.');
+});
+
+test("an all-English reply is untouched — English conversations are not narration", () => {
+  const t = "I'll check the calendar and get back to you.\nDone means done.";
+  expect(stripNarration(t)).toBe(t);
+});
+
+test("archive #1266: an English deliverable inside a Hebrew turn survives whole", () => {
+  const t = "הנה הפרומפט:\n\nTask: text-to-video with native audio (T2VA). 15s, 24fps, 16:9.\nMockumentary single-camera sitcom look. Flat fluorescent lighting.";
+  expect(stripNarration(t)).toBe(t);
+});
+
+test("'Let me know' is an answer closer, never narration", () => {
+  const t = "המחיר 727 שקל.\nLet me know if you want the link.";
+  expect(stripNarration(t)).toBe(t);
+});
+
+test("a source URL line is never dropped", () => {
+  const t = "השער 3.71 שקל.\nsource: https://api.frankfurter.dev/v1/latest";
+  expect(stripNarration(t)).toBe(t);
+});
+
+test("scrub is idempotent", () => {
+  const once = stripNarration("Loaded the structure. עכשיו תגיד לי.");
+  expect(stripNarration(once)).toBe(once);
+});
+
+test("end-to-end: a no-tool turn arrives clean through finalText", () => {
+  const p = new StreamParser();
+  p.push(textDelta("Popcorn direct question, no need for tools.\n"));
+  p.push(textDelta("עוצמה 10 זה נכון."));
+  p.push(JSON.stringify({ type: "result", subtype: "success" }));
+  expect(p.finalText()).toBe("עוצמה 10 זה נכון.");
+});
+
+test("end-to-end: kept-segment narration between tools is scrubbed", () => {
+  const p = new StreamParser();
+  p.push(textDelta("Checking the task list first."));
+  p.push(toolStart("Bash"));
+  p.push(textDelta("Found it, it's an Apple Reminders task. I'll add eggs and milk to it."));
+  p.push(toolStart("Bash"));
+  p.push(textDelta("עדכנתי את המשימה."));
+  expect(p.finalText()).toBe("עדכנתי את המשימה.");
+});
+
+test("the never-empty guarantee holds: pure-narration turn falls back to the opening", () => {
+  const p = new StreamParser();
+  p.push(textDelta("I'll check the calendar now."));
+  p.push(toolStart("Bash"));
+  p.push(JSON.stringify({ type: "result", subtype: "success" }));
+  // no Hebrew anywhere → scrub is a no-op → the opening fallback still shows
+  expect(p.finalText()).toBe("I'll check the calendar now.");
+});
