@@ -19,7 +19,7 @@ import { join, basename } from "node:path";
 import { homedir } from "node:os";
 import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt } from "./reminders.ts";
 import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWindow, todayStr, typeForDay, pickByType, pickDiagram, pickPattern, markSeen, splitHints, formatQuestion, splitForCaption, quizStartKeyboard, quizNextKeyboard, parseQzCallback, quizEvalDirective, parseQuizCommand, shouldAttachQuizDirective, isPlaceholderAnswer, type QzCallback, type QuizCommand, type QuizState } from "./quiz";
-import { takePending, consumeAction, validateArgv, pruneActions, newTurnId, type PendingAction } from "./pending.ts";
+import { takePending, consumeAction, validateArgv, pruneActions, dueMorningNudges, markActionNudged, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
 import { StreamParser, displayText } from "./stream.ts";
 import { parseVoiceCommand, ttsAvailable, shouldSpeakForInput, startEngine, type TtsEngine, type VoiceCommand } from "./tts.ts";
@@ -2691,6 +2691,24 @@ async function checkReminders() {
       console.log(`[REMIND] nudged ${f.id} -> ${f.chatId}`);
     } catch (e: any) {
       console.error(`[ERR] nudge ${f.id}: ${e?.message ?? e}`);
+    }
+  }
+  // One morning re-ping for proposals still untapped (the 2026-08-13 תור לחי
+  // was proposed at 23:16 for 09:34 the next day — the buttons arrived while
+  // Maor slept and the proposal outlived the appointment). Fresh buttons carry
+  // the SAME action id, so once-only consumption still holds: whichever
+  // message he taps wins, the other reports already-handled.
+  for (const a of dueMorningNudges(nowS, new Date().getHours())) {
+    try {
+      markActionNudged(a.id); // state before effect — a lost nudge beats a double-nudge
+      await tg("sendMessage", {
+        chat_id: a.chatId,
+        text: `ההצעה הזו עדיין ממתינה לאישור:\n🔘 ${a.summary}`,
+        reply_markup: paKeyboard(a.id),
+      });
+      console.log(redact(`[PA] nudged ${a.id}: ${a.summary}`));
+    } catch (e: any) {
+      console.error(`[ERR] pa nudge ${a.id}: ${e?.message ?? e}`);
     }
   }
   try {
