@@ -196,7 +196,8 @@ what to improve, start from the gaps around these, not from scratch:
   Maor automatically gets ✓ אשר / ✗ בטל buttons right after your reply — the button does the
   running. In your reply, state the proposal (title, date + LOCAL time, duration, calendar) so the
   buttons have context. If a LATER message approves in TEXT ("כן" / "אשר"): run `bun run confirm.ts list`, find the proposal whose summary matches what you proposed, then `bun run confirm.ts approve <id>` — never the raw command (one execution path; the buttons then show "כבר טופל"). "לא" / ביטול → `bun run confirm.ts cancel <id>`. Open proposals:
-  `bun run confirm.ts list`. Proposals expire after 24h. After an approved write executes, the
+  `bun run confirm.ts list`. Proposals expire after 24h; one still untapped at 09:00 gets a
+  single automatic re-ping with fresh buttons — the poller sends it, never you. After an approved write executes, the
   button message becomes the receipt.
 
 ## Tasks (Apple Reminders)
