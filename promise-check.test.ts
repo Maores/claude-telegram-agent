@@ -116,3 +116,50 @@ describe("gainedBacking", () => {
     expect(gainedBacking(new Set(["r:x1"]), new Set(["r:x1", "m:x1"]))).toBe(true);
   });
 });
+
+// --- the 400-reply corpus test (2026-08-17) --------------------------------
+// The first cut flagged 9 of 400 real archive replies and was right about 1.
+// Every false positive was the agent talking ABOUT the phrase rather than
+// using it. These are the exact replies, verbatim, so the narrowing cannot
+// silently regress. After: 1 of 400, the real incident.
+
+describe("real archive replies that must NOT be flagged", () => {
+  const REAL: Array<[number, string, string]> = [
+    [1198, "quoted, describing this very feature",
+      'הפיצ\'ר שמזהה הבטחות "אעדכן בהמשך" בלי תזכורת AUTO מוכן ועובד, שמור בקומיט על הענף.'],
+    [1192, "quoted, apologising for the incident",
+      'הבעיה האמיתית לא הייתה טכנית אלא שקרתי: סיימתי תשובה עם "אשלח כשיהיה מוכן" בלי שבאמת יש לי דרך להמשיך.'],
+    [1190, "unquoted reported speech, admitting the mistake",
+      "כשכתבתי שאכין את הסקירה ואשלח כשהיא תסתיים, זו הייתה טעות שלי."],
+    [795, "quoted, correcting its own earlier wording",
+      'צודק, ואני צריך להיות ישר: "רץ ברקע" באותה הודעה קודמת לא היה נכון.'],
+    [896, "negated — states there is NO background process",
+      "אני קם לחיים רק כשמגיעה הודעת טלגרם אמיתית, אין תהליך שרץ ברקע ומחכה לשמוע אותך."],
+    [818, "negated and quoted — states it does NOT run between messages",
+      'הדבר החשוב, אני לא "רץ ברקע" בין הודעות.'],
+    [1084, "not about the agent at all — a stuck Windows Update",
+      "לוודא שאין עדכון תקוע שרץ ברקע (זה גורם קלאסי לדיליי)."],
+  ];
+  for (const [id, why, text] of REAL) {
+    test(`#${id}: ${why}`, () => {
+      expect(classifyDeferredPromise(text)).toBeNull();
+    });
+  }
+});
+
+test("the incident reply is still caught — the one true positive in 400", () => {
+  expect(classifyDeferredPromise("מכין סקירה מעמיקה. אשלח את הממצאים והשוואה כשהבדיקה תסתיים."))
+    .toBe("agent-acts");
+});
+
+test("a negation in an EARLIER sentence cannot excuse a real promise", () => {
+  // the negation guard is per-sentence on purpose, so an honest disclaimer
+  // followed by a fresh promise still gets flagged
+  expect(classifyDeferredPromise("אין לי ריצה ברקע. אעדכן אותך כשזה יהיה מוכן."))
+    .toBe("agent-acts");
+});
+
+test("a quote elsewhere in the reply does not blanket-excuse the rest", () => {
+  expect(classifyDeferredPromise('הוא אמר "שלום". אשלח לך את זה כשהבדיקה תסתיים.'))
+    .toBe("agent-acts");
+});

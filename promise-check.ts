@@ -52,12 +52,71 @@ const MECHANISM_RUNS: RegExp[] = [
 
 export type PromiseKind = "agent-acts" | "mechanism-runs";
 
+// --- what the 400-reply corpus test found (2026-08-17) ----------------------
+// Run against 400 real archive replies, the first cut flagged 9 and was right
+// about 1. All 8 false positives were the agent talking ABOUT the phrase
+// rather than using it, in exactly two shapes:
+//
+//   quoted   #1198 הפיצ'ר שמזהה הבטחות "אעדכן בהמשך"      (describing the feature)
+//            #1192 סיימתי תשובה עם "אשלח כשיהיה מוכן"      (apologising for it)
+//            #795  "רץ ברקע" באותה הודעה קודמת לא היה נכון (correcting itself)
+//   negated  #896  אין תהליך שרץ ברקע ומחכה לשמוע אותך
+//            #818  אני לא "רץ ברקע" בין הודעות
+//            #1084 לוודא שאין עדכון תקוע שרץ ברקע          (a Windows update!)
+//
+// Both are cheap to exclude and neither can hide a real promise: a genuine
+// promise is made in the agent's own voice, unquoted and unnegated. The PR
+// body had called negation "a real edge" — on real data it is the dominant
+// failure mode, because this agent explains its own background limitation
+// constantly.
+
+/** Quoted spans are the agent discussing a phrase, not committing to it.
+ *  Only paired double quotes and gershayim — single quotes are left alone
+ *  because Hebrew uses the geresh inside ordinary words (פיצ'ר, קוטג'). */
+function blankQuotedSpans(text: string): string {
+  return text
+    .replace(/"[^"\n]{0,160}"/g, " ")
+    .replace(/[“”][^“”\n]{0,160}[“”]/g, " ")
+    .replace(/״[^״\n]{0,160}״/g, " ");
+}
+
+/** A past-tense speech verb before the match makes it reported speech, not a
+ *  commitment: "כשכתבתי שאכין את הסקירה ואשלח… זו הייתה טעות שלי" is the agent
+ *  apologising for a promise, and flagging the apology would be absurd. Quotes
+ *  cover most of this shape; this covers the unquoted rest (#1190). */
+const REPORTED = /(?:^|[\s,:;("'״“])(?:כשכתבתי|כתבתי|אמרתי|הבטחתי|ציינתי|טענתי|השבתי|כשאמרתי|כשהבטחתי|when i (?:said|wrote|promised)|i (?:said|wrote|promised)|earlier i)(?=[\s,:;)"'״”ש]|$)/i;
+
+/** A negator anywhere before the match in the same sentence flips the meaning:
+ *  "אין תהליך שרץ ברקע" states the opposite of what the pattern matches. */
+const NEGATORS = /(?:^|[\s,:;("'״“])(?:אין|שאין|אינני|איני|לא|שלא|בלי|ללא|never|not|no longer|isn['’]t|won['’]t|doesn['’]t|cannot|can['’]t)(?=[\s,:;)"'״”]|$)/i;
+
+/** Split on sentence enders, keeping it crude on purpose — the only thing that
+ *  matters is not letting a negation leak across a full stop. */
+const sentences = (text: string): string[] => text.split(/(?<=[.!?\n])/);
+
+/** True if some sentence matches `res` in the agent's own voice: not inside a
+ *  quotation, and not negated earlier in that same sentence. */
+function assertedIn(text: string, res: RegExp[]): boolean {
+  for (const raw of sentences(text)) {
+    const s = blankQuotedSpans(raw);
+    for (const re of res) {
+      const m = re.exec(s);
+      if (!m) continue;
+      const before = s.slice(0, m.index);
+      if (NEGATORS.test(before)) continue; // "אין … שרץ ברקע"
+      if (REPORTED.test(before)) continue; // "כשכתבתי ש… אשלח …"
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Which kind of deferred-work claim `text` makes, or null for none. A text
  *  making both claims classifies as "agent-acts", the stricter of the two,
  *  since that is the part that cannot fulfil itself. */
 export function classifyDeferredPromise(text: string): PromiseKind | null {
-  if (AGENT_ACTS.some((re) => re.test(text))) return "agent-acts";
-  if (MECHANISM_RUNS.some((re) => re.test(text))) return "mechanism-runs";
+  if (assertedIn(text, AGENT_ACTS)) return "agent-acts";
+  if (assertedIn(text, MECHANISM_RUNS)) return "mechanism-runs";
   return null;
 }
 
