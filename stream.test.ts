@@ -198,3 +198,91 @@ test("displayText: text wins, else status, else ellipsis", () => {
   expect(displayText({ status: null, text: "", done: false })).toBe("…");
   expect(displayText({ status: "🔍 …", text: "answer", done: true })).toBe("answer");
 });
+
+// --- the reply marker (2026-08-17) -----------------------------------------
+// Replaces the closed PR #81 scrub. Position and wording both failed to tell
+// narration from answer; the model marks it instead. Fail-safe: no marker
+// means no extraction, so a forgotten marker degrades to the old behaviour
+// and can never lose an answer.
+
+import { extractMarkedReply, REPLY_OPEN } from "./stream.ts";
+
+test("extractMarkedReply returns null with no marker, so callers fall back", () => {
+  expect(extractMarkedReply("just an answer")).toBeNull();
+  expect(extractMarkedReply("")).toBeNull();
+});
+
+test("extractMarkedReply takes everything after the marker, closer optional", () => {
+  expect(extractMarkedReply(`narration\n${REPLY_OPEN}\nהתשובה.`)).toBe("התשובה.");
+  expect(extractMarkedReply(`n\n${REPLY_OPEN}\nהתשובה.\n<<<END>>>\nmore muttering`)).toBe("התשובה.");
+});
+
+test("a no-tool turn: narration above the marker never ships (#1286, #1340)", () => {
+  const p = new StreamParser();
+  p.push(textDelta("Popcorn direct question, no need for tools.\n\n"));
+  p.push(textDelta(`${REPLY_OPEN}\nעוצמה 10 זה נכון לפופקורן.`));
+  expect(p.finalText()).toBe("עוצמה 10 זה נכון לפופקורן.");
+});
+
+test("narration BETWEEN tool calls never ships either (#1348, #1354)", () => {
+  const p = new StreamParser();
+  p.push(textDelta("Let me check the task list."));
+  p.push(toolStart("Bash"));
+  p.push(textDelta("Found it, it's an Apple Reminders task. I'll add eggs and milk."));
+  p.push(toolStart("Bash"));
+  p.push(textDelta(`${REPLY_OPEN}\nעדכנתי את המשימה.`));
+  expect(p.finalText()).toBe("עדכנתי את המשימה.");
+});
+
+test("a fully English monologue above a Hebrew reply is gone (#1375, the case #81 could not reach)", () => {
+  const p = new StreamParser();
+  p.push(textDelta("Adobe hasn't distributed that build in years. I won't link a cracked installer.\n"));
+  p.push(textDelta(`${REPLY_OPEN}\nאין הורדה חוקית לגרסה הזו. אני יכול לבדוק את גרסת הניסיון.`));
+  expect(p.finalText()).toBe("אין הורדה חוקית לגרסה הזו. אני יכול לבדוק את גרסת הניסיון.");
+});
+
+test("an empty marked reply is honoured — a closing word deserves silence (#1367)", () => {
+  const p = new StreamParser();
+  p.push(textDelta(`מאור אמר "לא משנה" — לא נדרשת פעולה מצידי.\n${REPLY_OPEN}\n`));
+  expect(p.finalText()).toBe(""); // nothing sent, instead of third-person narration
+});
+
+test("FAIL-SAFE: without a marker every old guarantee still holds, incl. reply 962", () => {
+  const p = new StreamParser();
+  p.push(textDelta('Found it — "pending" is the open status. Now let me tell Maor…'));
+  p.push(toolStart("Bash"));
+  p.push(textDelta('"לשמוע את ההקלטה של מתן" חזר לפתוח אצלי.'));
+  p.push(toolStart("Bash"));
+  p.push(textDelta("כבר שאלתי בטקסט - אין צורך בכפתורים כאן."));
+  expect(p.finalText()).toBe('"לשמוע את ההקלטה של מתן" חזר לפתוח אצלי.\n\nכבר שאלתי בטקסט - אין צורך בכפתורים כאן.');
+});
+
+test("FAIL-SAFE: an English deliverable is untouched — the case that killed #81", () => {
+  const p = new StreamParser();
+  p.push(textDelta("Scene 3: the intern asks a simple question and Michael overreacts.\n\nהנה הפרומפט."));
+  expect(p.finalText()).toBe("Scene 3: the intern asks a simple question and Michael overreacts.\n\nהנה הפרומפט.");
+});
+
+test("sawReplyMarker reports compliance for the health sweep's counter", () => {
+  const p = new StreamParser();
+  p.push(textDelta("narration only"));
+  expect(p.sawReplyMarker()).toBe(false);
+  p.push(textDelta(`\n${REPLY_OPEN}\nתשובה`));
+  expect(p.sawReplyMarker()).toBe(true);
+});
+
+test("the marker is found even when it sits in the dropped opening segment", () => {
+  const p = new StreamParser();
+  p.push(textDelta(`thinking\n${REPLY_OPEN}\nהתשובה.`)); // marker before the first tool
+  p.push(toolStart("Bash")); // …and a tool call after it
+  expect(p.finalText()).toBe("התשובה.");
+  expect(p.sawReplyMarker()).toBe(true);
+});
+
+test("the live view switches to the marked reply once the marker opens", () => {
+  const p = new StreamParser();
+  p.push(textDelta("Let me check the calendar."));
+  expect(displayText(p.state())).toBe("Let me check the calendar."); // old behaviour until then
+  p.push(textDelta(`\n${REPLY_OPEN}\nאין לך אירועים היום.`));
+  expect(displayText(p.state())).toBe("אין לך אירועים היום.");
+});
