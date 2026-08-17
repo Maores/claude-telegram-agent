@@ -1102,6 +1102,12 @@ async function streamClaude(
   const code = await proc.exited;
   const final = parser.finalText();
 
+  // Compliance meter for the reply marker. A missing marker is not an error —
+  // the reply falls back to the old rules and ships fine — but it is the one
+  // number that says whether the contract is working, so the health sweep can
+  // count `marker=no` instead of re-reading the archive by hand.
+  console.log(`[REPLY] marker=${parser.sawReplyMarker() ? "yes" : "no"} model=${model}`);
+
   // Record this call's usage (agenda #5). Synchronous + fail-safe; the heads-up
   // ping is fire-and-forget so it never adds latency or blocks the reply path.
   try {

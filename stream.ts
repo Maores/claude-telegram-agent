@@ -32,6 +32,40 @@ export function toolLabel(name: string): string {
   return "🔧 working…";
 }
 
+// --- the reply marker (2026-08-17) -----------------------------------------
+// Every earlier attempt at this (PR #71, #73, the closed #81) tried to tell
+// narration from answer by POSITION or by WORDING, after the fact. Both lose,
+// because the model doesn't mark the difference and the text alone doesn't
+// carry it: `Let me propose the calendar event` and `The image is a WhatsApp
+// appointment reminder` are the same shape as real answers. The bot streams a
+// coding agent's think-aloud straight to Telegram, so Maor reads a developer
+// tool's inner monologue as if it were chat.
+//
+// So make the model mark it. CLAUDE.md asks for the user-facing reply to open
+// with <<<REPLY>>>; everything before it is the monologue and never ships.
+// Emitting a fixed token is a mechanical instruction, which models follow far
+// more reliably than the behavioural "don't narrate" that has now been
+// ignored for a month.
+//
+// FAIL-SAFE BY CONSTRUCTION: no marker means no extraction, and the reply is
+// whatever the old rules produced. A forgotten marker degrades to today's
+// behaviour; it can never lose an answer. That is the property #81 claimed
+// and did not have.
+
+export const REPLY_OPEN = "<<<REPLY>>>";
+export const REPLY_CLOSE = "<<<END>>>";
+
+/** Everything after the marker (and before the optional closer). Returns null
+ *  when the marker is absent, which the caller reads as "fall back". */
+export function extractMarkedReply(text: string): string | null {
+  const i = text.indexOf(REPLY_OPEN);
+  if (i < 0) return null;
+  let body = text.slice(i + REPLY_OPEN.length);
+  const j = body.indexOf(REPLY_CLOSE);
+  if (j >= 0) body = body.slice(0, j);
+  return body.trim();
+}
+
 export class StreamParser {
   status: string | null = "💭 thinking…";
   /** The segment being streamed right now (since the last tool call). */
@@ -81,6 +115,19 @@ export class StreamParser {
     return [...this.segments, this.text.trim()].filter(Boolean).join("\n\n");
   }
 
+  /** The whole turn's text, monologue included — the haystack the marker is
+   *  searched in. Deliberately includes the dropped opening, because a
+   *  no-tool turn puts its narration AND its marked reply in that one
+   *  segment, and a marked reply must be found there too. */
+  private allText(): string {
+    return [this.opening, ...this.segments, this.text.trim()].filter(Boolean).join("\n\n");
+  }
+
+  /** True once the model has opened its reply marker this turn. */
+  sawReplyMarker(): boolean {
+    return this.allText().includes(REPLY_OPEN);
+  }
+
   /** Feed one NDJSON line. Malformed/unknown lines are ignored. */
   push(line: string): void {
     const s = line.trim();
@@ -127,10 +174,15 @@ export class StreamParser {
     }
   }
 
-  /** Best final answer: every kept segment, falling back to the result event's
+  /** Best final answer. When the model marked its reply, that IS the answer —
+   *  and an empty marked reply is honoured, since "I have nothing to say" is a
+   *  real outcome ("לא משנה" deserves silence, not `מאור אמר "לא משנה"`).
+   *  Without a marker: every kept segment, falling back to the result event's
    *  text, and last of all to the dropped opening (a turn that said nothing but
    *  narration should still say something rather than arrive empty). */
   finalText(): string {
+    const marked = extractMarkedReply(this.allText());
+    if (marked !== null) return marked;
     return this.keptText() || (this.result ?? "").trim() || this.opening;
   }
 
@@ -139,8 +191,12 @@ export class StreamParser {
     return { costUsd: this.costUsd, inputTokens: this.inputTokens, outputTokens: this.outputTokens };
   }
 
+  /** Live view. Once the marker opens, the monologue that preceded it stops
+   *  being shown mid-stream; until then this is the old behaviour, so a turn
+   *  never sits blank waiting for a marker that may never come. */
   state(): RenderState {
-    return { status: this.status, text: this.keptText(), done: this.done };
+    const marked = extractMarkedReply(this.allText());
+    return { status: this.status, text: marked ?? this.keptText(), done: this.done };
   }
 }
 
