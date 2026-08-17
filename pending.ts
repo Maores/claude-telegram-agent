@@ -22,6 +22,10 @@ export interface PendingAction {
   turnId: string;
   /** Morning re-ping already sent (absent on records from before 2026-08-16). */
   nudged?: boolean;
+  /** Telegram message currently carrying this proposal's buttons, so the
+   *  nudge can strip the old keyboard instead of leaving two live sets
+   *  (the lesson PR #15 already learned for reminder follow-ups). */
+  messageId?: number;
 }
 
 export type ConsumeResult =
@@ -187,6 +191,20 @@ export function dueMorningNudges(nowS: number, localHour: number): PendingAction
       nowS - a.createdAt >= NUDGE_MIN_AGE_S &&
       nowS - a.createdAt <= EXPIRY_S,
   );
+}
+
+/** Point a proposal at the message currently showing its buttons. Called
+ *  after the first send and again after each nudge, so exactly one message
+ *  is ever the live one. */
+export function bindActionMessage(id: string, messageId: number) {
+  withFileLock(pendingPath(), () => {
+    const list = loadActions();
+    const a = list.find((x) => x.id === id);
+    if (a) {
+      a.messageId = messageId;
+      saveActions(list);
+    }
+  });
 }
 
 /** Flip the nudged flag. Called BEFORE the send (state-before-effect, same

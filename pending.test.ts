@@ -117,7 +117,7 @@ test("newTurnId returns unique-ish ids", () => {
 // next morning, buttons arrived while Maor slept, the proposal expired after
 // the appointment had passed. One re-ping at 09:00 is the fix.
 
-import { dueMorningNudges, markActionNudged, NUDGE_HOUR } from "./pending";
+import { dueMorningNudges, markActionNudged, bindActionMessage, listPending, NUDGE_HOUR } from "./pending";
 
 const H = 3600;
 
@@ -156,4 +156,21 @@ test("nudging never blocks the tap: consume still works after markActionNudged",
   markActionNudged(a.id);
   const r = consumeAction(a.id, "approved", 1000 + 2 * H);
   expect(r.outcome).toBe("ok");
+});
+
+test("the nudge hands the buttons over: one live message id at a time", () => {
+  const a = proposeAction(1, "s", CAL_ADD, newTurnId(), 1000);
+  expect(a.messageId).toBeUndefined(); // not known until Telegram answers
+  bindActionMessage(a.id, 5001); // first send
+  expect(listPending(1)[0].messageId).toBe(5001);
+  bindActionMessage(a.id, 5002); // nudge takes over
+  expect(listPending(1)[0].messageId).toBe(5002);
+});
+
+test("binding a message never resurrects or alters a resolved proposal", () => {
+  const a = proposeAction(1, "s", CAL_ADD, newTurnId(), 1000);
+  consumeAction(a.id, "approved", 1500);
+  bindActionMessage(a.id, 5003); // late Telegram response after the tap
+  expect(listPending(1)).toEqual([]); // still resolved, not pending again
+  expect(dueMorningNudges(1000 + 2 * H, NUDGE_HOUR)).toEqual([]);
 });
