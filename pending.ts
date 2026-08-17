@@ -20,6 +20,12 @@ export interface PendingAction {
   createdAt: number; // epoch seconds
   status: "pending" | "approved" | "cancelled" | "expired";
   turnId: string;
+  /** Morning re-ping already sent (absent on records from before 2026-08-16). */
+  nudged?: boolean;
+  /** Telegram message currently carrying this proposal's buttons, so the
+   *  nudge can strip the old keyboard instead of leaving two live sets
+   *  (the lesson PR #15 already learned for reminder follow-ups). */
+  messageId?: number;
 }
 
 export type ConsumeResult =
@@ -158,4 +164,58 @@ export function pruneActions(nowS: number) {
 /** Open proposals for a chat (CLI `list` + debugging). */
 export function listPending(chatId: number): PendingAction[] {
   return loadActions().filter((a) => a.status === "pending" && a.chatId === chatId);
+}
+
+// --- morning nudge (2026-08-16) ---------------------------------------------
+// A month-long audit found 5 of 7 proposals expiring untapped. The one that
+// cost something was proposed at 23:16 for a 09:34 appointment the next
+// morning: the buttons arrived while Maor slept and the proposal outlived the
+// appointment itself. An expiry warning is useless there (it fires 24h after
+// creation, hours AFTER the event) — what helps is one re-ping at breakfast.
+
+/** Local hour when still-open proposals get their one re-ping. */
+export const NUDGE_HOUR = 9;
+/** Don't nudge a proposal younger than this — a 08:50 proposal untapped at
+ *  09:00 is unanswered, not forgotten. */
+const NUDGE_MIN_AGE_S = 3600;
+
+/** Proposals due their single morning re-ping. Pure with respect to time: the
+ *  caller supplies the local hour (the droplet clock is Asia/Jerusalem; tests
+ *  run under TZ=UTC and must not depend on the machine). */
+export function dueMorningNudges(nowS: number, localHour: number): PendingAction[] {
+  if (localHour !== NUDGE_HOUR) return [];
+  return loadActions().filter(
+    (a) =>
+      a.status === "pending" &&
+      !a.nudged &&
+      nowS - a.createdAt >= NUDGE_MIN_AGE_S &&
+      nowS - a.createdAt <= EXPIRY_S,
+  );
+}
+
+/** Point a proposal at the message currently showing its buttons. Called
+ *  after the first send and again after each nudge, so exactly one message
+ *  is ever the live one. */
+export function bindActionMessage(id: string, messageId: number) {
+  withFileLock(pendingPath(), () => {
+    const list = loadActions();
+    const a = list.find((x) => x.id === id);
+    if (a) {
+      a.messageId = messageId;
+      saveActions(list);
+    }
+  });
+}
+
+/** Flip the nudged flag. Called BEFORE the send (state-before-effect, same
+ *  ordering as the follow-up nudge): a lost nudge beats a double-nudge. */
+export function markActionNudged(id: string) {
+  withFileLock(pendingPath(), () => {
+    const list = loadActions();
+    const a = list.find((x) => x.id === id);
+    if (a) {
+      a.nudged = true;
+      saveActions(list);
+    }
+  });
 }

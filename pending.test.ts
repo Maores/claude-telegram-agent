@@ -111,3 +111,66 @@ test("pruneActions: drops old resolved entries, expires old pendings, keeps fres
 test("newTurnId returns unique-ish ids", () => {
   expect(newTurnId()).not.toBe(newTurnId());
 });
+
+// --- morning nudge (2026-08-16) ---------------------------------------------
+// The 2026-08-13 תור לחי case: proposed 23:16 for a 09:34 appointment the
+// next morning, buttons arrived while Maor slept, the proposal expired after
+// the appointment had passed. One re-ping at 09:00 is the fix.
+
+import { dueMorningNudges, markActionNudged, bindActionMessage, listPending, NUDGE_HOUR } from "./pending";
+
+const H = 3600;
+
+test("a proposal that survived the night is due exactly at the nudge hour", () => {
+  const a = proposeAction(1, "קביעת תור לחי - מחר 09:34", CAL_ADD, newTurnId(), 1000);
+  const morning = 1000 + 10 * H; // 23:16 → ~09:16 next day
+  expect(dueMorningNudges(morning, NUDGE_HOUR).map((x) => x.id)).toEqual([a.id]);
+  expect(dueMorningNudges(morning, NUDGE_HOUR + 1)).toEqual([]); // any other hour: silent
+  expect(dueMorningNudges(morning, 0)).toEqual([]);
+});
+
+test("a fresh proposal is unanswered, not forgotten — no nudge under an hour", () => {
+  proposeAction(1, "s", CAL_ADD, newTurnId(), 1000);
+  expect(dueMorningNudges(1000 + H - 1, NUDGE_HOUR)).toEqual([]);
+  expect(dueMorningNudges(1000 + H, NUDGE_HOUR).length).toBe(1); // exactly 1h is old enough
+});
+
+test("one nudge ever: the flag holds across loads, legacy records default to un-nudged", () => {
+  const a = proposeAction(1, "s", CAL_ADD, newTurnId(), 1000);
+  expect(dueMorningNudges(1000 + 2 * H, NUDGE_HOUR).length).toBe(1); // legacy shape: no `nudged` key
+  markActionNudged(a.id);
+  expect(dueMorningNudges(1000 + 2 * H, NUDGE_HOUR)).toEqual([]);
+  expect(dueMorningNudges(1000 + 20 * H, NUDGE_HOUR)).toEqual([]); // next morning too
+});
+
+test("resolved and expired proposals are never nudged", () => {
+  const ok = proposeAction(1, "approved one", CAL_ADD, newTurnId(), 1000);
+  consumeAction(ok.id, "approved", 2000);
+  proposeAction(1, "too old", CAL_ADD, newTurnId(), 1000);
+  expect(dueMorningNudges(1000 + 25 * H, NUDGE_HOUR)).toEqual([]); // past 24h expiry
+  expect(dueMorningNudges(1000 + 2 * H, NUDGE_HOUR).map((x) => x.summary)).toEqual(["too old"]);
+});
+
+test("nudging never blocks the tap: consume still works after markActionNudged", () => {
+  const a = proposeAction(1, "s", CAL_ADD, newTurnId(), 1000);
+  markActionNudged(a.id);
+  const r = consumeAction(a.id, "approved", 1000 + 2 * H);
+  expect(r.outcome).toBe("ok");
+});
+
+test("the nudge hands the buttons over: one live message id at a time", () => {
+  const a = proposeAction(1, "s", CAL_ADD, newTurnId(), 1000);
+  expect(a.messageId).toBeUndefined(); // not known until Telegram answers
+  bindActionMessage(a.id, 5001); // first send
+  expect(listPending(1)[0].messageId).toBe(5001);
+  bindActionMessage(a.id, 5002); // nudge takes over
+  expect(listPending(1)[0].messageId).toBe(5002);
+});
+
+test("binding a message never resurrects or alters a resolved proposal", () => {
+  const a = proposeAction(1, "s", CAL_ADD, newTurnId(), 1000);
+  consumeAction(a.id, "approved", 1500);
+  bindActionMessage(a.id, 5003); // late Telegram response after the tap
+  expect(listPending(1)).toEqual([]); // still resolved, not pending again
+  expect(dueMorningNudges(1000 + 2 * H, NUDGE_HOUR)).toEqual([]);
+});

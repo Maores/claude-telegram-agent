@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt, loadStore } from "./reminders.ts";
 import { classifyDeferredPromise, gainedBacking, UNBACKED_PROMISE_NOTE } from "./promise-check.ts";
 import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWindow, todayStr, typeForDay, pickByType, pickDiagram, pickPattern, markSeen, splitHints, formatQuestion, splitForCaption, quizStartKeyboard, quizNextKeyboard, parseQzCallback, quizEvalDirective, parseQuizCommand, shouldAttachQuizDirective, isPlaceholderAnswer, type QzCallback, type QuizCommand, type QuizState } from "./quiz";
-import { takePending, consumeAction, validateArgv, pruneActions, newTurnId, type PendingAction } from "./pending.ts";
+import { takePending, consumeAction, validateArgv, pruneActions, dueMorningNudges, markActionNudged, bindActionMessage, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
 import { StreamParser, displayText } from "./stream.ts";
 import { parseVoiceCommand, ttsAvailable, shouldSpeakForInput, startEngine, type TtsEngine, type VoiceCommand } from "./tts.ts";
@@ -1157,6 +1157,12 @@ async function streamClaude(
     if (!backed) final += UNBACKED_PROMISE_NOTE;
   }
 
+  // Compliance meter for the reply marker. A missing marker is not an error —
+  // the reply falls back to the old rules and ships fine — but it is the one
+  // number that says whether the contract is working, so the health sweep can
+  // count `marker=no` instead of re-reading the archive by hand.
+  console.log(`[REPLY] marker=${parser.sawReplyMarker() ? "yes" : "no"} model=${model}`);
+
   // Record this call's usage (agenda #5). Synchronous + fail-safe; the heads-up
   // ping is fire-and-forget so it never adds latency or blocks the reply path.
   try {
@@ -2026,11 +2032,20 @@ async function sendPendingProposals(chatId: number, turnId: string) {
     return;
   }
   for (const a of actions) {
-    await tg("sendMessage", {
+    // Remember which message carries the buttons, so a later nudge can strip
+    // this keyboard rather than leave two live sets pointing at one action.
+    const sent = await tg("sendMessage", {
       chat_id: chatId,
       text: `🔘 ${a.summary}`,
       reply_markup: paKeyboard(a.id),
-    }).catch(() => {});
+    }).catch(() => null);
+    if (sent?.message_id) {
+      try {
+        bindActionMessage(a.id, sent.message_id);
+      } catch (e: any) {
+        console.error(`[ERR] pa bind ${a.id}: ${e?.message ?? e}`);
+      }
+    }
     console.log(redact(`[PA] proposed ${a.id}: ${a.summary}`));
   }
 }
@@ -2746,6 +2761,35 @@ async function checkReminders() {
       console.log(`[REMIND] nudged ${f.id} -> ${f.chatId}`);
     } catch (e: any) {
       console.error(`[ERR] nudge ${f.id}: ${e?.message ?? e}`);
+    }
+  }
+  // One morning re-ping for proposals still untapped (the 2026-08-13 תור לחי
+  // was proposed at 23:16 for 09:34 the next day — the buttons arrived while
+  // Maor slept and the proposal outlived the appointment). Fresh buttons carry
+  // the SAME action id, so once-only consumption still holds: whichever
+  // message he taps wins, the other reports already-handled.
+  for (const a of dueMorningNudges(nowS, new Date().getHours())) {
+    try {
+      markActionNudged(a.id); // state before effect — a lost nudge beats a double-nudge
+      // The nudge takes over the buttons: clear the original message's keyboard
+      // first, so one action never has two live button sets (PR #15's lesson,
+      // learned there for reminder follow-ups).
+      if (a.messageId) {
+        await tg("editMessageReplyMarkup", {
+          chat_id: a.chatId,
+          message_id: a.messageId,
+          reply_markup: { inline_keyboard: [] },
+        }).catch((e: any) => console.error(`[ERR] pa clear keyboard ${a.id}: ${e?.message ?? e}`));
+      }
+      const sent = await tg("sendMessage", {
+        chat_id: a.chatId,
+        text: `ההצעה הזו עדיין ממתינה לאישור:\n🔘 ${a.summary}`,
+        reply_markup: paKeyboard(a.id),
+      });
+      if (sent?.message_id) bindActionMessage(a.id, sent.message_id);
+      console.log(redact(`[PA] nudged ${a.id}: ${a.summary}`));
+    } catch (e: any) {
+      console.error(`[ERR] pa nudge ${a.id}: ${e?.message ?? e}`);
     }
   }
   try {
