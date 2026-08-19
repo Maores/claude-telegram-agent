@@ -52,7 +52,7 @@ const UPSTREAM_RETRY_DELAY_MS = Number(process.env.UPSTREAM_RETRY_DELAY_MS ?? 8_
 
 const MODEL_IDS: Record<string, string> = {
   sonnet: "claude-sonnet-5",
-  opus: "claude-opus-4-8",
+  opus: "claude-opus-5",
   haiku: "claude-haiku-4-5",
 };
 
