@@ -37,3 +37,6 @@ Desktop.ini
 .vscode/
 voice-replies-off.flag
 voice-pending.json
+pending.test-*.json
+choices.asktest-*.json
+*.test.tmp.json

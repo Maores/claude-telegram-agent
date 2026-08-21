@@ -2147,12 +2147,17 @@ async function handleChCallback(
 async function answerChoice(chatId: number, choice: Choice, option: string) {
   const name = "Maor";
   const db = getDb();
-  const { model } = pickModel(option);
+  // Take the STRIPPED text, exactly as the typed path does (`const { model,
+  // prompt: userMsg } = pickModel(...)`). Taking only `model` here left the
+  // literal "/opus " at the head of the prompt and of the archived message —
+  // routing metadata leaking into the conversation, and a Latin token opening
+  // a Hebrew line, which is the bidi shape CLAUDE.md singles out.
+  const { model, prompt: chosen } = pickModel(option);
   const now = Math.floor(Date.now() / 1000);
   // 1. Persist the Q→A pair before building context.
   try {
     insertMessage(db, { chatId, role: "assistant", content: choice.question, ts: now, model });
-    insertMessage(db, { chatId, role: "user", content: option, ts: now, model });
+    insertMessage(db, { chatId, role: "user", content: chosen, ts: now, model });
   } catch (e: any) {
     console.error(`[ERR] persist choice answer: ${e?.message ?? e}`);
   }
@@ -2168,13 +2173,13 @@ async function answerChoice(chatId: number, choice: Choice, option: string) {
     const beforeId = history.length ? history[0].id : Number.MAX_SAFE_INTEGER;
     let recall: RecallHit[] = [];
     try {
-      recall = searchMessages(db, chatId, option, RECALL_K, beforeId);
+      recall = searchMessages(db, chatId, chosen, RECALL_K, beforeId);
     } catch (e: any) {
       console.error(`[ERR] recall: ${e?.message ?? e}`);
     }
     let skills = "";
     try {
-      skills = skillsIndexBlock(db, option);
+      skills = skillsIndexBlock(db, chosen);
     } catch (e: any) {
       console.error(`[ERR] skills: ${e?.message ?? e}`);
     }
@@ -2182,7 +2187,7 @@ async function answerChoice(chatId: number, choice: Choice, option: string) {
     // 4 + 5. NORMAL interactive privileges — this is a real user-driven turn.
     const answer =
       (await streamClaudeResilient(
-        buildPrompt(history, name, option, recall, loadMemory(), skills),
+        buildPrompt(history, name, chosen, recall, loadMemory(), skills),
         chatId,
         placeholderId,
         model,
