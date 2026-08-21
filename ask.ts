@@ -22,6 +22,9 @@ function envChat(): number {
 
 /** Parse flags, collecting REPEATED --option into an array (confirm.ts's
  *  single-value parser can't, so this is hand-rolled). */
+/** Sanity bound on a stored option. Not a display limit — see choiceKeyboard. */
+const OPTION_MAX = 1000;
+
 function parse(args: string[]): { question?: string; options: string[]; allowOther: boolean } {
   let question: string | undefined;
   const options: string[] = [];
@@ -58,7 +61,13 @@ try {
     const c = proposeChoice(
       envChat(),
       question.slice(0, 1000),
-      options.map((o) => o.slice(0, 100)),
+      // The option text is not a label — it becomes the ENTIRE prompt of the
+      // next turn when Maor taps. Cutting it at 100 chars silently truncated
+      // real instructions mid-word (2026-08-21: a stored option ended
+      // "…וכשהפענוח נ"), so a tap would have sent half a sentence. The button
+      // caption is derived separately in choiceKeyboard; this bound is only a
+      // sanity cap and matches the question's.
+      options.map((o) => o.slice(0, OPTION_MAX)),
       allowOther,
       turnId,
       nowS(),
