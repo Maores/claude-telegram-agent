@@ -492,10 +492,45 @@ export function resolveChoiceOption(choice: { options: string[] }, idx: number |
 
 /** One button per option (index-encoded), laid out two per row, with an
  *  optional Other button last. Labels are plain option text. */
+/** Longest caption that stays readable on a phone. Telegram does not reject a
+ *  long label, it silently truncates it, and with two buttons per row there is
+ *  very little width to truncate into. */
+export const CHOICE_LABEL_MAX = 28;
+/** Above this, a row holds one button instead of two. */
+const CHOICE_LABEL_WIDE = 14;
+
+/** The caption a button shows. Purely cosmetic: a tap resolves the option by
+ *  INDEX against the stored list (`ch:<id>:<i>`), so shortening the caption
+ *  cannot change what gets sent — see resolveChoiceOption.
+ *
+ *  Two things were breaking together (2026-08-21, from a screenshot). The
+ *  caption was the option's full text, which for a dev option is a long
+ *  instruction sentence, so Telegram cut it to an ellipsis. And that sentence
+ *  opens with a model prefix — a Latin token at the head of a Hebrew line,
+ *  which is the one bidi shape CLAUDE.md calls out as guaranteed to reorder.
+ *  The result read "שרק מת…" and "תקן את הבאג של…", and Maor could not tell
+ *  the buttons apart. Notably one of them was the button that would have
+ *  opened the PR fixing this. */
+export function choiceLabel(option: string): string {
+  const s = option.replace(/^\s*\/(?:opus|sonnet)\b[ \t]*/i, "").trim();
+  if (s.length <= CHOICE_LABEL_MAX) return s;
+  const cut = s.slice(0, CHOICE_LABEL_MAX);
+  const sp = cut.lastIndexOf(" ");
+  // break on a word when one is near enough, otherwise take the hard cut —
+  // never leave a caption that is mostly ellipsis
+  const body = sp >= CHOICE_LABEL_MAX / 2 ? cut.slice(0, sp) : cut;
+  return body.trimEnd() + "…";
+}
+
 export function choiceKeyboard(id: string, options: string[], allowOther: boolean): unknown {
-  const buttons = options.map((text, i) => ({ text, callback_data: `ch:${id}:${i}` }));
+  const labels = options.map(choiceLabel);
+  // Two short captions side by side is fine; two long ones is the case that
+  // produced "שרק מת…", so as soon as any caption needs the width, give every
+  // button its own row.
+  const perRow = labels.some((l) => l.length > CHOICE_LABEL_WIDE) ? 1 : 2;
+  const buttons = labels.map((text, i) => ({ text, callback_data: `ch:${id}:${i}` }));
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-  for (let i = 0; i < buttons.length; i += 2) rows.push(buttons.slice(i, i + 2));
+  for (let i = 0; i < buttons.length; i += perRow) rows.push(buttons.slice(i, i + perRow));
   if (allowOther) rows.push([{ text: "אחר…", callback_data: `ch:${id}:o` }]);
   return { inline_keyboard: rows };
 }
@@ -832,6 +867,7 @@ export const DEV_INTENT_DIRECTIVE = [
   "   - quick/small -> option with just the instruction (no prefix -> fast default model)",
   "   - a cancel option (בטל)",
   "   Tapping a button sends that text as the next turn; it routes through model selection and sees this whole conversation in its history.",
+  "   WRITE THE FULL INSTRUCTION in the option — it becomes the next turn's entire prompt, so do not abbreviate it. The button caption is derived automatically: the model prefix is stripped and roughly the first 28 characters are shown. So FRONT-LOAD the words that tell the options apart (\"תקן את הבאג של הכפתורים…\" / \"רק תעד את הבאג…\"), and never open two options with the same phrase, or both captions read alike.",
   "3. Do NOT start building in THIS turn. When the build runs, it goes on a branch and opens a PR (per the self-dev rules), never a live hot-patch on main.",
   "If this is NOT actually a request to change the codebase, ignore this entirely and just answer normally.",
   "</dev-intent>",

@@ -35,6 +35,8 @@ import {
   PA_EXEC_TIMEOUT_MS,
   parseChCallback,
   choiceKeyboard,
+  choiceLabel,
+  CHOICE_LABEL_MAX,
   resolveChoiceOption,
 } from "./poller.ts";
 
@@ -847,4 +849,44 @@ test("choiceKeyboard: callback_data stays within Telegram's 64-byte limit (longe
   for (const b of kb.inline_keyboard.flat()) {
     expect(Buffer.byteLength(b.callback_data, "utf8")).toBeLessThanOrEqual(64);
   }
+});
+
+// --- button captions (2026-08-21) -----------------------------------------
+// From a screenshot: the captions read "שרק מת…" and "תקן את הבאג של…" and
+// Maor could not tell them apart. One of them was the button that would have
+// opened the PR fixing this. Two causes at once — the caption was the option's
+// full instruction text, and that text opens with a Latin model prefix at the
+// head of a Hebrew line, the bidi shape CLAUDE.md calls out.
+
+test("choiceLabel strips the model prefix — a Latin head on a Hebrew line", () => {
+  expect(choiceLabel("/opus תקן את הבאג")).toBe("תקן את הבאג");
+  expect(choiceLabel("/sonnet   בדוק משהו")).toBe("בדוק משהו");
+  expect(choiceLabel("בטל")).toBe("בטל"); // nothing to strip
+});
+
+test("choiceLabel shortens the real option from the screenshot", () => {
+  const real = "/opus פתח PR שרק מתעד את הבאג של «זמן אחר…» (מסמך תיאור בלי תיקון קוד), ענף + PR";
+  const label = choiceLabel(real);
+  expect(label.startsWith("/opus")).toBe(false);
+  expect(label.length).toBeLessThanOrEqual(CHOICE_LABEL_MAX + 1); // +1 for the ellipsis
+  expect(label.startsWith("פתח PR שרק מתעד")).toBe(true); // the distinguishing words survive
+});
+
+test("choiceLabel never leaves a caption that is mostly ellipsis", () => {
+  const noSpaces = "/opus " + "א".repeat(80);
+  expect(choiceLabel(noSpaces).length).toBe(CHOICE_LABEL_MAX + 1); // hard cut, not a stub
+});
+
+test("a long caption gets its own row; short ones still pair up", () => {
+  const long: any = choiceKeyboard("c1", ["/opus תקן את הבאג של הכפתורים בפולר", "/opus רק תעד את הבאג", "בטל"], false);
+  expect(long.inline_keyboard.every((r: any[]) => r.length === 1)).toBe(true);
+  const short: any = choiceKeyboard("c2", ["כן", "לא", "אולי"], false);
+  expect(short.inline_keyboard[0].length).toBe(2);
+});
+
+test("the caption is cosmetic: the payload still resolves by index", () => {
+  const full = "/opus " + "תקן את הבאג ".repeat(12);
+  const kb: any = choiceKeyboard("c3", [full, "בטל"], false);
+  expect(kb.inline_keyboard[0][0].callback_data).toBe("ch:c3:0");
+  expect(resolveChoiceOption({ options: [full, "בטל"] }, 0)).toBe(full); // untouched
 });
