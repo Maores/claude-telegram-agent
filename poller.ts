@@ -17,7 +17,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
-import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt } from "./reminders.ts";
+import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt, snoozeFollowup} from "./reminders.ts";
 import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWindow, todayStr, typeForDay, pickByType, pickDiagram, pickPattern, markSeen, splitHints, formatQuestion, splitForCaption, quizStartKeyboard, quizNextKeyboard, parseQzCallback, quizEvalDirective, parseQuizCommand, shouldAttachQuizDirective, isPlaceholderAnswer, type QzCallback, type QuizCommand, type QuizState } from "./quiz";
 import { takePending, consumeAction, validateArgv, pruneActions, dueMorningNudges, markActionNudged, bindActionMessage, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
@@ -355,24 +355,63 @@ export function parseCustomSnoozeTime(text: string, nowEpoch: number): number | 
  *  the requested time. True = fully handled (no Claude turn). The ask is
  *  one-shot: whatever the next message is, it closes the ask — a message that
  *  isn't a time simply flows on as normal chat. */
-async function consumeCustomSnooze(chatId: number, text: string): Promise<boolean> {
+async function consumeCustomSnooze(chatId: number, text: string): Promise<SnoozeAskResult> {
   const pend = pendingCustomSnooze.get(chatId);
-  if (!pend) return false;
+  if (!pend) return { kind: "none" };
+  // Still one-shot: the ask closes on the next message either way. Keeping it
+  // open until a parse succeeds would leave a 10-minute window in which a bare
+  // "9" typed about something else silently reschedules a forgotten errand.
   pendingCustomSnooze.delete(chatId);
   const nowS = Math.floor(Date.now() / 1000);
-  if (nowS > pend.expiresAt) return false;
+  if (nowS > pend.expiresAt) return { kind: "none" };
+  const f = getFollowup(pend.fuId);
+  if (!f || f.status !== "pending") return { kind: "none" }; // resolved by a button meanwhile
+
   const t = parseCustomSnoozeTime(text, nowS);
-  if (t === null) return false;
-  const f = resolveFollowup(pend.fuId, "snoozed");
-  if (!f) return false; // resolved via a button tap meanwhile
-  const nr = addOnce(f.chatId, t, f.text);
+  if (t === null) {
+    // The cheap parser only knows digits: "18:30", "מחר 9", "בעוד שעתיים".
+    // "יום ראשון 10:10" and every spoken time ("מחר בתשע") miss it. Until
+    // 2026-08-21 the message then reached the model stripped of any trace of
+    // the question, so it answered "לא ברור לי מה אתה רוצה" — correctly, from
+    // its side a disconnected line had arrived. Hand it the question instead.
+    return { kind: "miss", fuId: pend.fuId, followupText: f.text };
+  }
+
+  const r = snoozeFollowup(pend.fuId, t);
+  if (!r) return { kind: "none" };
   await tg("sendMessage", {
     chat_id: chatId,
-    text: `«${f.text}» — נדחה ל־${fmt(t)}`,
-    reply_markup: undoKeyboard(f.id, nr.id),
+    text: `«${r.followup.text}» — נדחה ל־${fmt(t)}`,
+    reply_markup: undoKeyboard(r.followup.id, r.reminder.id),
   }).catch(() => {});
-  console.log(`[REMIND] snoozed fu ${f.id} to ${fmt(t)} (custom, r=${nr.id})`);
-  return true;
+  console.log(`[REMIND] snoozed fu ${r.followup.id} to ${fmt(t)} (custom, r=${r.reminder.id})`);
+  return { kind: "handled" };
+}
+
+/** What an open "זמן אחר…" ask did with this message.
+ *  handled = the fast parser applied it, no Claude turn needed.
+ *  miss    = there WAS an ask and the parser could not read the answer; the
+ *            turn runs with a directive carrying the question.
+ *  none    = no ask open (or it expired / was already resolved). */
+type SnoozeAskResult =
+  | { kind: "handled" }
+  | { kind: "miss"; fuId: string; followupText: string }
+  | { kind: "none" };
+
+/** Injected when the fast parser missed. Deliberately shaped like the quiz
+ *  directive: it carries its own escape clause, so a message that turns out
+ *  not to be a time just becomes normal chat. */
+export function snoozeAskDirective(fuId: string, followupText: string): string {
+  return [
+    "<snooze-ask>",
+    `Maor was asked WHEN to postpone this reminder to: «${followupText}»`,
+    "The message you just received is his answer, and the cheap parser could not read it.",
+    "If it names a time (a weekday, a date, a relative offset, a spoken time like \"מחר בתשע\"), work out the exact moment with `date` and run:",
+    `  bun run remind.ts snooze-followup --id ${fuId} --at "$(date -d '<that local time>' +%s)"`,
+    "Then confirm to Maor in one short line what was postponed and to when.",
+    "If it turns out NOT to be a time, ignore this block entirely and answer the message normally.",
+    "</snooze-ask>",
+  ].join("\n");
 }
 
 export function fuKeyboard(id: string): unknown {
@@ -1424,7 +1463,8 @@ async function handleMessage(msg: TgMessage) {
   }
 
   // An open "זמן אחר…" snooze ask consumes the next message when it's a time.
-  if (await consumeCustomSnooze(chatId, voiceText ?? words)) return;
+  const snoozeAsk = await consumeCustomSnooze(chatId, voiceText ?? words);
+  if (snoozeAsk.kind === "handled") return;
 
   const { model, prompt: userMsg } = pickModel(voiceText ?? words);
 
@@ -1508,7 +1548,9 @@ async function handleMessage(msg: TgMessage) {
     } catch (e: any) {
       console.error(`[ERR] quiz directive: ${e?.message ?? e}`);
     }
-    const directive = [devDirective, quizDirective].filter(Boolean).join("\n\n");
+    const snoozeDirective =
+      snoozeAsk.kind === "miss" ? snoozeAskDirective(snoozeAsk.fuId, snoozeAsk.followupText) : "";
+    const directive = [devDirective, quizDirective, snoozeDirective].filter(Boolean).join("\n\n");
     // Native Telegram reply (#308): tell the model which earlier message Maor quoted.
     const replyContext = replyContextLine(msg.reply_to_message, botUserId, name) ?? "";
     const echoPrefix =
@@ -1741,7 +1783,8 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
   if (!combined.trim()) return;
 
   // An open "זמן אחר…" snooze ask consumes the batch when it's a time answer.
-  if (await consumeCustomSnooze(chatId, combined)) return;
+  const snoozeAsk = await consumeCustomSnooze(chatId, combined);
+  if (snoozeAsk.kind === "handled") return;
 
   // One shaky transcript holds the WHOLE burst for a tap (Maor's option 1,
   // 2026-08-10). Until now a burst skipped confirmation entirely and a
@@ -1805,7 +1848,9 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
     } catch (e: any) {
       console.error(`[ERR] quiz directive: ${e?.message ?? e}`);
     }
-    const directive = [devDirective, quizDirective].filter(Boolean).join("\n\n");
+    const snoozeDirective =
+      snoozeAsk.kind === "miss" ? snoozeAskDirective(snoozeAsk.fuId, snoozeAsk.followupText) : "";
+    const directive = [devDirective, quizDirective, snoozeDirective].filter(Boolean).join("\n\n");
     const replyContext = replyContextLine(last.reply_to_message, botUserId, name) ?? "";
     const turnId = newTurnId();
     const batchOpts = echoes.length ? { renderPrefix: echoes.join("\n") + "\n\n" } : {};

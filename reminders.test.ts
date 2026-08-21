@@ -1,3 +1,4 @@
+import { parseCustomSnoozeTime, snoozeAskDirective } from "./poller.ts";
 import { test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
 import { existsSync, rmSync, mkdtempSync } from "node:fs";
@@ -7,7 +8,7 @@ import { tmpdir } from "node:os";
 const TMP = join(import.meta.dir, "reminders.test.tmp.json");
 process.env.REMINDERS_FILE = TMP;
 
-import { nextFire, addOnce, addRepeat, listFor, cancel, editReminder, popDue, loadStore } from "./reminders.ts";
+import { nextFire, addOnce, addRepeat, listFor, cancel, editReminder, popDue, loadStore, snoozeFollowup } from "./reminders.ts";
 
 const DAILY = [0, 1, 2, 3, 4, 5, 6];
 const WEEKDAYS = [1, 2, 3, 4, 5];
@@ -369,4 +370,49 @@ test("mutators run under the lock (addOnce leaves no lockfile behind)", () => {
   addOnce(7, 1_900_000_000, "lock smoke");
   expect(existsSync(TMP + ".lock")).toBe(false);
   expect(listFor(7).length).toBe(1);
+});
+
+// --- snoozeFollowup + the parse-miss path (2026-08-21) ---------------------
+// The custom-snooze ask used to be parsed entirely in code. "יום ראשון 10:10"
+// matched no pattern, the ask was deleted anyway, and the message reached the
+// model with no trace of the question — so it answered "לא ברור לי מה אתה
+// רוצה". Live case: #1506/#1507 on 2026-08-21.
+
+test("snoozeFollowup resolves the follow-up and creates its replacement", () => {
+  const f = addFollowup(1, "ללכת לאדיסו", 500, 1000);
+  const r = snoozeFollowup(f.id, 9999);
+  expect(r).not.toBeNull();
+  expect(r!.followup.text).toBe("ללכת לאדיסו");
+  expect(r!.reminder.fireAt).toBe(9999);
+  expect(getFollowup(f.id)!.status).toBe("snoozed"); // not left pending
+});
+
+test("snoozeFollowup refuses a follow-up already resolved by a button tap", () => {
+  const f = addFollowup(1, "x", 500, 1000);
+  resolveFollowup(f.id, "done"); // Maor tapped בוצע while the turn was running
+  expect(snoozeFollowup(f.id, 9999)).toBeNull(); // no duplicate reminder
+  expect(listFor(1).length).toBe(0);
+});
+
+test("snoozeFollowup on an unknown id is a no-op, not a throw", () => {
+  expect(snoozeFollowup("f-nope", 9999)).toBeNull();
+});
+
+test("the shapes the cheap parser cannot read, which is why the model gets them", () => {
+  const now = 1_787_000_000;
+  // these are the ones that must fall through to the directive
+  expect(parseCustomSnoozeTime("יום ראשון 10:10", now)).toBeNull();
+  expect(parseCustomSnoozeTime("מחר בתשע", now)).toBeNull(); // a spoken time, no digits
+  expect(parseCustomSnoozeTime("ב-25/08 בשמונה", now)).toBeNull();
+  // and the ones it still handles for free, which must NOT regress
+  expect(parseCustomSnoozeTime("18:30", now)).not.toBeNull();
+  expect(parseCustomSnoozeTime("מחר 9", now)).not.toBeNull();
+  expect(parseCustomSnoozeTime("בעוד שעתיים", now)).toBe(now + 7200);
+});
+
+test("the directive names the follow-up and carries an escape clause", () => {
+  const d = snoozeAskDirective("f123", "ללכת לאדיסו");
+  expect(d).toContain("ללכת לאדיסו");
+  expect(d).toContain("snooze-followup --id f123");
+  expect(d.toLowerCase()).toContain("not to be a time"); // unrelated messages stay normal chat
 });
