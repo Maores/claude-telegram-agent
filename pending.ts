@@ -57,10 +57,21 @@ function saveActions(list: PendingAction[]) {
 }
 
 /** Only these exact (script, subcommand) pairs may ever execute. Email drafts
- *  are deliberately absent — they need a claude session, not a CLI. */
+ *  are deliberately absent — they need a claude session, not a CLI.
+ *
+ *  `todo.ts done/edit` and `remind.ts cancel` are here so a shaky-transcript
+ *  turn has somewhere to put a destructive action (2026-08-05: the agent wrote
+ *  "סימנתי כנקנו ומחקתי מהרשימה: קוטג' וחלב (הבנתי 'הקודץ' ו'החלף' בתמלול
+ *  כאלו)" — it KNEW it was guessing at two words, said so in the reply, and
+ *  ran the writes anyway, because proposing them was not a legal move). Adding
+ *  a pair only widens what a TAP can run: every proposal still passes
+ *  validateArgv plus the guard blocklist, executes with no shell, and is
+ *  consumed once. `remind.ts` deliberately exposes `cancel` alone — add-once
+ *  and add-repeat stay non-proposable. */
 const ALLOWED: Array<{ script: string; subs: string[] }> = [
   { script: "cal.ts", subs: ["add", "edit", "delete"] },
-  { script: "todo.ts", subs: ["delete"] },
+  { script: "todo.ts", subs: ["delete", "done", "edit"] },
+  { script: "remind.ts", subs: ["cancel"] },
 ];
 
 /** The execution gate. Checked at propose time AND again at execution time.

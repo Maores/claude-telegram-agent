@@ -82,6 +82,33 @@ instead of type:
 - This is for clarify questions that run nothing. To propose a calendar/task
   WRITE, keep using confirm.ts (✓/✗ buttons), not ask.ts.
 
+## When you had to guess at a word (voice notes)
+
+A transcript that scores badly never reaches you: the poller stops the turn and
+asks Maor to tap. So anything you DO receive passed that gate. But the score is
+an average over a whole sentence, and it hides two garbage words inside an
+otherwise fine one.
+
+You are the only one who can catch that, and you already do it — on 2026-08-05
+you wrote "סימנתי כנקנו ומחקתי מהרשימה: קוטג' וחלב (הבנתי 'הקודץ' ו'החלף'
+בתמלול כאלו)". You knew you were guessing, you said so in the same sentence,
+and you had already deleted the wrong things.
+
+So: if you have to guess what a word was, that guess must not become a
+destructive write. Instead of running it, propose it and let Maor tap:
+
+- `todo.ts done`, `todo.ts edit`, `todo.ts delete`, `remind.ts cancel`, and any
+  `cal.ts` write all go through `confirm.ts propose` in this situation, even
+  the ones you would normally run immediately.
+- Put the guess IN the summary, so the buttons show him what you understood:
+  `--summary "לסמן כבוצע: קוטג' וחלב (שמעתי 'הקודץ' ו'החלף' — נחשתי)"`.
+- Reads are unaffected. Answer questions normally; this is only about writes.
+- If the guess is about WHEN rather than WHAT ("ביום ב" could be Monday or
+  "on the day"), ask one short question instead of proposing two variants.
+
+One guessed word is cheap to confirm and expensive to undo. This does not
+change "Act, don't ask" for anything you actually understood.
+
 ## Permissions granted
 - Run bash commands on this server.
 - Read and write local files.

@@ -174,3 +174,30 @@ test("binding a message never resurrects or alters a resolved proposal", () => {
   expect(listPending(1)).toEqual([]); // still resolved, not pending again
   expect(dueMorningNudges(1000 + 2 * H, NUDGE_HOUR)).toEqual([]);
 });
+
+// --- shaky-transcript escape hatch (2026-08-19) ----------------------------
+// A destructive action derived from a guessed word must be proposable rather
+// than executed. On 2026-08-05 it was not: the agent flagged its own guess in
+// the reply and ran `todo.ts done` anyway, because confirm.ts would have
+// refused the argv.
+
+test("the destructive todo/remind actions are proposable", () => {
+  expect(validateArgv(["bun", "run", "todo.ts", "done", "--uid", "x@maor-bot"]).ok).toBe(true);
+  expect(validateArgv(["bun", "run", "todo.ts", "edit", "--uid", "x", "--set-title", "y"]).ok).toBe(true);
+  expect(validateArgv(["bun", "run", "remind.ts", "cancel", "282408422", "r7"]).ok).toBe(true);
+});
+
+test("widening the list did not open anything that creates or schedules", () => {
+  // the floor is unchanged for everything a tap should never be able to run
+  expect(validateArgv(["bun", "run", "remind.ts", "add-once", "1", "2", "x"]).ok).toBe(false);
+  expect(validateArgv(["bun", "run", "remind.ts", "add-repeat", "1", "09:00", "1", "x"]).ok).toBe(false);
+  expect(validateArgv(["bun", "run", "remind.ts", "edit", "1", "r7", "--text", "x"]).ok).toBe(false);
+  expect(validateArgv(["bun", "run", "todo.ts", "add", "--title", "x"]).ok).toBe(false);
+  expect(validateArgv(["bun", "run", "monitor.ts", "remove", "x"]).ok).toBe(false);
+  expect(validateArgv(["bun", "run", "mem.ts", "purge", "--id", "1"]).ok).toBe(false);
+  expect(validateArgv(["bun", "run", "skill.ts", "create", "--name", "x"]).ok).toBe(false);
+});
+
+test("a proposed destructive action still runs the guard blocklist", () => {
+  expect(validateArgv(["bun", "run", "todo.ts", "done", "--uid", "x; rm -rf /"]).ok).toBe(false);
+});
