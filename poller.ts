@@ -17,7 +17,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
-import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt } from "./reminders.ts";
+import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt, snoozeFollowup} from "./reminders.ts";
 import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWindow, todayStr, typeForDay, pickByType, pickDiagram, pickPattern, markSeen, splitHints, formatQuestion, splitForCaption, quizStartKeyboard, quizNextKeyboard, parseQzCallback, quizEvalDirective, parseQuizCommand, shouldAttachQuizDirective, isPlaceholderAnswer, type QzCallback, type QuizCommand, type QuizState } from "./quiz";
 import { takePending, consumeAction, validateArgv, pruneActions, dueMorningNudges, markActionNudged, bindActionMessage, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
@@ -355,24 +355,63 @@ export function parseCustomSnoozeTime(text: string, nowEpoch: number): number | 
  *  the requested time. True = fully handled (no Claude turn). The ask is
  *  one-shot: whatever the next message is, it closes the ask — a message that
  *  isn't a time simply flows on as normal chat. */
-async function consumeCustomSnooze(chatId: number, text: string): Promise<boolean> {
+async function consumeCustomSnooze(chatId: number, text: string): Promise<SnoozeAskResult> {
   const pend = pendingCustomSnooze.get(chatId);
-  if (!pend) return false;
+  if (!pend) return { kind: "none" };
+  // Still one-shot: the ask closes on the next message either way. Keeping it
+  // open until a parse succeeds would leave a 10-minute window in which a bare
+  // "9" typed about something else silently reschedules a forgotten errand.
   pendingCustomSnooze.delete(chatId);
   const nowS = Math.floor(Date.now() / 1000);
-  if (nowS > pend.expiresAt) return false;
+  if (nowS > pend.expiresAt) return { kind: "none" };
+  const f = getFollowup(pend.fuId);
+  if (!f || f.status !== "pending") return { kind: "none" }; // resolved by a button meanwhile
+
   const t = parseCustomSnoozeTime(text, nowS);
-  if (t === null) return false;
-  const f = resolveFollowup(pend.fuId, "snoozed");
-  if (!f) return false; // resolved via a button tap meanwhile
-  const nr = addOnce(f.chatId, t, f.text);
+  if (t === null) {
+    // The cheap parser only knows digits: "18:30", "מחר 9", "בעוד שעתיים".
+    // "יום ראשון 10:10" and every spoken time ("מחר בתשע") miss it. Until
+    // 2026-08-21 the message then reached the model stripped of any trace of
+    // the question, so it answered "לא ברור לי מה אתה רוצה" — correctly, from
+    // its side a disconnected line had arrived. Hand it the question instead.
+    return { kind: "miss", fuId: pend.fuId, followupText: f.text };
+  }
+
+  const r = snoozeFollowup(pend.fuId, t);
+  if (!r) return { kind: "none" };
   await tg("sendMessage", {
     chat_id: chatId,
-    text: `«${f.text}» — נדחה ל־${fmt(t)}`,
-    reply_markup: undoKeyboard(f.id, nr.id),
+    text: `«${r.followup.text}» — נדחה ל־${fmt(t)}`,
+    reply_markup: undoKeyboard(r.followup.id, r.reminder.id),
   }).catch(() => {});
-  console.log(`[REMIND] snoozed fu ${f.id} to ${fmt(t)} (custom, r=${nr.id})`);
-  return true;
+  console.log(`[REMIND] snoozed fu ${r.followup.id} to ${fmt(t)} (custom, r=${r.reminder.id})`);
+  return { kind: "handled" };
+}
+
+/** What an open "זמן אחר…" ask did with this message.
+ *  handled = the fast parser applied it, no Claude turn needed.
+ *  miss    = there WAS an ask and the parser could not read the answer; the
+ *            turn runs with a directive carrying the question.
+ *  none    = no ask open (or it expired / was already resolved). */
+type SnoozeAskResult =
+  | { kind: "handled" }
+  | { kind: "miss"; fuId: string; followupText: string }
+  | { kind: "none" };
+
+/** Injected when the fast parser missed. Deliberately shaped like the quiz
+ *  directive: it carries its own escape clause, so a message that turns out
+ *  not to be a time just becomes normal chat. */
+export function snoozeAskDirective(fuId: string, followupText: string): string {
+  return [
+    "<snooze-ask>",
+    `Maor was asked WHEN to postpone this reminder to: «${followupText}»`,
+    "The message you just received is his answer, and the cheap parser could not read it.",
+    "If it names a time (a weekday, a date, a relative offset, a spoken time like \"מחר בתשע\"), work out the exact moment with `date` and run:",
+    `  bun run remind.ts snooze-followup --id ${fuId} --at "$(date -d '<that local time>' +%s)"`,
+    "Then confirm to Maor in one short line what was postponed and to when.",
+    "If it turns out NOT to be a time, ignore this block entirely and answer the message normally.",
+    "</snooze-ask>",
+  ].join("\n");
 }
 
 export function fuKeyboard(id: string): unknown {
@@ -492,10 +531,45 @@ export function resolveChoiceOption(choice: { options: string[] }, idx: number |
 
 /** One button per option (index-encoded), laid out two per row, with an
  *  optional Other button last. Labels are plain option text. */
+/** Longest caption that stays readable on a phone. Telegram does not reject a
+ *  long label, it silently truncates it, and with two buttons per row there is
+ *  very little width to truncate into. */
+export const CHOICE_LABEL_MAX = 28;
+/** Above this, a row holds one button instead of two. */
+const CHOICE_LABEL_WIDE = 14;
+
+/** The caption a button shows. Purely cosmetic: a tap resolves the option by
+ *  INDEX against the stored list (`ch:<id>:<i>`), so shortening the caption
+ *  cannot change what gets sent — see resolveChoiceOption.
+ *
+ *  Two things were breaking together (2026-08-21, from a screenshot). The
+ *  caption was the option's full text, which for a dev option is a long
+ *  instruction sentence, so Telegram cut it to an ellipsis. And that sentence
+ *  opens with a model prefix — a Latin token at the head of a Hebrew line,
+ *  which is the one bidi shape CLAUDE.md calls out as guaranteed to reorder.
+ *  The result read "שרק מת…" and "תקן את הבאג של…", and Maor could not tell
+ *  the buttons apart. Notably one of them was the button that would have
+ *  opened the PR fixing this. */
+export function choiceLabel(option: string): string {
+  const s = option.replace(/^\s*\/(?:opus|sonnet)\b[ \t]*/i, "").trim();
+  if (s.length <= CHOICE_LABEL_MAX) return s;
+  const cut = s.slice(0, CHOICE_LABEL_MAX);
+  const sp = cut.lastIndexOf(" ");
+  // break on a word when one is near enough, otherwise take the hard cut —
+  // never leave a caption that is mostly ellipsis
+  const body = sp >= CHOICE_LABEL_MAX / 2 ? cut.slice(0, sp) : cut;
+  return body.trimEnd() + "…";
+}
+
 export function choiceKeyboard(id: string, options: string[], allowOther: boolean): unknown {
-  const buttons = options.map((text, i) => ({ text, callback_data: `ch:${id}:${i}` }));
+  const labels = options.map(choiceLabel);
+  // Two short captions side by side is fine; two long ones is the case that
+  // produced "שרק מת…", so as soon as any caption needs the width, give every
+  // button its own row.
+  const perRow = labels.some((l) => l.length > CHOICE_LABEL_WIDE) ? 1 : 2;
+  const buttons = labels.map((text, i) => ({ text, callback_data: `ch:${id}:${i}` }));
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-  for (let i = 0; i < buttons.length; i += 2) rows.push(buttons.slice(i, i + 2));
+  for (let i = 0; i < buttons.length; i += perRow) rows.push(buttons.slice(i, i + perRow));
   if (allowOther) rows.push([{ text: "אחר…", callback_data: `ch:${id}:o` }]);
   return { inline_keyboard: rows };
 }
@@ -832,6 +906,7 @@ export const DEV_INTENT_DIRECTIVE = [
   "   - quick/small -> option with just the instruction (no prefix -> fast default model)",
   "   - a cancel option (בטל)",
   "   Tapping a button sends that text as the next turn; it routes through model selection and sees this whole conversation in its history.",
+  "   WRITE THE FULL INSTRUCTION in the option — it becomes the next turn's entire prompt, so do not abbreviate it. The button caption is derived automatically: the model prefix is stripped and roughly the first 28 characters are shown. So FRONT-LOAD the words that tell the options apart (\"תקן את הבאג של הכפתורים…\" / \"רק תעד את הבאג…\"), and never open two options with the same phrase, or both captions read alike.",
   "3. Do NOT start building in THIS turn. When the build runs, it goes on a branch and opens a PR (per the self-dev rules), never a live hot-patch on main.",
   "If this is NOT actually a request to change the codebase, ignore this entirely and just answer normally.",
   "</dev-intent>",
@@ -1388,7 +1463,8 @@ async function handleMessage(msg: TgMessage) {
   }
 
   // An open "זמן אחר…" snooze ask consumes the next message when it's a time.
-  if (await consumeCustomSnooze(chatId, voiceText ?? words)) return;
+  const snoozeAsk = await consumeCustomSnooze(chatId, voiceText ?? words);
+  if (snoozeAsk.kind === "handled") return;
 
   const { model, prompt: userMsg } = pickModel(voiceText ?? words);
 
@@ -1472,7 +1548,9 @@ async function handleMessage(msg: TgMessage) {
     } catch (e: any) {
       console.error(`[ERR] quiz directive: ${e?.message ?? e}`);
     }
-    const directive = [devDirective, quizDirective].filter(Boolean).join("\n\n");
+    const snoozeDirective =
+      snoozeAsk.kind === "miss" ? snoozeAskDirective(snoozeAsk.fuId, snoozeAsk.followupText) : "";
+    const directive = [devDirective, quizDirective, snoozeDirective].filter(Boolean).join("\n\n");
     // Native Telegram reply (#308): tell the model which earlier message Maor quoted.
     const replyContext = replyContextLine(msg.reply_to_message, botUserId, name) ?? "";
     const echoPrefix =
@@ -1705,7 +1783,8 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
   if (!combined.trim()) return;
 
   // An open "זמן אחר…" snooze ask consumes the batch when it's a time answer.
-  if (await consumeCustomSnooze(chatId, combined)) return;
+  const snoozeAsk = await consumeCustomSnooze(chatId, combined);
+  if (snoozeAsk.kind === "handled") return;
 
   // One shaky transcript holds the WHOLE burst for a tap (Maor's option 1,
   // 2026-08-10). Until now a burst skipped confirmation entirely and a
@@ -1769,7 +1848,9 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
     } catch (e: any) {
       console.error(`[ERR] quiz directive: ${e?.message ?? e}`);
     }
-    const directive = [devDirective, quizDirective].filter(Boolean).join("\n\n");
+    const snoozeDirective =
+      snoozeAsk.kind === "miss" ? snoozeAskDirective(snoozeAsk.fuId, snoozeAsk.followupText) : "";
+    const directive = [devDirective, quizDirective, snoozeDirective].filter(Boolean).join("\n\n");
     const replyContext = replyContextLine(last.reply_to_message, botUserId, name) ?? "";
     const turnId = newTurnId();
     const batchOpts = echoes.length ? { renderPrefix: echoes.join("\n") + "\n\n" } : {};

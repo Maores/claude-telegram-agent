@@ -73,6 +73,12 @@ instead of type:
 - Use this only when buttons are clearly better than free text (e.g. "which of
   these three?"). For anything open-ended, just ask in plain text. Don't overuse
   it — "Act, don't ask" still holds; this is for the rare real fork.
+- Write the FULL text you want sent in each `--option`: tapping it sends exactly
+  that as the next message, so an abbreviated option becomes an abbreviated
+  request. The button caption is derived for you (a model prefix is stripped and
+  about the first 28 characters are shown), so the only thing you must do is
+  FRONT-LOAD the words that distinguish the options. Two options opening with the
+  same phrase produce two captions that read alike.
 - This is for clarify questions that run nothing. To propose a calendar/task
   WRITE, keep using confirm.ts (✓/✗ buttons), not ask.ts.
 
