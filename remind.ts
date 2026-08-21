@@ -18,8 +18,12 @@ function die(msg: string): never {
 const [cmd, chatIdRaw, ...rest] = process.argv.slice(2);
 const chatId = Number(chatIdRaw);
 
-if (!cmd) die("usage: remind.ts <add-once|add-repeat|list|cancel> <chatId> ...");
-if (!Number.isFinite(chatId)) die(`invalid chatId: ${chatIdRaw}`);
+if (!cmd) die("usage: remind.ts <add-once|add-repeat|list|cancel|edit|snooze-followup> ...");
+// snooze-followup addresses a follow-up by its own id and carries no chatId —
+// the chat comes from the stored follow-up. Every other subcommand still
+// requires one in the same position as before.
+const NEEDS_CHAT_ID = cmd !== "snooze-followup";
+if (NEEDS_CHAT_ID && !Number.isFinite(chatId)) die(`invalid chatId: ${chatIdRaw}`);
 
 const nowSec = Math.floor(Date.now() / 1000);
 
@@ -65,9 +69,10 @@ switch (cmd) {
   // which is the containment: this is not a general "reschedule anything"
   // surface. The poller still owns the buttons; this owns one reply to one ask.
   case "snooze-followup": {
+    const argv = chatIdRaw === undefined ? rest : [chatIdRaw, ...rest];
     const f = new Map<string, string>();
-    for (let i = 0; i < rest.length; i++) {
-      if (rest[i].startsWith("--") && rest[i + 1] != null) { f.set(rest[i].slice(2), rest[i + 1]); i++; }
+    for (let i = 0; i < argv.length; i++) {
+      if (argv[i].startsWith("--") && argv[i + 1] != null) { f.set(argv[i].slice(2), argv[i + 1]); i++; }
     }
     const id = f.get("id");
     const at = Number(f.get("at"));

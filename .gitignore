@@ -40,3 +40,6 @@ voice-pending.json
 pending.test-*.json
 choices.asktest-*.json
 *.test.tmp.json
+
+remind.clitest-*.json
+followups.clitest-*.json
