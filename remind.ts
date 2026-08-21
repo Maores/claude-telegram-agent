@@ -8,7 +8,7 @@
  *   bun run remind.ts cancel     <chatId> <id>          (ids look like r7, not 7)
  */
 
-import { addOnce, addRepeat, listFor, cancel, editReminder, fmt, type ReminderEdit } from "./reminders.ts";
+import { addOnce, addRepeat, listFor, cancel, editReminder, fmt, type ReminderEdit, snoozeFollowup } from "./reminders.ts";
 
 function die(msg: string): never {
   console.error(msg);
@@ -58,6 +58,24 @@ switch (cmd) {
     for (const r of items) {
       console.log(`${r.id}  ${fmt(r.fireAt)}${r.repeat ? "  (repeats)" : ""}  ${r.text}`);
     }
+    break;
+  }
+  // Only reachable when the poller injected a <snooze-ask> directive naming a
+  // real follow-up id. Without that block the model has no valid id to pass,
+  // which is the containment: this is not a general "reschedule anything"
+  // surface. The poller still owns the buttons; this owns one reply to one ask.
+  case "snooze-followup": {
+    const f = new Map<string, string>();
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i].startsWith("--") && rest[i + 1] != null) { f.set(rest[i].slice(2), rest[i + 1]); i++; }
+    }
+    const id = f.get("id");
+    const at = Number(f.get("at"));
+    if (!id || !Number.isFinite(at)) die('usage: snooze-followup --id <fuId> --at <epoch>');
+    if (at <= Math.floor(Date.now() / 1000)) die("that time is already past — work out the next occurrence");
+    const r = snoozeFollowup(id, at);
+    if (!r) die(`no open follow-up with id ${id} (already done, snoozed, or expired)`);
+    console.log(`OK snoozed «${r.followup.text}» to ${fmt(at)} (${r.reminder.id})`);
     break;
   }
   case "cancel": {

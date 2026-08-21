@@ -306,6 +306,19 @@ export function getFollowup(id: string): Followup | null {
  *
  *  Snoozed duplicates are left alone: only pending ones reach the summary and the
  *  nudge queue, and flipping a snoozed record would break its undo button. */
+/** Snooze an open follow-up to a new time: resolve it as snoozed and create the
+ *  one-time reminder that replaces it. One function so the poller's fast path
+ *  and the CLI the model uses on a parse miss can never drift apart — they were
+ *  two copies of this for exactly one day (2026-08-21).
+ *
+ *  Returns null when the follow-up is gone or already resolved, which is the
+ *  race where Maor tapped a preset button while the turn was still running. */
+export function snoozeFollowup(id: string, fireAt: number): { followup: Followup; reminder: Reminder } | null {
+  const f = resolveFollowup(id, "snoozed");
+  if (!f) return null;
+  return { followup: f, reminder: addOnce(f.chatId, fireAt, f.text) };
+}
+
 export function resolveFollowup(id: string, status: "done" | "snoozed"): Followup | null {
   return withFileLock(followupsPath(), () => {
     const list = loadFollowups();
