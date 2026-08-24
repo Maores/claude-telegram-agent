@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Pre-commit guard: private and runtime files must never reach the PUBLIC repo.
+# Born 2026-08-24, after `git add -A` swept a chat-salvage file into a commit.
+# Install (once per clone):  cp scripts/git-pre-commit .git/hooks/pre-commit
+#
+# Blocks by NAME: state stores, databases, logs, env files, salvage dumps,
+# uploads and history payloads. Blocks by CONTENT: a Telegram bot token shape
+# anywhere in the staged diff. The chat id is NOT scanned — it already lives
+# in tracked docs and tests, so scanning it would only train people to bypass
+# the hook.
+
+BLOCK_NAMES='(^|/)(wal-salvage[^/]*|[^/]*\.db|[^/]*\.db-wal|[^/]*\.db-shm|[^/]*\.log|\.env[^/]*|followups[^/]*\.json|pending[^/]*\.json|choices[^/]*\.json|reminders[^/]*\.json|monitors[^/]*\.json|usage[^/]*\.json|quiz-state[^/]*\.json)$|(^|/)(uploads|history|memory|backups)/'
+
+staged=$(git diff --cached --name-only --diff-filter=ACR)
+bad=$(echo "$staged" | grep -E "$BLOCK_NAMES" || true)
+if [ -n "$bad" ]; then
+  echo "pre-commit: BLOCKED — private/runtime files staged for a public repo:" >&2
+  echo "$bad" | sed 's/^/  /' >&2
+  echo "unstage them (git restore --staged <file>) or, if truly intended, commit with --no-verify and say why in the message." >&2
+  exit 1
+fi
+
+if git diff --cached | grep -qE '[0-9]{8,10}:AA[A-Za-z0-9_-]{30,}'; then
+  echo "pre-commit: BLOCKED — staged content matches a Telegram bot token." >&2
+  exit 1
+fi
+exit 0
