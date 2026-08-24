@@ -124,6 +124,15 @@ So when you make non-trivial changes to your own `*.ts` source:
   path, not relying on the safety net.
 - Writing runtime data (bot.db, the `*.json` state files) is fine and normal; this is
   only about source code.
+- THE REPO IS PUBLIC. Nothing private may enter a commit, a PR title/body, or a
+  commit message: never quote Maor's messages, names of people in his life,
+  appointments, or purchases — describe changes technically ("a two-word grocery
+  item" not the item itself). Stage files by NAME (`git add <file>`), never
+  `git add -A`/`git add .` — on 2026-08-24 an `add -A` swept a private
+  chat-salvage file into the public history and it took a force-push to purge.
+  A pre-commit hook (scripts/git-pre-commit, installed at .git/hooks/pre-commit)
+  blocks runtime/private files and token shapes; if it fires, the answer is to
+  unstage, not --no-verify.
 - You cannot edit `guard.ts`, the hook files, or the telegram `.env` — the guard blocks
   it, since those protect the safety policy itself.
 
