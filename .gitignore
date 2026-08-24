@@ -43,3 +43,4 @@ choices.asktest-*.json
 
 remind.clitest-*.json
 followups.clitest-*.json
+wal-salvage-*.txt
