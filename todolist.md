@@ -115,7 +115,7 @@ chat) and the bot escalates to **Opus** only on explicit/heuristic signals — `
 
 ## Upcoming external changes (watch)
 - [ ] **Anthropic `claude -p` / Agent SDK billing change** (medium urgency, PAUSED) — Read the actual
-  email (Anthropic Team, 2026-06-15, sent to maorx36@gmail.com). The change: the Claude Agent SDK,
+  email (Anthropic Team, 2026-06-15). The change: the Claude Agent SDK,
   `claude -p`, and third-party apps built on the SDK would **stop drawing from subscription rate limits
   and move to a dedicated monthly credit**. It was scheduled for ~2026-06-16 but is now **on hold** —
   nothing changes for now, `claude -p` keeps working against the subscription exactly as before,

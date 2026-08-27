@@ -10,7 +10,7 @@ Agenda origin: post-compact agenda item #2 (see memory `agent-dev-agenda.md`)
 ## Context for an implementer who is new to this repo
 
 Headless personal-assistant Telegram agent (Bun + TypeScript + SQLite). `poller.ts` is the single
-long-running process on a DigitalOcean droplet (`157.230.112.96`, user `claudebot`, repo at
+long-running process on a DigitalOcean droplet (`<YOUR_SERVER_IP>`, user `claudebot`, repo at
 `/home/claudebot/claude-bot`, systemd service `telegram-agent`). Each Telegram message spawns a
 fresh `claude -p` **with full permissions** (`--dangerously-skip-permissions`), so the bot can run
 bash and edit files on its own server.

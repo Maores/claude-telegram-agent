@@ -181,6 +181,39 @@ A swap file is strongly advised before trying local inference on the 1 GB box.
 
 ---
 
+## Step 7c — Calendar and tasks (optional)
+
+`cal.ts` and `todo.ts` read and write a real iCloud calendar and Apple Reminders
+over CalDAV. Skip this and the bot simply has no calendar or task ability.
+
+**This is the one gap that fails silently.** Without the two variables below,
+both CLIs exit with `ICLOUD_USER ... not set`, and a scheduled job that depends
+on them does nothing without reporting anything. Nothing reaches the chat, and
+nothing lands in the log as an error — it just quietly stops working.
+
+1. Create an app-specific password for your Apple ID at
+   https://account.apple.com — Apple requires one for third-party calendar
+   clients, and your normal Apple ID password will not work here.
+2. Append both values to the bot env file (never commit them):
+
+   ```bash
+   echo 'ICLOUD_USER=you@example.com' >> /home/claudebot/.claude/channels/telegram/.env
+   echo 'ICLOUD_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx' >> /home/claudebot/.claude/channels/telegram/.env
+   ```
+
+3. Restart the poller, then prove it against the real account rather than
+   assuming:
+
+   ```bash
+   cd ~/claude-bot && bun run cal.ts calendars
+   ```
+
+   It should print your calendar names. An authentication error means the
+   app-specific password is wrong; an empty list means the credentials work but
+   the account has no calendars.
+
+---
+
 ## Step 8 — Create the real allowlist (server)
 
 ```bash
@@ -215,6 +248,14 @@ EOF
 ```
 
 (The project-level `.claude/settings.json` is already in the repo.)
+
+> **If you are adopting this repo, read this before Step 11.** Both that file and
+> the one above grant `Bash(*)` — unrestricted shell — to every Claude session the
+> bot spawns. That is deliberate for a single-user assistant on a dedicated
+> droplet, where the guard hook (`guard.ts` plus the PreToolUse hook) is the real
+> safety floor rather than the permission prompt. If you are deploying to a shared
+> box, or onto a machine holding anything you would not hand a shell to, narrow
+> the `allow` list first.
 
 ---
 

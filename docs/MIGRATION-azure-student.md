@@ -9,7 +9,7 @@ surprise-charge risk. (Heroku and Codespaces, the other Pack offers, can't host 
 `claude -p` bot — ephemeral filesystem / idle auto-stop.)
 
 Migration is a ~30-minute restore: the full data backup
-(`C:\Users\maor4\Backups\telegram-agent\agent-backup-20260613.tar.gz`) and the GitHub repo
+(`C:\Users\<YOU>\Backups\telegram-agent\agent-backup-20260613.tar.gz`) and the GitHub repo
 (`Maores/claude-telegram-agent`) are all that's needed. Target: **rebuild the droplet
 exactly** — same `claudebot` user, same paths — so no code/docs change.
 
@@ -73,7 +73,7 @@ bun install                              # zero runtime deps, but installs dev/t
 ## Step 4 — restore data + secrets from the backup
 From your **Windows machine**, copy the backup up (replace `<VM_IP>`):
 ```powershell
-scp -i <ssh_key> "C:\Users\maor4\Backups\telegram-agent\agent-backup-20260613.tar.gz" claudebot@<VM_IP>:/tmp/
+scp -i <ssh_key> "C:\Users\<YOU>\Backups\telegram-agent\agent-backup-20260613.tar.gz" claudebot@<VM_IP>:/tmp/
 ```
 Then on the **VM**:
 ```bash
