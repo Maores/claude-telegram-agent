@@ -1,0 +1,197 @@
+<!doctype html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>בקלוג — סוכן הטלגרם</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --fg: #1b1b19; --muted: #6b6b66; --line: #e2e2dd;
+    --card: #ffffff; --accent: #b45309;
+    --s-proposed: #b45309; --s-approved: #15803d; --s-parked: #6b6b66;
+    --s-shipped: #1d4ed8; --s-closed: #9a3412;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614; --fg: #ececE8; --muted: #9a9a93; --line: #2e2e2a;
+      --card: #1e1e1b; --accent: #f59e0b;
+      --s-proposed: #f59e0b; --s-approved: #4ade80; --s-parked: #9a9a93;
+      --s-shipped: #60a5fa; --s-closed: #fb923c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.25rem 4rem; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 "Segoe UI", system-ui, sans-serif;
+  }
+  .wrap { max-width: 60rem; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  .sub { color: var(--muted); font-size: .875rem; margin: 0 0 1.5rem; }
+  .ltr { direction: ltr; unicode-bidi: isolate; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: .8125em; }
+  .bar { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.5rem; }
+  .chip {
+    font: inherit; font-size: .875rem; cursor: pointer; padding: .3rem .7rem;
+    border: 1px solid var(--line); border-radius: 999px;
+    background: transparent; color: var(--muted);
+  }
+  .chip.on { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .chip .n { opacity: .65; font-variant-numeric: tabular-nums; }
+  .note {
+    border: 1px solid var(--accent); border-radius: .5rem; padding: .75rem 1rem;
+    margin-bottom: 1.5rem; font-size: .875rem;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: .625rem;
+    padding: 1rem 1.15rem; margin-bottom: .875rem;
+  }
+  .card header {
+    display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+    font-size: .75rem; color: var(--muted); margin-bottom: .5rem;
+  }
+  .badge { font-weight: 600; }
+  .s-proposed { color: var(--s-proposed); } .s-approved { color: var(--s-approved); }
+  .s-parked { color: var(--s-parked); } .s-shipped { color: var(--s-shipped); }
+  .s-closed { color: var(--s-closed); }
+  .id { margin-inline-start: auto; opacity: .75; }
+  .size { border: 1px solid var(--line); border-radius: .25rem; padding: 0 .35rem; }
+  .card h3 { font-size: 1rem; font-weight: 600; margin: 0 0 .5rem; line-height: 1.5; }
+  .done { font-size: .875rem; color: var(--muted); margin: 0; }
+  .done .k { color: var(--fg); opacity: .8; font-weight: 600; margin-inline-end: .35rem; }
+  details { margin-top: .75rem; }
+  summary { cursor: pointer; font-size: .8125rem; color: var(--muted); }
+  .body { font-size: .9375rem; padding-top: .5rem; }
+  .body p { margin: 0 0 .75rem; }
+  .empty { color: var(--muted); font-size: .9375rem; }
+  footer { margin-top: 2.5rem; color: var(--muted); font-size: .8125rem; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>בקלוג — סוכן הטלגרם</h1>
+    <p class="sub">7 פריטים פתוחים מתוך 7. הדף נפתח על מה שפתוח בלבד; ההיסטוריה מאחורי הצ׳יפים.</p>
+
+    <div class="bar">
+      <button class="chip on" data-status="proposed">דורש החלטה <span class="n">7</span></button>
+      <button class="chip on" data-status="approved">מאושר <span class="n">0</span></button>
+      <button class="chip on" data-status="parked">בהקפאה <span class="n">0</span></button>
+      <button class="chip" data-status="shipped">קיים <span class="n">0</span></button>
+      <button class="chip" data-status="closed">נסגר <span class="n">0</span></button>
+    </div>
+
+    <div id="list">
+      <article class="card" data-status="proposed">
+        <header>
+          <span class="badge s-proposed">דורש החלטה</span>
+          <span class="sec">Reliability and data</span>
+          <span class="size" title="גודל">S</span>
+          <code class="id ltr">TA-0827-loose-runtime-dump</code>
+        </header>
+        <h3>A gitignored runtime dump still sits in the working tree on the server</h3>
+        <p class="done"><span class="k">נדע שזה נגמר כש</span>The file is out of the repo directory and a check confirms none remains under the working tree</p>
+        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27.</p>
+<p><strong>Why:</strong> A runtime text dump produced during the 2026-08-24 database incident is still sitting in the repo working directory on the server. It is gitignored, it is also named in the pre-commit hook's blocklist, and the server holds no push credentials, so it cannot reach the public repo. Measured rather than assumed: an identical copy is already kept deliberately outside the repo, byte for byte, with checksums compared on both machines.</p>
+<p>Assessed as <strong>not urgent</strong>. The realistic reader is someone who already has a shell on that box, and such a person already reaches far more sensitive things there. Filed as hygiene rather than exposure: there is no reason for it to sit in a repo directory, and the original incident began with exactly that shape.</p></div></details>
+      </article>
+      <article class="card" data-status="proposed">
+        <header>
+          <span class="badge s-proposed">דורש החלטה</span>
+          <span class="sec">Reliability and data</span>
+          <span class="size" title="גודל">M</span>
+          <code class="id ltr">TA-0827-source-not-in-backup</code>
+        </header>
+        <h3>The nightly backup captures runtime state but no source, so agent-written files have no backup path</h3>
+        <p class="done"><span class="k">נדע שזה נגמר כש</span>A file written by the agent on the server appears in the newest backup archive, verified by listing it</p>
+        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27, while checking whether an agent-written file was recoverable.</p>
+<p><strong>Why:</strong> The nightly archive contains runtime state (the JSON stores, memory, history, access config) and no source, which is correct while all source lives in git. It stops being correct the moment the agent writes a file that is never committed. Verified by listing the newest archive: source paths are absent. Together with <code class="ltr">TA-0827-untracked-selfdev-invisible</code>, a file the agent writes for itself exists on exactly one disk with nothing watching it.</p></div></details>
+      </article>
+      <article class="card" data-status="proposed">
+        <header>
+          <span class="badge s-proposed">דורש החלטה</span>
+          <span class="sec">Self-development and safety</span>
+          <span class="size" title="גודל">M</span>
+          <code class="id ltr">TA-0827-untracked-selfdev-invisible</code>
+        </header>
+        <h3>Brand-new source files written by the agent are surfaced by nothing</h3>
+        <p class="done"><span class="k">נדע שזה נגמר כש</span>A new untracked source file on the server appears in the nightly summary, proven by planting one and reading the next summary</p>
+        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27, after the agent wrote itself a 191-line helper to satisfy a user request.</p>
+<p><strong>Why:</strong> <code class="ltr">selfdev-check.ts</code> deliberately skips untracked and ignored paths, because its stated job is &quot;what would a deploy destroy&quot; and <code class="ltr">git reset --hard</code> genuinely does not touch them. That reasoning is correct and the code is not buggy. The consequence is still real: a brand-new source file is safe from deletion and invisible to every report, so it sits unreviewed and unbacked indefinitely. A visibility gap rather than a safety gap, so the fix belongs beside the guard rather than inside it.</p></div></details>
+      </article>
+      <article class="card" data-status="proposed">
+        <header>
+          <span class="badge s-proposed">דורש החלטה</span>
+          <span class="sec">Self-development and safety</span>
+          <span class="size" title="גודל">S</span>
+          <code class="id ltr">TA-0827-stale-droplet-stash</code>
+        </header>
+        <h3>An unreviewed stash from 2026-06-10 sits on the server, touching the core file</h3>
+        <p class="done"><span class="k">נדע שזה נגמר כש</span>Its diff has been read, and it is either rescued to a branch or dropped on Maor's word</p>
+        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27, while assessing whether pruning the server's git objects was safe.</p>
+<p><strong>Why:</strong> One stash exists on the server, dated 2026-06-10, touching the core poller file. It is almost certainly dead given how much that file has changed since, but &quot;almost certainly&quot; is not a basis for an irreversible delete. It also blocks any object prune there, since expiring reflogs would destroy it. Reading it costs a minute and settles it either way.</p></div></details>
+      </article>
+      <article class="card" data-status="proposed">
+        <header>
+          <span class="badge s-proposed">דורש החלטה</span>
+          <span class="sec">Skills and memory</span>
+          <span class="size" title="גודל">M</span>
+          <code class="id ltr">TA-0827-skills-not-reached-for</code>
+        </header>
+        <h3>A skill written for a task goes unused even when that exact task occurs</h3>
+        <p class="done"><span class="k">נדע שזה נגמר כש</span>The agent performs a task a skill covers and that skill's use counter increases</p>
+        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27.</p>
+<p><strong>Why:</strong> A skill exists describing how to deliver a file to the chat. Its use counter reads zero, including on the day the agent delivered a file and instead wrote a helper from scratch to do it. Delivery worked, so this is not a defect in the output; it is a signal that the skill never reached the point of decision. Five further skills also sit at zero uses. Worth knowing whether the suggestion mechanism is not surfacing them or the agent is not reaching for what it is shown, because those have different fixes.</p></div></details>
+      </article>
+      <article class="card" data-status="proposed">
+        <header>
+          <span class="badge s-proposed">דורש החלטה</span>
+          <span class="sec">Housekeeping</span>
+          <span class="size" title="גודל">S</span>
+          <code class="id ltr">TA-0827-uploads-unbounded</code>
+        </header>
+        <h3>The uploads directory grows without limit</h3>
+        <p class="done"><span class="k">נדע שזה נגמר כש</span>The directory is bounded by age or count, and a run proves old entries are removed</p>
+        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27.</p>
+<p><strong>Why:</strong> The uploads directory holds 94 files at roughly 10 MB and nothing prunes it. Harmless today, on a disk at 20 percent, and it only ever grows. Filed so that it becomes a decision rather than a surprise later.</p></div></details>
+      </article>
+      <article class="card" data-status="proposed">
+        <header>
+          <span class="badge s-proposed">דורש החלטה</span>
+          <span class="sec">Housekeeping</span>
+          <span class="size" title="גודל">S</span>
+          <code class="id ltr">TA-0827-test-artifacts-litter</code>
+        </header>
+        <h3>The test suite leaves stray artifacts in the repo root</h3>
+        <p class="done"><span class="k">נדע שזה נגמר כש</span>A full test run finishes with no new stray files in the repo root</p>
+        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> open-source sanitization audit handed over 2026-08-27.</p>
+<p><strong>Why:</strong> The suite leaves temporary JSON artifacts in the repo root. All are gitignored and untracked, so nothing leaks and nothing breaks, but 112 of them were present at the time of the audit. A teardown that removes what a test created is the ordinary fix.</p></div></details>
+      </article>
+    </div>
+    <p class="empty" id="empty" hidden>אין פריטים בסינון הזה.</p>
+
+    <footer>
+      נוצר מ־<code class="ltr">docs/BACKLOG.md</code> בתאריך 27/08/2026.
+      <br>אל תערוך את הדף הזה ידנית; ערוך את הבקלוג והרץ מחדש:
+      <br><code class="ltr">bun run scripts/backlog-view.ts</code>
+    </footer>
+  </div>
+<script>
+  const chips = [...document.querySelectorAll(".chip")];
+  const cards = [...document.querySelectorAll(".card")];
+  const empty = document.getElementById("empty");
+  function apply() {
+    const on = new Set(chips.filter(c => c.classList.contains("on")).map(c => c.dataset.status));
+    let shown = 0;
+    for (const card of cards) {
+      const vis = on.has(card.dataset.status);
+      card.hidden = !vis;
+      if (vis) shown++;
+    }
+    empty.hidden = shown !== 0;
+  }
+  for (const chip of chips) {
+    chip.addEventListener("click", () => { chip.classList.toggle("on"); apply(); });
+  }
+  apply();
+</script>
+</body>
+</html>
