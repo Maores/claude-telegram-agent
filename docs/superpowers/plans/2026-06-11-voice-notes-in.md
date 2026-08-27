@@ -1240,7 +1240,7 @@ EOF
 
 Not part of the PR. On a network that reaches the droplet:
 
-1. `ssh claudebot@157.230.112.96` — `cd ~/claude-bot && git status` FIRST (the bot hot-patches itself), reconcile if dirty.
+1. `ssh claudebot@<YOUR_SERVER_IP>` — `cd ~/claude-bot && git status` FIRST (the bot hot-patches itself), reconcile if dirty.
 2. Maor creates the Groq key; append `GROQ_API_KEY=…` to `/home/claudebot/.claude/channels/telegram/.env`.
 3. `git pull`, restart the poller in tmux `bot` (Ctrl-C, `./start.sh`).
 4. Live checklist: Hebrew note → correct answer; English note; mumbled note → 🎤 echo appears; a 6-minute note → cap decline; check logs show `[REDACTED…]` if the key is ever printed; `free -m` flat during transcription.

@@ -165,7 +165,7 @@ Process/behavioral:
 
 ## Environment reference
 
-Droplet 157.230.112.96 (claudebot@, hostname claude-bot), repo at ~/claude-bot, service telegram-agent, TZ Asia/Jerusalem, deploys via ./deploy.sh (autosaves dirty tracked edits to droplet-autosave/* branches; note the droplet cannot push, so autosave branches stay local until fetched over SSH). Local dev on Windows 11, bun 1.3.11 (droplet 1.3.14).
+Droplet <YOUR_SERVER_IP> (claudebot@, hostname claude-bot), repo at ~/claude-bot, service telegram-agent, TZ Asia/Jerusalem, deploys via ./deploy.sh (autosaves dirty tracked edits to droplet-autosave/* branches; note the droplet cannot push, so autosave branches stay local until fetched over SSH). Local dev on Windows 11, bun 1.3.11 (droplet 1.3.14).
 
 ## How this was gathered
 
