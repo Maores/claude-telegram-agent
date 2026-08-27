@@ -3,193 +3,291 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>בקלוג — סוכן הטלגרם</title>
+<title>בקלוג · סוכן הטלגרם</title>
 <style>
   :root {
-    --bg: #f7f7f5; --fg: #1b1b19; --muted: #6b6b66; --line: #e2e2dd;
-    --card: #ffffff; --accent: #b45309;
-    --s-proposed: #b45309; --s-approved: #15803d; --s-parked: #6b6b66;
-    --s-shipped: #1d4ed8; --s-closed: #9a3412;
+    --canvas: #ffffff;
+    --subtle: #f6f8fa;
+    --fg: #1f2328;
+    --muted: #59636e;
+    --border: #d1d9e0;
+    --accent: #0969da;
+    --attention: #9a6700;
+    --attention-bg: #fff8c5;
+    --success: #1a7f37;
+    --success-bg: #dafbe1;
+    --done: #8250df;
+    --done-bg: #fbefff;
+    --neutral: #59636e;
+    --neutral-bg: #eff2f5;
+    --danger: #cf222e;
+    --danger-bg: #ffebe9;
+    --shadow: 0 1px 3px rgba(31, 35, 40, .08), 0 1px 2px rgba(31, 35, 40, .04);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #161614; --fg: #ececE8; --muted: #9a9a93; --line: #2e2e2a;
-      --card: #1e1e1b; --accent: #f59e0b;
-      --s-proposed: #f59e0b; --s-approved: #4ade80; --s-parked: #9a9a93;
-      --s-shipped: #60a5fa; --s-closed: #fb923c;
+      --canvas: #0d1117;
+      --subtle: #151b23;
+      --fg: #f0f6fc;
+      --muted: #9198a1;
+      --border: #3d444d;
+      --accent: #4493f8;
+      --attention: #d29922;
+      --attention-bg: #2b2412;
+      --success: #3fb950;
+      --success-bg: #12261a;
+      --done: #ab7df8;
+      --done-bg: #21172f;
+      --neutral: #9198a1;
+      --neutral-bg: #1c2129;
+      --danger: #f85149;
+      --danger-bg: #2b1618;
+      --shadow: 0 1px 3px rgba(1, 4, 9, .5);
     }
   }
-  * { box-sizing: border-box; }
+  *, *::before, *::after { box-sizing: border-box; }
   body {
-    margin: 0; padding: 2rem 1.25rem 4rem; background: var(--bg); color: var(--fg);
-    font: 16px/1.65 "Segoe UI", system-ui, sans-serif;
+    margin: 0; background: var(--canvas); color: var(--fg);
+    font: 14px/1.6 "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 60rem; margin: 0 auto; }
-  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
-  .sub { color: var(--muted); font-size: .875rem; margin: 0 0 1.5rem; }
+  .page { max-width: 62rem; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
   .ltr { direction: ltr; unicode-bidi: isolate; }
-  code { font-family: ui-monospace, Consolas, monospace; font-size: .8125em; }
-  .bar { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.5rem; }
-  .chip {
-    font: inherit; font-size: .875rem; cursor: pointer; padding: .3rem .7rem;
-    border: 1px solid var(--line); border-radius: 999px;
+  code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 11.5px; }
+
+  header.top { padding-bottom: 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1.25rem; }
+  header.top h1 { margin: 0 0 .25rem; font-size: 1.375rem; font-weight: 600; letter-spacing: -.01em; }
+  header.top p { margin: 0; color: var(--muted); font-size: .875rem; }
+
+  .listbox { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--canvas); }
+  .listhead {
+    display: flex; flex-wrap: wrap; gap: .375rem; align-items: center;
+    background: var(--subtle); border-bottom: 1px solid var(--border);
+    padding: .625rem .875rem;
+  }
+  .filter {
+    display: inline-flex; align-items: center; gap: .375rem;
+    font: inherit; font-size: .8125rem; cursor: pointer;
     background: transparent; color: var(--muted);
+    border: 1px solid transparent; border-radius: 6px; padding: .25rem .5rem;
   }
-  .chip.on { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-  .chip .n { opacity: .65; font-variant-numeric: tabular-nums; }
+  .filter:hover { background: var(--canvas); color: var(--fg); }
+  .filter.on { color: var(--fg); font-weight: 600; background: var(--canvas); border-color: var(--border); }
+  .filter:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .filter .ct { font-variant-numeric: tabular-nums; opacity: .8; }
+  .ico { width: 16px; height: 16px; flex: none; }
+  .st-decide { color: var(--attention); }
+  .st-approved { color: var(--success); }
+  .st-parked { color: var(--neutral); }
+  .st-exists { color: var(--done); }
+  .st-closed { color: var(--danger); }
+
+  ul.rows { list-style: none; margin: 0; padding: 0; }
+  .row { display: flex; gap: .75rem; padding: .875rem; border-bottom: 1px solid var(--border); }
+  .row:last-child { border-bottom: 0; }
+  .row:hover { background: var(--subtle); }
+  .row > .ico { margin-top: .2rem; }
+  .row .body { min-width: 0; flex: 1; }
+  .row h3 {
+    margin: 0 0 .25rem; font-size: 1rem; font-weight: 600; line-height: 1.5;
+    max-width: 68ch;
+  }
+  .meta {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .375rem;
+    margin: 0 0 .5rem; font-size: .75rem; color: var(--muted);
+  }
+  .meta .sep { opacity: .55; }
+  .lbl {
+    margin-inline-start: auto; font-size: .6875rem; font-weight: 600;
+    border-radius: 999px; padding: .0625rem .5rem; white-space: nowrap;
+  }
+  .lbl.st-decide { background: var(--attention-bg); }
+  .lbl.st-approved { background: var(--success-bg); }
+  .lbl.st-parked { background: var(--neutral-bg); }
+  .lbl.st-exists { background: var(--done-bg); }
+  .lbl.st-closed { background: var(--danger-bg); }
+  .when { margin: 0; font-size: .8125rem; color: var(--muted); max-width: 72ch; }
+  .when .k { color: var(--fg); font-weight: 600; margin-inline-end: .3rem; }
+
+  details { margin-top: .625rem; }
+  summary {
+    display: inline-block; cursor: pointer; font-size: .75rem; color: var(--accent);
+    padding: .125rem .375rem; margin-inline-start: -.375rem; border-radius: 4px;
+  }
+  summary:hover { background: var(--subtle); }
+  summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .note {
-    border: 1px solid var(--accent); border-radius: .5rem; padding: .75rem 1rem;
-    margin-bottom: 1.5rem; font-size: .875rem;
+    margin-top: .5rem; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--subtle); padding: .75rem .875rem; font-size: .8125rem;
+    max-width: 74ch;
   }
-  .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: .625rem;
-    padding: 1rem 1.15rem; margin-bottom: .875rem;
+  .note p { margin: 0 0 .625rem; }
+  .note p:last-child { margin-bottom: 0; }
+
+  .banner {
+    display: flex; gap: .625rem; align-items: flex-start;
+    border: 1px solid var(--attention); background: var(--attention-bg);
+    color: var(--fg); border-radius: 6px; padding: .75rem .875rem;
+    margin-bottom: 1rem; font-size: .8125rem;
   }
-  .card header {
-    display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
-    font-size: .75rem; color: var(--muted); margin-bottom: .5rem;
-  }
-  .badge { font-weight: 600; }
-  .s-proposed { color: var(--s-proposed); } .s-approved { color: var(--s-approved); }
-  .s-parked { color: var(--s-parked); } .s-shipped { color: var(--s-shipped); }
-  .s-closed { color: var(--s-closed); }
-  .id { margin-inline-start: auto; opacity: .75; }
-  .size { border: 1px solid var(--line); border-radius: .25rem; padding: 0 .35rem; }
-  .card h3 { font-size: 1rem; font-weight: 600; margin: 0 0 .5rem; line-height: 1.5; }
-  .done { font-size: .875rem; color: var(--muted); margin: 0; }
-  .done .k { color: var(--fg); opacity: .8; font-weight: 600; margin-inline-end: .35rem; }
-  details { margin-top: .75rem; }
-  summary { cursor: pointer; font-size: .8125rem; color: var(--muted); }
-  .body { font-size: .9375rem; padding-top: .5rem; }
-  .body p { margin: 0 0 .75rem; }
-  .empty { color: var(--muted); font-size: .9375rem; }
-  footer { margin-top: 2.5rem; color: var(--muted); font-size: .8125rem; }
+  .banner .ico { color: var(--attention); margin-top: .1rem; }
+
+  .blank { padding: 3rem 1rem; text-align: center; color: var(--muted); font-size: .875rem; }
+  footer { margin-top: 1.25rem; color: var(--muted); font-size: .75rem; line-height: 1.8; }
 </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>בקלוג — סוכן הטלגרם</h1>
-    <p class="sub">7 פריטים פתוחים מתוך 7. הדף נפתח על מה שפתוח בלבד; ההיסטוריה מאחורי הצ׳יפים.</p>
+  <div class="page">
+    <header class="top">
+      <h1>בקלוג · סוכן הטלגרם</h1>
+      <p>7 פריטים פתוחים מתוך 7. הדף נפתח על מה שפתוח בלבד; ההיסטוריה מאחורי המסננים.</p>
+    </header>
 
-    <div class="bar">
-      <button class="chip on" data-status="proposed">דורש החלטה <span class="n">7</span></button>
-      <button class="chip on" data-status="approved">מאושר <span class="n">0</span></button>
-      <button class="chip on" data-status="parked">בהקפאה <span class="n">0</span></button>
-      <button class="chip" data-status="shipped">קיים <span class="n">0</span></button>
-      <button class="chip" data-status="closed">נסגר <span class="n">0</span></button>
+    <div class="listbox">
+      <div class="listhead">
+        <button class="filter on" data-status="החלטה" aria-pressed="true"><svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg><span>דורש החלטה</span><span class="ct">7</span></button>
+        <button class="filter on" data-status="מאושר" aria-pressed="true"><svg class="ico st-approved" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5.2 8.2 7.1 10.1 10.9 6.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>מאושר</span><span class="ct">0</span></button>
+        <button class="filter on" data-status="הקפאה" aria-pressed="true"><svg class="ico st-parked" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6.4 5.6v4.8M9.6 5.6v4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>בהקפאה</span><span class="ct">0</span></button>
+        <button class="filter" data-status="קיים" aria-pressed="false"><svg class="ico st-exists" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M4.9 8.2 7 10.3 11.1 6" fill="none" stroke="var(--canvas)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>קיים</span><span class="ct">0</span></button>
+        <button class="filter" data-status="נסגר" aria-pressed="false"><svg class="ico st-closed" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5.9 5.9l4.2 4.2M10.1 5.9l-4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>נסגר</span><span class="ct">0</span></button>
+      </div>
+      <ul class="rows">
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>קובץ זמני מהתקלה של 24 באוגוסט עדיין יושב בתיקיית הפרויקט על השרת</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-loose-runtime-dump</code>
+              <span class="sep">·</span><span>אמינות ונתונים</span>
+              <span class="sep">·</span><span>גודל S</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>הקובץ כבר לא נמצא תחת תיקיית העבודה, ובדיקה חוזרת מאשרת שלא נשאר עוד אחד כמוהו</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026.</p>
+<p><strong>למה:</strong> קובץ טקסט שנוצר במהלך תקלת מסד הנתונים של 24 באוגוסט עדיין יושב בתיקיית העבודה של הפרויקט על השרת. הוא ברשימת ההתעלמות, הוא גם מופיע במפורש ברשימת החסימה של בדיקת הקומיט, ולשרת אין הרשאות דחיפה, ולכן הוא לא יכול להגיע לריפו הציבורי. נמדד ולא הונח: קיים כבר עותק זהה בכוונה מחוץ לריפו, בית אחר בית, כשסכומי הביקורת הושוו על שתי המכונות.</p>
+<p>הוערך כ<strong>לא דחוף</strong>. מי שיכול לקרוא אותו הוא מי שכבר יש לו גישה למכונה, ולמי שיש גישה כזאת יש ממילא דברים רגישים בהרבה. מוגש כהיגיינה ולא כחשיפה: אין סיבה שהוא יישב בתיקיית פרויקט, והתקלה המקורית התחילה בדיוק בצורה הזאת.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>הגיבוי הלילי שומר נתונים אבל לא קוד, כך שלקבצים שהסוכן כותב אין שום גיבוי</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-source-not-in-backup</code>
+              <span class="sep">·</span><span>אמינות ונתונים</span>
+              <span class="sep">·</span><span>גודל M</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>קובץ שהסוכן כתב על השרת מופיע בארכיון הגיבוי החדש ביותר, ומאומת על ידי הצגת תוכן הארכיון</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026, תוך כדי בירור אם קובץ שהסוכן כתב ניתן לשחזור.</p>
+<p><strong>למה:</strong> הארכיון הלילי מכיל נתוני ריצה, כלומר מאגרי הנתונים, הזיכרון, ההיסטוריה והרשאות הגישה, ולא מכיל קוד. זה נכון כל עוד כל הקוד יושב בגיט, ומפסיק להיות נכון ברגע שהסוכן כותב קובץ שלא נשמר. אומת על ידי הצגת תוכן הארכיון החדש ביותר: אין בו נתיבי קוד. יחד עם <code class="ltr">TA-0827-untracked-selfdev-invisible</code>, קובץ שהסוכן כותב לעצמו קיים על דיסק אחד בלבד ואף אחד לא שומר עליו.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>קבצי קוד חדשים שהסוכן כותב לעצמו לא מופיעים בשום דוח</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-untracked-selfdev-invisible</code>
+              <span class="sep">·</span><span>פיתוח עצמי ובטיחות</span>
+              <span class="sep">·</span><span>גודל M</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>נשתול קובץ קוד חדש על השרת, והוא יופיע בסיכום הלילי שאחריו</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026, אחרי שהסוכן כתב לעצמו קובץ עזר בן 191 שורות כדי לענות על בקשה.</p>
+<p><strong>למה:</strong> <code class="ltr">selfdev-check.ts</code> מדלג בכוונה על קבצים לא מנוהלים, כי התפקיד המוצהר שלו הוא &quot;מה פריסה הייתה מוחקת&quot;, ואיפוס קשיח באמת לא נוגע בהם. הנימוק נכון והקוד לא תקול. התוצאה עדיין אמיתית: קובץ קוד חדש לגמרי מוגן ממחיקה ובלתי נראה לכל דוח, ולכן הוא יושב בלי בדיקה ובלי גיבוי לזמן בלתי מוגבל. זה פער נראות ולא פער בטיחות, ולכן התיקון שייך לצד השומר ולא בתוכו.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>שינוי שמור מ-10 ביוני יושב על השרת בלי שאיש קרא אותו, ונוגע בקובץ הליבה</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-stale-droplet-stash</code>
+              <span class="sep">·</span><span>פיתוח עצמי ובטיחות</span>
+              <span class="sep">·</span><span>גודל S</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>הדיף שלו נקרא, והוא או נשמר לענף או נזרק לפי מילה של מאור</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026, תוך כדי הערכה אם ניקוי הזיכרון הפנימי של הפרויקט על השרת בטוח.</p>
+<p><strong>למה:</strong> קיים שינוי שמור אחד על השרת, מתאריך 10 ביוני 2026, שנוגע בקובץ הליבה של הפולר. סביר מאוד שהוא מת מזמן לאור כמה שהקובץ הזה השתנה מאז, אבל &quot;סביר מאוד&quot; איננו בסיס למחיקה בלתי הפיכה. הוא גם חוסם כל ניקוי אובייקטים שם, כי פקיעת יומני ההפניות תשמיד אותו. קריאה שלו עולה דקה ומסיימת את השאלה לכאן או לכאן.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>כישור שנכתב בדיוק למשימה מסוימת לא נמצא בשימוש גם כשהמשימה הזאת קורית</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-skills-not-reached-for</code>
+              <span class="sep">·</span><span>כישורים וזיכרון</span>
+              <span class="sep">·</span><span>גודל M</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>הסוכן מבצע משימה שכישור מכסה, ומונה השימוש של אותו כישור עולה</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026.</p>
+<p><strong>למה:</strong> קיים כישור שמתאר איך למסור קובץ לצ׳אט. מונה השימוש שלו עומד על אפס, כולל ביום שבו הסוכן מסר קובץ ובמקומו כתב מאפס קובץ עזר שיעשה זאת. המסירה עבדה, ולכן זה לא פגם בתוצר; זה סימן שהכישור לא הגיע לנקודת ההחלטה. חמישה כישורים נוספים עומדים גם הם על אפס שימושים. שווה לדעת אם מנגנון ההצעה לא מציף אותם או שהסוכן לא מושיט יד למה שמוצג לו, כי לשניים האלה יש תיקונים שונים.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>תיקיית ההעלאות גדלה בלי גבול</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-uploads-unbounded</code>
+              <span class="sep">·</span><span>תחזוקה</span>
+              <span class="sep">·</span><span>גודל S</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>התיקייה חסומה לפי גיל או לפי כמות, והרצה מוכיחה שפריטים ישנים באמת נמחקים</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026.</p>
+<p><strong>למה:</strong> תיקיית ההעלאות מחזיקה 94 קבצים בערך 10 מגה-בייט ואין דבר שמנקה אותה. לא מזיק היום, על דיסק שתפוס בעשרים אחוז, והיא רק גדלה. מוגש כדי שזאת תהיה החלטה ולא הפתעה בהמשך.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>מערך הבדיקות משאיר קבצים זמניים בשורש הפרויקט</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-test-artifacts-litter</code>
+              <span class="sep">·</span><span>תחזוקה</span>
+              <span class="sep">·</span><span>גודל S</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>הרצה מלאה של הבדיקות מסתיימת בלי אף קובץ זמני חדש בשורש</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> ביקורת ניקוי לקוד פתוח שהועברה לכאן ב-27 באוגוסט 2026.</p>
+<p><strong>למה:</strong> מערך הבדיקות משאיר קבצים זמניים בשורש הפרויקט. כולם ברשימת ההתעלמות ולא מנוהלים, ולכן שום דבר לא דולף ושום דבר לא נשבר, אבל בזמן הביקורת היו שם 112 כאלה. ניקוי סיום שמוחק את מה שהבדיקה יצרה הוא התיקון הרגיל.</p></div></details>
+          </div>
+        </li>
+      </ul>
+      <p class="blank" id="blank" hidden>אין פריטים במסננים שנבחרו.</p>
     </div>
-
-    <div id="list">
-      <article class="card" data-status="proposed">
-        <header>
-          <span class="badge s-proposed">דורש החלטה</span>
-          <span class="sec">Reliability and data</span>
-          <span class="size" title="גודל">S</span>
-          <code class="id ltr">TA-0827-loose-runtime-dump</code>
-        </header>
-        <h3>A gitignored runtime dump still sits in the working tree on the server</h3>
-        <p class="done"><span class="k">נדע שזה נגמר כש</span>The file is out of the repo directory and a check confirms none remains under the working tree</p>
-        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27.</p>
-<p><strong>Why:</strong> A runtime text dump produced during the 2026-08-24 database incident is still sitting in the repo working directory on the server. It is gitignored, it is also named in the pre-commit hook's blocklist, and the server holds no push credentials, so it cannot reach the public repo. Measured rather than assumed: an identical copy is already kept deliberately outside the repo, byte for byte, with checksums compared on both machines.</p>
-<p>Assessed as <strong>not urgent</strong>. The realistic reader is someone who already has a shell on that box, and such a person already reaches far more sensitive things there. Filed as hygiene rather than exposure: there is no reason for it to sit in a repo directory, and the original incident began with exactly that shape.</p></div></details>
-      </article>
-      <article class="card" data-status="proposed">
-        <header>
-          <span class="badge s-proposed">דורש החלטה</span>
-          <span class="sec">Reliability and data</span>
-          <span class="size" title="גודל">M</span>
-          <code class="id ltr">TA-0827-source-not-in-backup</code>
-        </header>
-        <h3>The nightly backup captures runtime state but no source, so agent-written files have no backup path</h3>
-        <p class="done"><span class="k">נדע שזה נגמר כש</span>A file written by the agent on the server appears in the newest backup archive, verified by listing it</p>
-        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27, while checking whether an agent-written file was recoverable.</p>
-<p><strong>Why:</strong> The nightly archive contains runtime state (the JSON stores, memory, history, access config) and no source, which is correct while all source lives in git. It stops being correct the moment the agent writes a file that is never committed. Verified by listing the newest archive: source paths are absent. Together with <code class="ltr">TA-0827-untracked-selfdev-invisible</code>, a file the agent writes for itself exists on exactly one disk with nothing watching it.</p></div></details>
-      </article>
-      <article class="card" data-status="proposed">
-        <header>
-          <span class="badge s-proposed">דורש החלטה</span>
-          <span class="sec">Self-development and safety</span>
-          <span class="size" title="גודל">M</span>
-          <code class="id ltr">TA-0827-untracked-selfdev-invisible</code>
-        </header>
-        <h3>Brand-new source files written by the agent are surfaced by nothing</h3>
-        <p class="done"><span class="k">נדע שזה נגמר כש</span>A new untracked source file on the server appears in the nightly summary, proven by planting one and reading the next summary</p>
-        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27, after the agent wrote itself a 191-line helper to satisfy a user request.</p>
-<p><strong>Why:</strong> <code class="ltr">selfdev-check.ts</code> deliberately skips untracked and ignored paths, because its stated job is &quot;what would a deploy destroy&quot; and <code class="ltr">git reset --hard</code> genuinely does not touch them. That reasoning is correct and the code is not buggy. The consequence is still real: a brand-new source file is safe from deletion and invisible to every report, so it sits unreviewed and unbacked indefinitely. A visibility gap rather than a safety gap, so the fix belongs beside the guard rather than inside it.</p></div></details>
-      </article>
-      <article class="card" data-status="proposed">
-        <header>
-          <span class="badge s-proposed">דורש החלטה</span>
-          <span class="sec">Self-development and safety</span>
-          <span class="size" title="גודל">S</span>
-          <code class="id ltr">TA-0827-stale-droplet-stash</code>
-        </header>
-        <h3>An unreviewed stash from 2026-06-10 sits on the server, touching the core file</h3>
-        <p class="done"><span class="k">נדע שזה נגמר כש</span>Its diff has been read, and it is either rescued to a branch or dropped on Maor's word</p>
-        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27, while assessing whether pruning the server's git objects was safe.</p>
-<p><strong>Why:</strong> One stash exists on the server, dated 2026-06-10, touching the core poller file. It is almost certainly dead given how much that file has changed since, but &quot;almost certainly&quot; is not a basis for an irreversible delete. It also blocks any object prune there, since expiring reflogs would destroy it. Reading it costs a minute and settles it either way.</p></div></details>
-      </article>
-      <article class="card" data-status="proposed">
-        <header>
-          <span class="badge s-proposed">דורש החלטה</span>
-          <span class="sec">Skills and memory</span>
-          <span class="size" title="גודל">M</span>
-          <code class="id ltr">TA-0827-skills-not-reached-for</code>
-        </header>
-        <h3>A skill written for a task goes unused even when that exact task occurs</h3>
-        <p class="done"><span class="k">נדע שזה נגמר כש</span>The agent performs a task a skill covers and that skill's use counter increases</p>
-        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27.</p>
-<p><strong>Why:</strong> A skill exists describing how to deliver a file to the chat. Its use counter reads zero, including on the day the agent delivered a file and instead wrote a helper from scratch to do it. Delivery worked, so this is not a defect in the output; it is a signal that the skill never reached the point of decision. Five further skills also sit at zero uses. Worth knowing whether the suggestion mechanism is not surfacing them or the agent is not reaching for what it is shown, because those have different fixes.</p></div></details>
-      </article>
-      <article class="card" data-status="proposed">
-        <header>
-          <span class="badge s-proposed">דורש החלטה</span>
-          <span class="sec">Housekeeping</span>
-          <span class="size" title="גודל">S</span>
-          <code class="id ltr">TA-0827-uploads-unbounded</code>
-        </header>
-        <h3>The uploads directory grows without limit</h3>
-        <p class="done"><span class="k">נדע שזה נגמר כש</span>The directory is bounded by age or count, and a run proves old entries are removed</p>
-        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> health sweep, 2026-08-27.</p>
-<p><strong>Why:</strong> The uploads directory holds 94 files at roughly 10 MB and nothing prunes it. Harmless today, on a disk at 20 percent, and it only ever grows. Filed so that it becomes a decision rather than a surprise later.</p></div></details>
-      </article>
-      <article class="card" data-status="proposed">
-        <header>
-          <span class="badge s-proposed">דורש החלטה</span>
-          <span class="sec">Housekeeping</span>
-          <span class="size" title="גודל">S</span>
-          <code class="id ltr">TA-0827-test-artifacts-litter</code>
-        </header>
-        <h3>The test suite leaves stray artifacts in the repo root</h3>
-        <p class="done"><span class="k">נדע שזה נגמר כש</span>A full test run finishes with no new stray files in the repo root</p>
-        <details><summary>רקע והיסטוריה</summary><div class="body"><p><strong>Source:</strong> open-source sanitization audit handed over 2026-08-27.</p>
-<p><strong>Why:</strong> The suite leaves temporary JSON artifacts in the repo root. All are gitignored and untracked, so nothing leaks and nothing breaks, but 112 of them were present at the time of the audit. A teardown that removes what a test created is the ordinary fix.</p></div></details>
-      </article>
-    </div>
-    <p class="empty" id="empty" hidden>אין פריטים בסינון הזה.</p>
 
     <footer>
-      נוצר מ־<code class="ltr">docs/BACKLOG.md</code> בתאריך 27/08/2026.
-      <br>אל תערוך את הדף הזה ידנית; ערוך את הבקלוג והרץ מחדש:
+      נוצר מהקובץ <code class="ltr">docs/BACKLOG.md</code> בתאריך 27/08/2026.
+      אל תערוך את הדף הזה ידנית; ערוך את הבקלוג והרץ מחדש:
       <br><code class="ltr">bun run scripts/backlog-view.ts</code>
     </footer>
   </div>
 <script>
-  const chips = [...document.querySelectorAll(".chip")];
-  const cards = [...document.querySelectorAll(".card")];
-  const empty = document.getElementById("empty");
+  const filters = [...document.querySelectorAll(".filter")];
+  const rows = [...document.querySelectorAll(".row")];
+  const blank = document.getElementById("blank");
   function apply() {
-    const on = new Set(chips.filter(c => c.classList.contains("on")).map(c => c.dataset.status));
+    const on = new Set(filters.filter(f => f.classList.contains("on")).map(f => f.dataset.status));
     let shown = 0;
-    for (const card of cards) {
-      const vis = on.has(card.dataset.status);
-      card.hidden = !vis;
+    for (const row of rows) {
+      const vis = on.has(row.dataset.status);
+      row.hidden = !vis;
       if (vis) shown++;
     }
-    empty.hidden = shown !== 0;
+    blank.hidden = shown !== 0;
   }
-  for (const chip of chips) {
-    chip.addEventListener("click", () => { chip.classList.toggle("on"); apply(); });
+  for (const f of filters) {
+    f.addEventListener("click", () => {
+      f.classList.toggle("on");
+      f.setAttribute("aria-pressed", String(f.classList.contains("on")));
+      apply();
+    });
   }
   apply();
 </script>

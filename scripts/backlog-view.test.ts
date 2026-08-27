@@ -1,52 +1,52 @@
 import { describe, expect, test } from "bun:test";
 import { parseBacklog, staleOrderRefs, render } from "./backlog-view";
 
-// The parser reads docs/BACKLOG.md. Two things make it easy to get wrong, and
-// both are pinned here: the header carries explanatory tables that are NOT
-// backlog rows, and the detail blocks live under a `# Detail` heading whose
-// `## <id>` sub-headings must not be mistaken for domain sections.
+// The parser reads docs/BACKLOG.md, whose tokens are Hebrew. Two things make it
+// easy to get wrong, and both are pinned here: the header carries explanatory
+// tables that are NOT backlog rows, and the detail blocks live under a `# פירוט`
+// heading whose `## <id>` sub-headings must not be mistaken for domain sections.
 
-const LEDGER = `# Backlog
+const LEDGER = `# בקלוג
 
-### Status
+### סטטוסים
 
-| status | shown as | means |
+| סטטוס | מוצג כ | משמעות |
 |---|---|---|
-| \`proposed\` | דורש החלטה | waiting on Maor |
-| \`shipped\` | קיים | built and verified |
+| \`החלטה\` | דורש החלטה | ממתין למאור |
+| \`קיים\` | קיים | נבנה ואומת |
 
-## Order of work
+## סדר עבודה
 
-Sealed by Maor 2026-08-27: TA-0827-alpha first, then TA-0827-beta.
-
----
-
-## Reliability
-
-| ID | Item | Status | Size | Done when |
-|---|---|---|---|---|
-| TA-0827-alpha | First thing | proposed | S | Alpha proven |
-| TA-0827-beta | Second thing | shipped | M | Beta proven |
-
-## Housekeeping
-
-| ID | Item | Status | Size | Done when |
-|---|---|---|---|---|
-| TA-0827-gamma | Third thing | parked | L | Gamma proven |
+נקבע על ידי מאור ב-27 באוגוסט: קודם TA-0827-alpha, אחר כך TA-0827-beta.
 
 ---
 
-# Detail
+## אמינות ונתונים
+
+| מזהה | פריט | סטטוס | גודל | נדע שזה נגמר כש |
+|---|---|---|---|---|
+| TA-0827-alpha | הדבר הראשון | החלטה | S | אלפא הוכח |
+| TA-0827-beta | הדבר השני | קיים | M | בטא הוכח |
+
+## תחזוקה
+
+| מזהה | פריט | סטטוס | גודל | נדע שזה נגמר כש |
+|---|---|---|---|---|
+| TA-0827-gamma | הדבר השלישי | הקפאה | L | גמא הוכח |
+
+---
+
+# פירוט
 
 ## TA-0827-alpha
 
-**Source:** sweep 2026-08-27.
+**מקור:** בדיקה, 27 באוגוסט 2026.
 
-**Why:** because.
+**למה:** כי כך.
 
 ## TA-0827-beta
 
-**Source:** elsewhere.
+**מקור:** ממקום אחר.
 `;
 
 describe("parseBacklog", () => {
@@ -61,25 +61,25 @@ describe("parseBacklog", () => {
   });
 
   test("the status legend in the header is not mistaken for data", () => {
-    // The legend's first column holds `proposed` / `shipped` in backticks, and
+    // The legend's first column holds the same Hebrew tokens in backticks, and
     // its rows would parse as items if the header were not excluded.
-    expect(rows.some((r) => r.item.includes("waiting on Maor"))).toBe(false);
+    expect(rows.some((r) => r.item.includes("ממתין למאור"))).toBe(false);
   });
 
   test("assigns each row the domain section it sits under", () => {
-    expect(rows.find((r) => r.id === "TA-0827-alpha")!.section).toBe("Reliability");
-    expect(rows.find((r) => r.id === "TA-0827-gamma")!.section).toBe("Housekeeping");
+    expect(rows.find((r) => r.id === "TA-0827-alpha")!.section).toBe("אמינות ונתונים");
+    expect(rows.find((r) => r.id === "TA-0827-gamma")!.section).toBe("תחזוקה");
   });
 
   test("carries the scannable fields through", () => {
     const beta = rows.find((r) => r.id === "TA-0827-beta")!;
-    expect(beta.status).toBe("shipped");
+    expect(beta.status).toBe("קיים");
     expect(beta.size).toBe("M");
-    expect(beta.doneWhen).toBe("Beta proven");
+    expect(beta.doneWhen).toBe("בטא הוכח");
   });
 
   test("attaches the detail block to its row, and none where absent", () => {
-    expect(rows.find((r) => r.id === "TA-0827-alpha")!.detail).toContain("because");
+    expect(rows.find((r) => r.id === "TA-0827-alpha")!.detail).toContain("כי כך");
     expect(rows.find((r) => r.id === "TA-0827-gamma")!.detail).toBe("");
   });
 
@@ -88,14 +88,14 @@ describe("parseBacklog", () => {
   });
 
   test("captures the order-of-work prose", () => {
-    expect(order).toContain("Sealed by Maor 2026-08-27");
+    expect(order).toContain("נקבע על ידי מאור");
   });
 });
 
 describe("staleOrderRefs", () => {
   const { rows, order } = parseBacklog(LEDGER);
 
-  test("flags an item the order still names after it shipped", () => {
+  test("flags an item the order still names after it was finished", () => {
     expect(staleOrderRefs(order, rows).map((r) => r.id)).toEqual(["TA-0827-beta"]);
   });
 
@@ -112,23 +112,24 @@ describe("render", () => {
   const { rows, order } = parseBacklog(LEDGER);
   const html = render(rows, order, "27/08/2026");
 
-  test("opens on open work: closed history is present but unchecked", () => {
-    // Open statuses get the `on` class; shipped must not.
-    expect(html).toMatch(/class="chip on" data-status="proposed"/);
-    expect(html).toMatch(/class="chip" data-status="shipped"/);
+  test("opens on open work: finished history is present but unchecked", () => {
+    expect(html).toMatch(/class="filter on" data-status="החלטה"/);
+    expect(html).toMatch(/class="filter" data-status="קיים"/);
   });
 
-  test("orders cards needs-decision first and history last", () => {
-    // proposed (alpha) → parked (gamma) → shipped (beta), regardless of the
-    // order they appear in the ledger, where beta is filed before gamma.
-    const at = (id: string) => html.indexOf(`<code class="id ltr">${id}</code>`);
+  test("orders rows needs-decision first and history last", () => {
+    // החלטה (alpha) → הקפאה (gamma) → קיים (beta), regardless of ledger order,
+    // where beta is filed before gamma. Scoped to the list: ids also appear in
+    // the stale-order banner ABOVE it, which would otherwise be found first.
+    const list = html.slice(html.indexOf('<ul class="rows">'), html.indexOf("</ul>"));
+    const at = (id: string) => list.indexOf(`<code class="ltr">${id}</code>`);
     expect(at("TA-0827-alpha")).toBeGreaterThan(-1);
     expect(at("TA-0827-alpha")).toBeLessThan(at("TA-0827-gamma"));
     expect(at("TA-0827-gamma")).toBeLessThan(at("TA-0827-beta"));
   });
 
   test("counts come from the data, never hand-maintained", () => {
-    // Open = proposed + approved + parked, so alpha and gamma; beta shipped.
+    // Open = החלטה + מאושר + הקפאה, so alpha and gamma; beta is finished.
     expect(html).toContain("2 פריטים פתוחים מתוך 3");
   });
 
@@ -137,16 +138,25 @@ describe("render", () => {
     expect(html).toContain("TA-0827-beta");
   });
 
+  test("keeps Hebrew status tokens out of CSS selectors", () => {
+    // Class names must stay ASCII; the Hebrew lives in data attributes and text.
+    const classAttrs = [...html.matchAll(/class="([^"]*)"/g)].map((m) => m[1]).join(" ");
+    expect(classAttrs).not.toMatch(/[֐-׿]/);
+  });
+
   test("is right-to-left with isolated LTR islands for ids", () => {
     expect(html).toContain('<html dir="rtl" lang="he">');
     expect(html).toContain("unicode-bidi: isolate");
-    expect(html).toMatch(/<code class="id ltr">TA-0827-alpha<\/code>/);
+    expect(html).toMatch(/<code class="ltr">TA-0827-alpha<\/code>/);
+  });
+
+  test("status marks are drawn, never emoji or glyph stand-ins", () => {
+    expect(html).toContain("<svg class=\"ico");
+    expect(html).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2700}-\u{27BF}]/u);
   });
 
   test("escapes markup coming out of the ledger", () => {
-    const evil = parseBacklog(
-      LEDGER.replace("First thing", "First <img src=x> thing"),
-    );
+    const evil = parseBacklog(LEDGER.replace("הדבר הראשון", "הדבר <img src=x> הראשון"));
     expect(render(evil.rows, evil.order, "x")).not.toContain("<img src=x>");
   });
 });
