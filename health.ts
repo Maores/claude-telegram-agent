@@ -21,6 +21,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isolateLatin } from "./bidi";
 
 /** A poll cycle is ~POLL_TIMEOUT seconds, so a heartbeat older than this means
  *  the loop is not turning even if the process is alive. */
@@ -148,7 +149,7 @@ async function notify(text: string): Promise<boolean> {
   const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text }),
+    body: JSON.stringify({ chat_id: chatId, text: isolateLatin(text, 4096) }),
     signal: AbortSignal.timeout(15_000),
   });
   return res.ok;

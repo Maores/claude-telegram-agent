@@ -18,6 +18,13 @@ if [ -n "$UNSCHEDULED" ]; then
   MSG="תזכורת: יש מחר ($TOMORROW_DATE) אירועים ללא שעה מסודרת — כדאי לעדכן שעה:
 $TITLES"
 
+  # Same bidi treatment the poller gives every outgoing message, so an English
+  # event title inside this Hebrew line cannot flip the line's direction.
+  # Falls back to the raw text if bun is missing — a cosmetic filter must never
+  # be the reason the reminder does not go out.
+  ISOLATED=$(printf '%s' "$MSG" | bun run bidi.ts 2>/dev/null || true)
+  [ -n "$ISOLATED" ] && MSG="$ISOLATED" || true
+
   curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
     --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
     --data-urlencode "text=${MSG}" > /dev/null
