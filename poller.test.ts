@@ -38,7 +38,9 @@ import {
   choiceLabel,
   CHOICE_LABEL_MAX,
   resolveChoiceOption,
+  sanitizeOutgoing,
 } from "./poller.ts";
+import { stripIsolates } from "./bidi.ts";
 
 test("short text stays one chunk", () => {
   expect(chunkText("hello")).toEqual(["hello"]);
@@ -89,6 +91,43 @@ test("buildPrompt with no history still asks the new message", () => {
   expect(p).not.toContain("Recent conversation");
   expect(p).toContain("New message from Sam:");
   expect(p).toContain("ping");
+});
+
+// --- sanitizeOutgoing: redact + bidi-isolate every outgoing text/caption -----
+
+// Matches bidi.ts's own convention: isolate controls are invisible, so they
+// are built from char codes rather than written literally in the source.
+const FSI = String.fromCharCode(0x2068);
+const PDI = String.fromCharCode(0x2069);
+
+test("sanitizeOutgoing wraps a Latin run inside a Hebrew sendMessage text", () => {
+  const out = sanitizeOutgoing("sendMessage", { text: "הרץ bun run cal.ts list עכשיו", chat_id: 1 });
+  expect(out.text).toContain(FSI + "bun run cal.ts list" + PDI);
+  expect(out.chat_id).toBe(1);
+});
+
+test("sanitizeOutgoing wraps a Latin run inside a Hebrew caption", () => {
+  const out = sanitizeOutgoing("sendPhoto", { caption: "טבלה streaming חדשה" });
+  expect(out.caption).toContain(FSI + "streaming" + PDI);
+});
+
+test("sanitizeOutgoing still redacts secrets before isolating", () => {
+  const out = sanitizeOutgoing("sendMessage", { text: "טוקן: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 כאן" });
+  expect(out.text).not.toContain("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345");
+  expect(stripIsolates(out.text as string)).toContain("[REDACTED");
+});
+
+test("sanitizeOutgoing applies the tighter callback-toast length limit", () => {
+  const hebrewWord = "עברית ";
+  const longText = (hebrewWord + "streaming ").repeat(40);
+  const out = sanitizeOutgoing("answerCallbackQuery", { text: longText });
+  // Wrapping would push this well past 200 chars, so the guard returns the original untouched.
+  expect(out.text).toBe(longText);
+});
+
+test("sanitizeOutgoing leaves params without text/caption untouched", () => {
+  const params = { chat_id: 1, reply_markup: { inline_keyboard: [] } };
+  expect(sanitizeOutgoing("sendMessage", params)).toEqual(params);
 });
 
 // --- safeDiskName: on-disk filename sanitizer ---------------------------------

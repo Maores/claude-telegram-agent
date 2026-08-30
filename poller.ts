@@ -32,6 +32,7 @@ import { dueMonitors, performCheck, recordCheck, FAILURE_LIMIT, type Monitor, ty
 import { recordUsage, windowSpendUsd, shouldWarn, limitHitReply, detectUpstreamError, upstreamErrorReply } from "./usage";
 import { scanThreats } from "./threats";
 import { redact } from "./redact";
+import { isolateLatin } from "./bidi";
 import { resolveBackend, transcribeVoice, shouldEchoTranscript, needsConfirmation, hasImpossibleChars, VOICE_MAX_SEC, type Backend } from "./transcribe";
 import { HEARTBEAT_FILE } from "./health.ts";
 import { shouldReview, runReview } from "./review";
@@ -64,6 +65,8 @@ const ACCESS_FILE =
   join(homedir(), ".claude", "channels", "telegram", "access.json");
 
 const TG_LIMIT = 4096; // Telegram hard limit on message length
+const TG_CAPTION_LIMIT = 1024; // …and on a photo/document caption
+const TG_CALLBACK_LIMIT = 200; // …and on an answerCallbackQuery toast
 const HISTORY_MAX = 20; // keep last 10 exchanges (user + assistant)
 const RECALL_K = Number(process.env.RECALL_K ?? 4); // max recalled past messages injected per turn
 const POLL_TIMEOUT = 30; // seconds Telegram holds a long-poll open
@@ -171,12 +174,31 @@ function readJson<T>(file: string, fallback: T): T {
 // Telegram API
 // ---------------------------------------------------------------------------
 
+/**
+ * Everything the bot says leaves through here, so this is where the two
+ * output-path filters run: redact() masks secrets (Phase 4), then
+ * isolateLatin() wraps Latin runs in bidi isolates so a Hebrew line carrying
+ * an English word, a command or a URL renders in the right order. Doing it
+ * here rather than in the reply text means scheduled [AUTO] jobs, digests and
+ * reminder pings — none of which the model proof-reads — are covered too.
+ * Exported for tests; tg() is the only caller.
+ */
+export function sanitizeOutgoing(
+  method: string,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const textLimit = method === "answerCallbackQuery" ? TG_CALLBACK_LIMIT : TG_LIMIT;
+  let out = params;
+  if (typeof out.text === "string") out = { ...out, text: isolateLatin(redact(out.text), textLimit) };
+  if (typeof out.caption === "string") {
+    out = { ...out, caption: isolateLatin(redact(out.caption), TG_CAPTION_LIMIT) };
+  }
+  return out;
+}
+
 /** Call a Telegram Bot API method. Retries transient errors (429/409/network). */
 async function tg(method: string, params: Record<string, unknown> = {}, opts: { signal?: AbortSignal } = {}): Promise<any> {
-  // Outgoing user-visible strings pass through the redactor — the one
-  // chokepoint every message the bot sends goes through (Phase 4).
-  if (typeof params.text === "string") params = { ...params, text: redact(params.text) };
-  if (typeof params.caption === "string") params = { ...params, caption: redact(params.caption) };
+  params = sanitizeOutgoing(method, params);
   const url = `https://api.telegram.org/bot${TOKEN}/${method}`;
   for (let attempt = 0; attempt < 3; attempt++) {
     let res: Response;
