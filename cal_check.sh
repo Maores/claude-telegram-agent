@@ -3,7 +3,21 @@
 set -euo pipefail
 
 cd /home/claudebot/claude-bot
-source /home/claudebot/claude-bot/.env 2>/dev/null || true
+
+# The credentials live with the systemd service, NOT in the repo directory. This
+# script used to source /home/claudebot/claude-bot/.env, a path that has never
+# existed, and `2>/dev/null || true` hid that completely. So TELEGRAM_BOT_TOKEN
+# and the iCloud pair were never set: the calendar read below could not
+# authenticate AND the send at the bottom had no bot token. Both dead, silently,
+# alongside the PATH problem handled just below.
+ENV_FILE="${CAL_CHECK_ENV:-/home/claudebot/.claude/channels/telegram/.env}"
+if [ ! -r "$ENV_FILE" ]; then
+  echo "cal_check: cannot read $ENV_FILE — check did NOT run" >&2
+  exit 1
+fi
+set -a
+. "$ENV_FILE"
+set +a
 
 # cron runs this with PATH=/usr/bin:/bin, where `bun` is NOT resolvable, so it
 # has to be located explicitly. This is not a detail: from 2026-06-08 until this
