@@ -1,0 +1,296 @@
+<!doctype html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>בקלוג · סוכן הטלגרם</title>
+<style>
+  :root {
+    --canvas: #ffffff;
+    --subtle: #f6f8fa;
+    --fg: #1f2328;
+    --muted: #59636e;
+    --border: #d1d9e0;
+    --accent: #0969da;
+    --attention: #9a6700;
+    --attention-bg: #fff8c5;
+    --success: #1a7f37;
+    --success-bg: #dafbe1;
+    --done: #8250df;
+    --done-bg: #fbefff;
+    --neutral: #59636e;
+    --neutral-bg: #eff2f5;
+    --danger: #cf222e;
+    --danger-bg: #ffebe9;
+    --shadow: 0 1px 3px rgba(31, 35, 40, .08), 0 1px 2px rgba(31, 35, 40, .04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --canvas: #0d1117;
+      --subtle: #151b23;
+      --fg: #f0f6fc;
+      --muted: #9198a1;
+      --border: #3d444d;
+      --accent: #4493f8;
+      --attention: #d29922;
+      --attention-bg: #2b2412;
+      --success: #3fb950;
+      --success-bg: #12261a;
+      --done: #ab7df8;
+      --done-bg: #21172f;
+      --neutral: #9198a1;
+      --neutral-bg: #1c2129;
+      --danger: #f85149;
+      --danger-bg: #2b1618;
+      --shadow: 0 1px 3px rgba(1, 4, 9, .5);
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--canvas); color: var(--fg);
+    font: 14px/1.6 "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 62rem; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+  .ltr { direction: ltr; unicode-bidi: isolate; }
+  code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 11.5px; }
+
+  header.top { padding-bottom: 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1.25rem; }
+  header.top h1 { margin: 0 0 .25rem; font-size: 1.375rem; font-weight: 600; letter-spacing: -.01em; }
+  header.top p { margin: 0; color: var(--muted); font-size: .875rem; }
+
+  .listbox { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--canvas); }
+  .listhead {
+    display: flex; flex-wrap: wrap; gap: .375rem; align-items: center;
+    background: var(--subtle); border-bottom: 1px solid var(--border);
+    padding: .625rem .875rem;
+  }
+  .filter {
+    display: inline-flex; align-items: center; gap: .375rem;
+    font: inherit; font-size: .8125rem; cursor: pointer;
+    background: transparent; color: var(--muted);
+    border: 1px solid transparent; border-radius: 6px; padding: .25rem .5rem;
+  }
+  .filter:hover { background: var(--canvas); color: var(--fg); }
+  .filter.on { color: var(--fg); font-weight: 600; background: var(--canvas); border-color: var(--border); }
+  .filter:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .filter .ct { font-variant-numeric: tabular-nums; opacity: .8; }
+  .ico { width: 16px; height: 16px; flex: none; }
+  .st-decide { color: var(--attention); }
+  .st-approved { color: var(--success); }
+  .st-parked { color: var(--neutral); }
+  .st-exists { color: var(--done); }
+  .st-closed { color: var(--danger); }
+
+  ul.rows { list-style: none; margin: 0; padding: 0; }
+  .row { display: flex; gap: .75rem; padding: .875rem; border-bottom: 1px solid var(--border); }
+  .row:last-child { border-bottom: 0; }
+  .row:hover { background: var(--subtle); }
+  .row > .ico { margin-top: .2rem; }
+  .row .body { min-width: 0; flex: 1; }
+  .row h3 {
+    margin: 0 0 .25rem; font-size: 1rem; font-weight: 600; line-height: 1.5;
+    max-width: 68ch;
+  }
+  .meta {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .375rem;
+    margin: 0 0 .5rem; font-size: .75rem; color: var(--muted);
+  }
+  .meta .sep { opacity: .55; }
+  .lbl {
+    margin-inline-start: auto; font-size: .6875rem; font-weight: 600;
+    border-radius: 999px; padding: .0625rem .5rem; white-space: nowrap;
+  }
+  .lbl.st-decide { background: var(--attention-bg); }
+  .lbl.st-approved { background: var(--success-bg); }
+  .lbl.st-parked { background: var(--neutral-bg); }
+  .lbl.st-exists { background: var(--done-bg); }
+  .lbl.st-closed { background: var(--danger-bg); }
+  .when { margin: 0; font-size: .8125rem; color: var(--muted); max-width: 72ch; }
+  .when .k { color: var(--fg); font-weight: 600; margin-inline-end: .3rem; }
+
+  details { margin-top: .625rem; }
+  summary {
+    display: inline-block; cursor: pointer; font-size: .75rem; color: var(--accent);
+    padding: .125rem .375rem; margin-inline-start: -.375rem; border-radius: 4px;
+  }
+  summary:hover { background: var(--subtle); }
+  summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .note {
+    margin-top: .5rem; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--subtle); padding: .75rem .875rem; font-size: .8125rem;
+    max-width: 74ch;
+  }
+  .note p { margin: 0 0 .625rem; }
+  .note p:last-child { margin-bottom: 0; }
+
+  .banner {
+    display: flex; gap: .625rem; align-items: flex-start;
+    border: 1px solid var(--attention); background: var(--attention-bg);
+    color: var(--fg); border-radius: 6px; padding: .75rem .875rem;
+    margin-bottom: 1rem; font-size: .8125rem;
+  }
+  .banner .ico { color: var(--attention); margin-top: .1rem; }
+
+  .blank { padding: 3rem 1rem; text-align: center; color: var(--muted); font-size: .875rem; }
+  footer { margin-top: 1.25rem; color: var(--muted); font-size: .75rem; line-height: 1.8; }
+</style>
+</head>
+<body>
+  <div class="page">
+    <header class="top">
+      <h1>בקלוג · סוכן הטלגרם</h1>
+      <p>7 פריטים פתוחים מתוך 7. הדף נפתח על מה שפתוח בלבד; ההיסטוריה מאחורי המסננים.</p>
+    </header>
+
+    <div class="listbox">
+      <div class="listhead">
+        <button class="filter on" data-status="החלטה" aria-pressed="true"><svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg><span>דורש החלטה</span><span class="ct">7</span></button>
+        <button class="filter on" data-status="מאושר" aria-pressed="true"><svg class="ico st-approved" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5.2 8.2 7.1 10.1 10.9 6.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span>מאושר</span><span class="ct">0</span></button>
+        <button class="filter on" data-status="הקפאה" aria-pressed="true"><svg class="ico st-parked" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6.4 5.6v4.8M9.6 5.6v4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>בהקפאה</span><span class="ct">0</span></button>
+        <button class="filter" data-status="קיים" aria-pressed="false"><svg class="ico st-exists" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M4.9 8.2 7 10.3 11.1 6" fill="none" stroke="var(--canvas)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>קיים</span><span class="ct">0</span></button>
+        <button class="filter" data-status="נסגר" aria-pressed="false"><svg class="ico st-closed" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5.9 5.9l4.2 4.2M10.1 5.9l-4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><span>נסגר</span><span class="ct">0</span></button>
+      </div>
+      <ul class="rows">
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>קובץ זמני מהתקלה של 24 באוגוסט עדיין יושב בתיקיית הפרויקט על השרת</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-loose-runtime-dump</code>
+              <span class="sep">·</span><span>אמינות ונתונים</span>
+              <span class="sep">·</span><span>גודל S</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>הקובץ כבר לא נמצא תחת תיקיית העבודה, ובדיקה חוזרת מאשרת שלא נשאר עוד אחד כמוהו</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026.</p>
+<p><strong>למה:</strong> קובץ טקסט שנוצר במהלך תקלת מסד הנתונים של 24 באוגוסט עדיין יושב בתיקיית העבודה של הפרויקט על השרת. הוא ברשימת ההתעלמות, הוא גם מופיע במפורש ברשימת החסימה של בדיקת הקומיט, ולשרת אין הרשאות דחיפה, ולכן הוא לא יכול להגיע לריפו הציבורי. נמדד ולא הונח: קיים כבר עותק זהה בכוונה מחוץ לריפו, בית אחר בית, כשסכומי הביקורת הושוו על שתי המכונות.</p>
+<p>הוערך כ<strong>לא דחוף</strong>. מי שיכול לקרוא אותו הוא מי שכבר יש לו גישה למכונה, ולמי שיש גישה כזאת יש ממילא דברים רגישים בהרבה. מוגש כהיגיינה ולא כחשיפה: אין סיבה שהוא יישב בתיקיית פרויקט, והתקלה המקורית התחילה בדיוק בצורה הזאת.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>הגיבוי הלילי שומר נתונים אבל לא קוד, כך שלקבצים שהסוכן כותב אין שום גיבוי</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-source-not-in-backup</code>
+              <span class="sep">·</span><span>אמינות ונתונים</span>
+              <span class="sep">·</span><span>גודל M</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>קובץ שהסוכן כתב על השרת מופיע בארכיון הגיבוי החדש ביותר, ומאומת על ידי הצגת תוכן הארכיון</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026, תוך כדי בירור אם קובץ שהסוכן כתב ניתן לשחזור.</p>
+<p><strong>למה:</strong> הארכיון הלילי מכיל נתוני ריצה, כלומר מאגרי הנתונים, הזיכרון, ההיסטוריה והרשאות הגישה, ולא מכיל קוד. זה נכון כל עוד כל הקוד יושב בגיט, ומפסיק להיות נכון ברגע שהסוכן כותב קובץ שלא נשמר. אומת על ידי הצגת תוכן הארכיון החדש ביותר: אין בו נתיבי קוד. יחד עם <code class="ltr">TA-0827-untracked-selfdev-invisible</code>, קובץ שהסוכן כותב לעצמו קיים על דיסק אחד בלבד ואף אחד לא שומר עליו.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>קבצי קוד חדשים שהסוכן כותב לעצמו לא מופיעים בשום דוח</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-untracked-selfdev-invisible</code>
+              <span class="sep">·</span><span>פיתוח עצמי ובטיחות</span>
+              <span class="sep">·</span><span>גודל M</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>נשתול קובץ קוד חדש על השרת, והוא יופיע בסיכום הלילי שאחריו</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026, אחרי שהסוכן כתב לעצמו קובץ עזר בן 191 שורות כדי לענות על בקשה.</p>
+<p><strong>למה:</strong> <code class="ltr">selfdev-check.ts</code> מדלג בכוונה על קבצים לא מנוהלים, כי התפקיד המוצהר שלו הוא &quot;מה פריסה הייתה מוחקת&quot;, ואיפוס קשיח באמת לא נוגע בהם. הנימוק נכון והקוד לא תקול. התוצאה עדיין אמיתית: קובץ קוד חדש לגמרי מוגן ממחיקה ובלתי נראה לכל דוח, ולכן הוא יושב בלי בדיקה ובלי גיבוי לזמן בלתי מוגבל. זה פער נראות ולא פער בטיחות, ולכן התיקון שייך לצד השומר ולא בתוכו.</p>
+<p><strong>עדכון 30 באוגוסט 2026:</strong> לפער הזה יש פנים שנייה, והיא התגלתה בבדיקת התקינות של היום. הסוכן לא רק כותב קבצים חדשים שאיש לא רואה; ב-28 באוגוסט הוא גם כתב תכונה שלמה, עשה לה קומיט לענף מקומי על השרת בשם <code class="ltr">feat/bidi-isolate-outgoing</code>, והשאיר אותה שם בלי לדחוף ובלי שאיש סקר אותה. השומר לא תפס גם את זה, מסיבה אחרת: הוא בודק קבצים ששונו, והקוד הזה כבר היה שמור בקומיט, כלומר עץ העבודה היה נקי לגמרי. זו הפעם השנייה שזה קורה, אחרי 12 באוגוסט 2026. הקוד עצמו נמצא טוב ונסקר בבקשת מיזוג 95, אבל התבנית חוזרת: כל דוח שקיים כאן מסתכל על עץ העבודה, ואף אחד לא מסתכל על הענף שעליו השרת יושב.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>שינוי שמור מ-10 ביוני יושב על השרת בלי שאיש קרא אותו, ונוגע בקובץ הליבה</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-stale-droplet-stash</code>
+              <span class="sep">·</span><span>פיתוח עצמי ובטיחות</span>
+              <span class="sep">·</span><span>גודל S</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>הדיף שלו נקרא, והוא או נשמר לענף או נזרק לפי מילה של מאור</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026, תוך כדי הערכה אם ניקוי הזיכרון הפנימי של הפרויקט על השרת בטוח.</p>
+<p><strong>למה:</strong> קיים שינוי שמור אחד על השרת, מתאריך 10 ביוני 2026, שנוגע בקובץ הליבה של הפולר. סביר מאוד שהוא מת מזמן לאור כמה שהקובץ הזה השתנה מאז, אבל &quot;סביר מאוד&quot; איננו בסיס למחיקה בלתי הפיכה. הוא גם חוסם כל ניקוי אובייקטים שם, כי פקיעת יומני ההפניות תשמיד אותו. קריאה שלו עולה דקה ומסיימת את השאלה לכאן או לכאן.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>כישור שנכתב בדיוק למשימה מסוימת לא נמצא בשימוש גם כשהמשימה הזאת קורית</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-skills-not-reached-for</code>
+              <span class="sep">·</span><span>כישורים וזיכרון</span>
+              <span class="sep">·</span><span>גודל M</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>הסוכן מבצע משימה שכישור מכסה, ומונה השימוש של אותו כישור עולה</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026.</p>
+<p><strong>למה:</strong> קיים כישור שמתאר איך למסור קובץ לצ׳אט. מונה השימוש שלו עומד על אפס, כולל ביום שבו הסוכן מסר קובץ ובמקומו כתב מאפס קובץ עזר שיעשה זאת. המסירה עבדה, ולכן זה לא פגם בתוצר; זה סימן שהכישור לא הגיע לנקודת ההחלטה. חמישה כישורים נוספים עומדים גם הם על אפס שימושים. שווה לדעת אם מנגנון ההצעה לא מציף אותם או שהסוכן לא מושיט יד למה שמוצג לו, כי לשניים האלה יש תיקונים שונים.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>תיקיית ההעלאות גדלה בלי גבול</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-uploads-unbounded</code>
+              <span class="sep">·</span><span>תחזוקה</span>
+              <span class="sep">·</span><span>גודל S</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>התיקייה חסומה לפי גיל או לפי כמות, והרצה מוכיחה שפריטים ישנים באמת נמחקים</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> בדיקת תקינות, 27 באוגוסט 2026.</p>
+<p><strong>למה:</strong> תיקיית ההעלאות מחזיקה 94 קבצים בערך 10 מגה-בייט ואין דבר שמנקה אותה. לא מזיק היום, על דיסק שתפוס בעשרים אחוז, והיא רק גדלה. מוגש כדי שזאת תהיה החלטה ולא הפתעה בהמשך.</p></div></details>
+          </div>
+        </li>
+        <li class="row" data-status="החלטה">
+          <svg class="ico st-decide" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+          <div class="body">
+            <h3>מערך הבדיקות משאיר קבצים זמניים בשורש הפרויקט</h3>
+            <p class="meta">
+              <code class="ltr">TA-0827-test-artifacts-litter</code>
+              <span class="sep">·</span><span>תחזוקה</span>
+              <span class="sep">·</span><span>גודל S</span>
+              <span class="lbl st-decide">דורש החלטה</span>
+            </p>
+            <p class="when"><span class="k">נדע שזה נגמר כש</span>הרצה מלאה של הבדיקות מסתיימת בלי אף קובץ זמני חדש בשורש</p>
+            <details><summary>רקע והיסטוריה</summary><div class="note"><p><strong>מקור:</strong> ביקורת ניקוי לקוד פתוח שהועברה לכאן ב-27 באוגוסט 2026.</p>
+<p><strong>למה:</strong> מערך הבדיקות משאיר קבצים זמניים בשורש הפרויקט. כולם ברשימת ההתעלמות ולא מנוהלים, ולכן שום דבר לא דולף ושום דבר לא נשבר, אבל בזמן הביקורת היו שם 112 כאלה. ניקוי סיום שמוחק את מה שהבדיקה יצרה הוא התיקון הרגיל.</p></div></details>
+          </div>
+        </li>
+      </ul>
+      <p class="blank" id="blank" hidden>אין פריטים במסננים שנבחרו.</p>
+    </div>
+
+    <footer>
+      נוצר מהקובץ <code class="ltr">docs/BACKLOG.md</code> בתאריך 30/08/2026.
+      אל תערוך את הדף הזה ידנית; ערוך את הבקלוג והרץ מחדש:
+      <br><code class="ltr">bun run scripts/backlog-view.ts</code>
+    </footer>
+  </div>
+<script>
+  const filters = [...document.querySelectorAll(".filter")];
+  const rows = [...document.querySelectorAll(".row")];
+  const blank = document.getElementById("blank");
+  function apply() {
+    const on = new Set(filters.filter(f => f.classList.contains("on")).map(f => f.dataset.status));
+    let shown = 0;
+    for (const row of rows) {
+      const vis = on.has(row.dataset.status);
+      row.hidden = !vis;
+      if (vis) shown++;
+    }
+    blank.hidden = shown !== 0;
+  }
+  for (const f of filters) {
+    f.addEventListener("click", () => {
+      f.classList.toggle("on");
+      f.setAttribute("aria-pressed", String(f.classList.contains("on")));
+      apply();
+    });
+  }
+  apply();
+</script>
+</body>
+</html>
