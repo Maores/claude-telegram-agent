@@ -12,6 +12,7 @@ choices.json
 choices.test-*.json
 cal_notified.json
 data/quiz-state.json
+data/avot-state.json
 quiz-paused.flag
 health-state.json
 heartbeat
