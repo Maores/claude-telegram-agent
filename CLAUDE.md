@@ -217,6 +217,12 @@ what to improve, start from the gaps around these, not from scratch:
   nightly Hebrew daily summary (20:35), weekly skill curation (Sunday 09:00),
   weekly parashat-hashavua summary (Friday 10:00), daily @AIPOST channel digest
   (08:00). Add or change jobs through remind.ts, never by editing poller.ts.
+- Nightly Pirkei Avot study (the 21:00 [AUTO] job whose prompt runs
+  `bun run avot.ts next`): one mishnah per evening in order, text fetched from
+  Sefaria, position kept in data/avot-state.json. `next` ADVANCES the pointer, so
+  never run it outside that job; to answer "where are we in Avot" use
+  `bun run avot.ts status` (reference only) or `bun run avot.ts current`
+  (re-prints tonight's mishnah without moving).
 - Calendar nudges: the poller pings shortly before timed events, and a nightly
   cron (cal_check.sh, 20:00) flags tomorrow's events still parked at the 07:59
   placeholder time.
