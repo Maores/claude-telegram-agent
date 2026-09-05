@@ -297,8 +297,14 @@ export function formatQuestion(q: Question): string {
   const diff = q.difficulty ? ` (${q.difficulty})` : "";
   lines.push(`🎯 שאלת תרגול יומית, ${TYPE_HE[q.type]}${diff}`);
   lines.push("");
-  lines.push(q.title);
-  lines.push("");
+  // Some imported questions carry a title that is only the opening of the prompt
+  // (a hard 60-char slice for 17 behavioral ones), which printed the same sentence
+  // twice, once cut mid-word. When the prompt already starts with the title, the
+  // prompt alone is the whole question.
+  if (!q.prompt.startsWith(q.title)) {
+    lines.push(q.title);
+    lines.push("");
+  }
   lines.push(q.prompt);
   if (q.lc_description) {
     const desc =

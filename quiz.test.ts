@@ -215,6 +215,17 @@ test("formatQuestion for a diagram flashcard omits the answer commands", () => {
   expect(text).toContain("Two Sum");
 });
 
+test("formatQuestion skips the title line when the prompt already starts with it", () => {
+  // 17 imported behavioral questions carry a title that is a hard 60-char slice of
+  // the prompt (and 14 more a shorter prefix), so the message showed the same
+  // sentence twice, once cut mid-word. The prompt alone is the whole question.
+  const prompt = "What is the most constructive feedback you have received in your career?";
+  const title = prompt.slice(0, 60);
+  const text = formatQuestion(q({ type: "behavioral", title, prompt }));
+  expect(text.split(title).length - 1).toBe(1);
+  expect(text).toContain(prompt);
+});
+
 test("splitForCaption keeps short text as the caption", () => {
   const { caption, extra } = splitForCaption("short text");
   expect(caption).toBe("short text");
