@@ -1117,7 +1117,7 @@ async function streamClaudeResilient(
     console.error(`[ERR] upstream ${again.kind} persisted after retry for chat ${chatId}`);
     err = again;
   }
-  const msg = upstreamErrorReply(err);
+  const msg = upstreamErrorReply(err, answer);
   await sendReply(chatId, placeholderId, msg).catch(() => {});
   return msg;
 }

@@ -126,6 +126,31 @@ describe("detectUpstreamError", () => {
     ).toBeNull();
   });
 
+  // 2026-09-06 03:55: Maor sent a YouTube link and got this back as the reply.
+  // It carries none of the shapes above (no "API Error", no status URL), so the
+  // detector passed it straight through and the link was never answered.
+  const REAL_SESSION_LIMIT = "You've hit your session limit · resets 4:40am (Asia/Jerusalem)";
+
+  test("catches the CLI session-limit answer from the 2026-09-06 incident", () => {
+    const d = detectUpstreamError(REAL_SESSION_LIMIT);
+    expect(d).not.toBeNull();
+    expect(d!.kind).toBe("limit");
+  });
+
+  test("a limit is never retried, because it does not clear in seconds", () => {
+    expect(detectUpstreamError(REAL_SESSION_LIMIT)!.retryable).toBe(false);
+  });
+
+  test("catches the other limit wordings the CLI can emit", () => {
+    expect(detectUpstreamError("You've hit your usage limit · resets 9pm")!.kind).toBe("limit");
+    expect(detectUpstreamError("Claude usage limit reached. Your limit will reset at 3am.")!.kind).toBe("limit");
+  });
+
+  test("does not flag a Hebrew answer that merely talks about limits", () => {
+    expect(detectUpstreamError("הגעת למגבלת השימוש? זה קורה כשמריצים הרבה בקשות ברצף")).toBeNull();
+    expect(detectUpstreamError("המגבלה מתאפסת ב-4:40 בלילה")).toBeNull();
+  });
+
   test("only fires when the error dominates the reply, not when quoted inside a long answer", () => {
     // The signature must be the whole reply, otherwise a genuine explanation
     // that quotes the error would be silently retried and overwritten.
@@ -155,5 +180,26 @@ describe("upstreamErrorReply", () => {
       const m = upstreamErrorReply({ kind, retryable: kind !== "auth" });
       expect(m).not.toMatch(/[A-Za-z]{3,}/);
     }
+  });
+});
+
+describe("session-limit reply (2026-09-06)", () => {
+  const REAL = "You've hit your session limit · resets 4:40am (Asia/Jerusalem)";
+
+  test("tells Maor in Hebrew that the limit was hit, and when it resets", () => {
+    const msg = upstreamErrorReply(detectUpstreamError(REAL)!, REAL);
+    expect(msg).toContain("מגבלת השימוש");
+    expect(msg).toContain("4:40am");
+  });
+
+  test("still answers in Hebrew when no reset time can be read", () => {
+    const bare = "You've hit your session limit";
+    const msg = upstreamErrorReply(detectUpstreamError(bare)!, bare);
+    expect(msg).toContain("מגבלת השימוש");
+    expect(msg.length).toBeGreaterThan(10);
+  });
+
+  test("parseRetryAfter reads a reset time written without a preposition", () => {
+    expect(parseRetryAfter(REAL)).toBe("4:40am");
   });
 });

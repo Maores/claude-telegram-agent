@@ -94,6 +94,8 @@ export function parseRetryAfter(s: string | undefined | null): string | null {
     new RegExp(`try again in\\s+([0-9]+\\s*${UNIT})`, "i"),
     /resets?\s+(?:at|in)\s+([0-9:apm\s.]+(?:hours|minutes|min|hrs)?)/i,
     /available again (?:at|in)\s+([0-9:apm\s.]+)/i,
+    // The CLI's own limit line drops the preposition: "resets 4:40am (Asia/Jerusalem)".
+    /resets?\s+([0-9][0-9:.]*\s*(?:am|pm)?)/i,
   ];
   for (const re of patterns) {
     const m = s.match(re);
@@ -124,7 +126,7 @@ export function limitHitReply(errText: string | undefined | null): string | null
 // Every monitoring signal reported green. Hence this check on the ANSWER.
 // ---------------------------------------------------------------------------
 
-export type UpstreamKind = "overloaded" | "auth" | "server";
+export type UpstreamKind = "overloaded" | "auth" | "server" | "limit";
 export interface UpstreamError { kind: UpstreamKind; retryable: boolean }
 
 /** How much of a reply may surround the signature before we assume the model is
@@ -135,6 +137,19 @@ const MAX_ERROR_REPLY_CHARS = 300;
 export function detectUpstreamError(answer: string | undefined | null): UpstreamError | null {
   const text = (answer ?? "").trim();
   if (!text || text.length > MAX_ERROR_REPLY_CHARS) return null;
+  // The CLI announces an exhausted subscription window in plain English with no
+  // "API Error" prefix and no status URL. On 2026-09-06 at 03:55 it answered a
+  // turn with "You've hit your session limit · resets 4:40am (Asia/Jerusalem)" and
+  // the shape check below passed it through as an ordinary reply, so Maor got the
+  // raw English line and his question was never answered. English wording only,
+  // so a Hebrew answer discussing limits is left alone.
+  const isLimit =
+    /\b(?:hit your|reached)\s+(?:\w+\s+){0,2}(?:session|usage|message)\s+limit\b/i.test(text) ||
+    /\b(?:session|usage) limit (?:reached|exceeded)\b/i.test(text);
+  // Never retried: a limit resets on the clock, so the 8-second retry would only
+  // spend another call to be refused again.
+  if (isLimit) return { kind: "limit", retryable: false };
+
   // Require the API-error shape, not a bare status number: a short reply could
   // legitimately mention 529 while explaining something.
   const hasShape = /\bAPI Error\b|overloaded_error|status\.claude\.com|Failed to authenticate/i.test(text);
@@ -150,7 +165,15 @@ export function detectUpstreamError(answer: string | undefined | null): Upstream
 
 /** What Maor sees instead of the raw error. Plain Hebrew, no LTR tokens, per the
  *  bidi rule in CLAUDE.md. */
-export function upstreamErrorReply(e: UpstreamError): string {
+export function upstreamErrorReply(e: UpstreamError, raw?: string | null): string {
+  if (e.kind === "limit") {
+    const hint = parseRetryAfter(raw);
+    const base = "הגעתי למגבלת השימוש כרגע ולכן לא הצלחתי לענות.";
+    // The reset time is an LTR token, so it goes on its own line per the bidi rule.
+    return hint
+      ? `${base} אפשר לשלוח שוב אחרי האיפוס, שנקבע לשעה:\n${hint}`
+      : `${base} אפשר לנסות שוב מאוחר יותר.`;
+  }
   if (e.kind === "auth") {
     return "יש בעיית התחברות אצלי לשרת, וזה משהו שצריך טיפול ידני. שווה לבדוק את הטוקן.";
   }
