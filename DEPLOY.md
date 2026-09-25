@@ -505,6 +505,20 @@ cd ~/claude-bot
 ~/.bun/bin/bun run ccdigest.ts status
 ```
 
+**Running the local steps from a Claude session in the Claude desktop app?** The
+app is a packaged Windows app: whatever its sessions write under `%LOCALAPPDATA%`
+(apart from `Temp`) lands in the app's private folder
+(`%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Local\...`). The session keeps
+seeing those files, but the scheduled task, a separate process, does not, so it
+fails without writing a log line (found 2026-09-25). Either run steps 1 and 2 in
+a normal terminal outside the app, or stage the copy and the settings file under
+`%TEMP%` (not redirected) and let the task put them in place once: point its
+action at a short copy script, start it, then restore the action. A real push
+started from a session writes its log and `last-push-ok` into that private
+folder as well, so from a session run only `--dry-run` and start real pushes
+through the task. Files a session wrote there by mistake hide the real ones from
+later sessions: move them out.
+
 **(local) 1. The deployed copy.** The task never runs the development checkout,
 which switches branches. Build the copy from `origin/main`, and rebuild it at
 every deploy that changes `ccjournal.ts` or `scripts/cc-journal-push.*`
@@ -541,12 +555,13 @@ $json = & "$env:LOCALAPPDATA\TelegramAgent\cc-journal-push\scripts\cc-journal-pu
 ```
 
 **(local) 3. The hourly task.** Like the backup pull it runs while you are
-signed in, and it starts hidden; its command line names only the launcher:
+signed in; it starts with no window, through a headless console host, and its
+command line names only the launcher:
 
 ```powershell
 $pwsh = (Get-Command pwsh).Source
 $launcher = "$env:LOCALAPPDATA\TelegramAgent\cc-journal-push\scripts\cc-journal-push.ps1"
-$action = New-ScheduledTaskAction -Execute $pwsh -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
+$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\conhost.exe" -Argument "--headless `"$pwsh`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
 $hourly = New-ScheduledTaskTrigger -Once -At "00:20" -RepetitionInterval (New-TimeSpan -Hours 1)
 $logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $logon.Delay = "PT2M"
@@ -561,11 +576,13 @@ Get-Content "$env:LOCALAPPDATA\TelegramAgent\cc-journal-push.log" -Tail 3
 Read the triggers back: the hourly one must show `PT1H` with an empty
 (indefinite) duration. If it shows a finite duration instead, unregister the
 task and register it again with `-RepetitionDuration (New-TimeSpan -Days 3650)`
-added to `$hourly`. Each successful run touches `last-push-ok` beside the log;
-a watchdog can read its time. Watch the screen during the first manual run: if
-a console window appears despite `-WindowStyle Hidden`, try a headless console
-host in front of pwsh in the task's action, and only then fall back to evening
-triggers (for example 18:20 to 21:20) plus the logon trigger.
+added to `$hourly`. Each successful run touches `last-push-ok` beside the log,
+and a watchdog reads its time. The action puts `conhost.exe --headless` in
+front of pwsh because Windows Terminal, the default terminal on Windows 11,
+ignores `-WindowStyle Hidden`: without the headless host a terminal window
+opened on the first run (and that run failed). The headless host also hides the
+exit code, so the task's Last Run Result reads 0 even when the push failed:
+judge a run by the log's last line and by `last-push-ok`.
 
 **Verify (server), then resume.** `preview` prints only the ask; the real run
 also adds the memory block and a "New message from Maor:" line. A hand-run
