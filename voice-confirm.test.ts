@@ -1,14 +1,24 @@
-import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { test, expect, afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addPending, consumePending, parseVcCallback, vcKeyboard, loadPending } from "./voice-confirm.ts";
 
 const T0 = 1_786_000_000;
 
+// Every freshFile() call makes its own folder; afterAll removes them all.
+// VOICE_PENDING_FILE is left pointing into a removed folder on purpose: a reset would
+// send a later test file that forgets its own path to the real voice-pending.json in
+// the repo root.
+const made: string[] = [];
 function freshFile() {
-  process.env.VOICE_PENDING_FILE = join(mkdtempSync(join(tmpdir(), "vc-")), "pending.json");
+  const dir = mkdtempSync(join(tmpdir(), "vc-"));
+  made.push(dir);
+  process.env.VOICE_PENDING_FILE = join(dir, "pending.json");
 }
+afterAll(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
 
 test("a pending transcript can be consumed exactly once", () => {
   freshFile();

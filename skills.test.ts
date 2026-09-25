@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, existsSync, writeFileSync, readdirSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "./db";
@@ -10,9 +10,15 @@ const NOW = 1_781_000_000;
 function freshDb() {
   return openDb(":memory:");
 }
+const made: string[] = [];
 function tmp() {
-  return mkdtempSync(join(tmpdir(), "skills-"));
+  const dir = mkdtempSync(join(tmpdir(), "skills-"));
+  made.push(dir);
+  return dir;
 }
+afterAll(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
 function getRow(db: ReturnType<typeof freshDb>, name: string): SkillRow {
   return db.query("SELECT * FROM skills WHERE name = ?").get(name) as SkillRow;
 }

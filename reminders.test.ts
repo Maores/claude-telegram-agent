@@ -1,5 +1,5 @@
 import { parseCustomSnoozeTime, snoozeAskDirective } from "./poller.ts";
-import { test, expect, beforeEach, afterEach } from "bun:test";
+import { test, expect, beforeEach, afterEach, afterAll } from "bun:test";
 import { join } from "node:path";
 import { existsSync, rmSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -197,9 +197,19 @@ import {
 
 const T0 = 1_781_000_000;
 
+// Every freshFollowupFile() call makes its own folder; afterAll removes them all.
+// FOLLOWUPS_FILE is left pointing into a removed folder on purpose: a later test file
+// that forgets its own path then fails with ENOENT on its first write, where a reset
+// would send it to the real followups.json in the repo root.
+const made: string[] = [];
 function freshFollowupFile() {
-  process.env.FOLLOWUPS_FILE = join(mkdtempSync(join(tmpdir(), "fu-")), "followups.json");
+  const dir = mkdtempSync(join(tmpdir(), "fu-"));
+  made.push(dir);
+  process.env.FOLLOWUPS_FILE = join(dir, "followups.json");
 }
+afterAll(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
 
 test("addFollowup creates a pending, un-nudged follow-up with a fresh id", () => {
   freshFollowupFile();

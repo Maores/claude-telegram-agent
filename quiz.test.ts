@@ -1,5 +1,5 @@
-import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { test, expect, afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -41,6 +41,19 @@ const q = (over: Partial<Question> = {}): Question => ({
   source: "test",
   tags: [],
   ...over,
+});
+
+// Temp folders for the state and question-file tests; afterAll removes them all.
+// QUIZ_STATE_FILE is left pointing into a removed folder on purpose: a reset would
+// send a later test file that forgets its own path to the real data/quiz-state.json.
+const made: string[] = [];
+const tmp = (prefix: string) => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  made.push(dir);
+  return dir;
+};
+afterAll(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true });
 });
 
 // --- send window (Israel week: Sun-Thu weekdays 18:00-18:30, Fri-Sat 10:00-10:30)
@@ -334,7 +347,7 @@ test("shouldAttachQuizDirective is true only while awaiting within the eval wind
 // --- state persistence ----------------------------------------------------------------
 
 test("quiz state round-trips through its JSON file", () => {
-  process.env.QUIZ_STATE_FILE = join(mkdtempSync(join(tmpdir(), "qz-")), "quiz-state.json");
+  process.env.QUIZ_STATE_FILE = join(tmp("qz-"), "quiz-state.json");
   const fresh = loadQuizState();
   expect(fresh.dayIndex).toBe(0);
   expect(fresh.awaitingAnswer).toBe(false);
@@ -394,7 +407,7 @@ test("pickByType gives unseen resume questions priority on non-algo days, gated 
 });
 
 test("loadQuestions parses a JSON array and drops malformed entries", () => {
-  const dir = mkdtempSync(join(tmpdir(), "qzq-"));
+  const dir = tmp("qzq-");
   const file = join(dir, "questions.json");
   const good = q({ id: "ok-1" });
   require("node:fs").writeFileSync(
@@ -411,7 +424,7 @@ test("loadQuestions parses a JSON array and drops malformed entries", () => {
 // so it overwrote them and malformed values passed straight through. tsc flagged
 // it as three TS2783 "specified more than once" errors for three weeks.
 test("loadQuestions sanitizes a non-string category and source", () => {
-  const dir = mkdtempSync(join(tmpdir(), "qzs-"));
+  const dir = tmp("qzs-");
   const file = join(dir, "questions.json");
   const bad = { ...q({ id: "bad-cat" }), category: 123, source: 42 };
   require("node:fs").writeFileSync(file, JSON.stringify([bad]));
@@ -422,7 +435,7 @@ test("loadQuestions sanitizes a non-string category and source", () => {
 });
 
 test("loadQuestions drops non-string tags instead of passing them through", () => {
-  const dir = mkdtempSync(join(tmpdir(), "qzt-"));
+  const dir = tmp("qzt-");
   const file = join(dir, "questions.json");
   const bad = { ...q({ id: "bad-tags" }), tags: ["ok", null, 5, "fine", { a: 1 }] };
   require("node:fs").writeFileSync(file, JSON.stringify([bad]));
@@ -431,7 +444,7 @@ test("loadQuestions drops non-string tags instead of passing them through", () =
 });
 
 test("loadQuestions replaces a tags value that is not an array at all", () => {
-  const dir = mkdtempSync(join(tmpdir(), "qzt2-"));
+  const dir = tmp("qzt2-");
   const file = join(dir, "questions.json");
   const bad = { ...q({ id: "tags-string" }), tags: "arrays,hashing" };
   require("node:fs").writeFileSync(file, JSON.stringify([bad]));
@@ -440,7 +453,7 @@ test("loadQuestions replaces a tags value that is not an array at all", () => {
 
 test("loadQuestions keeps GOOD category/source/tags untouched", () => {
   // Guards the fix from over-correcting: sanitizing must not blank real values.
-  const dir = mkdtempSync(join(tmpdir(), "qzg-"));
+  const dir = tmp("qzg-");
   const file = join(dir, "questions.json");
   const good = q({ id: "good-1", category: "graphs", source: "blind75", tags: ["bfs", "dfs"] });
   require("node:fs").writeFileSync(file, JSON.stringify([good]));
@@ -452,7 +465,7 @@ test("loadQuestions keeps GOOD category/source/tags untouched", () => {
 
 test("loadQuestions still preserves every other field on the question", () => {
   // The fix reorders a spread, so prove nothing else got dropped in the process.
-  const dir = mkdtempSync(join(tmpdir(), "qzf-"));
+  const dir = tmp("qzf-");
   const file = join(dir, "questions.json");
   const full = q({
     id: "full-1",
@@ -478,7 +491,7 @@ test("loadQuestions still preserves every other field on the question", () => {
 });
 
 test("loadQuestions accepts an explicit path, ignoring the env override", () => {
-  const dir = mkdtempSync(join(tmpdir(), "qzp-"));
+  const dir = tmp("qzp-");
   const file = join(dir, "incoming.json");
   require("node:fs").writeFileSync(file, JSON.stringify([q({ id: "from-path" })]));
   process.env.QUIZ_QUESTIONS_FILE = join(dir, "does-not-exist.json");

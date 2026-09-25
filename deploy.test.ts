@@ -7,16 +7,22 @@
  * restart_and_verify against stub `systemctl`/`sudo` binaries, so the failure
  * mode is reproduced rather than described.
  */
-import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { test, expect, afterAll } from "bun:test";
+import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+const made: string[] = [];
+afterAll(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
 
 /** A stub PATH whose `systemctl` reports the given start times and state.
  *  `before` is returned on the first ActiveEnterTimestampMonotonic query and
  *  `after` on every one after it, which is exactly what a real restart does. */
 function stubDir(opts: { before: string; after: string; active?: string }): string {
   const dir = mkdtempSync(join(tmpdir(), "deploy-"));
+  made.push(dir);
   const marker = join(dir, "asked");
   const systemctl = `#!/usr/bin/env bash
 for a in "$@"; do

@@ -1,6 +1,6 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, afterAll } from "bun:test";
 import { openDb, initSchema, insertMessage, recentMessages, sanitizeFtsQuery, searchMessages, renderRecall, importHistoryJson, searchHistory, contextAround } from "./db";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 
@@ -125,9 +125,19 @@ test("renderRecall fences, dates, labels, and truncates; empty → []", () => {
   expect(block).not.toContain("x".repeat(400));
 });
 
+const made: string[] = [];
+const tmp = (prefix: string) => {
+  const dir = mkdtempSync(pathJoin(tmpdir(), prefix));
+  made.push(dir);
+  return dir;
+};
+afterAll(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
+
 test("importHistoryJson imports once, skips corrupt files, is idempotent", () => {
   const db = openDb(":memory:");
-  const dir = mkdtempSync(pathJoin(tmpdir(), "hist-"));
+  const dir = tmp("hist-");
   writeFileSync(
     pathJoin(dir, "42.json"),
     JSON.stringify([
@@ -161,7 +171,7 @@ test("importHistoryJson does NOT set the done-marker when the directory read fai
 
   // A subsequent call with a real directory that has a valid file must still succeed,
   // proving the marker was NOT written by the failed call.
-  const dir = mkdtempSync(pathJoin(tmpdir(), "hist-retry-"));
+  const dir = tmp("hist-retry-");
   writeFileSync(
     pathJoin(dir, "7.json"),
     JSON.stringify([{ role: "user", content: "retry message" }]),

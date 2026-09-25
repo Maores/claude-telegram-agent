@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync as rf, writeFileSync as wf, readdirSync as rd } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync as rf, writeFileSync as wf, readdirSync as rd, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as pjoin } from "node:path";
 import { openDb } from "./db";
@@ -355,9 +355,15 @@ describe("importMemoryMd", () => {
 });
 
 describe("exportMirror", () => {
+  const made: string[] = [];
   function tmp() {
-    return mkdtempSync(pjoin(tmpdir(), "mirror-"));
+    const dir = mkdtempSync(pjoin(tmpdir(), "mirror-"));
+    made.push(dir);
+    return dir;
   }
+  afterAll(() => {
+    for (const dir of made) rmSync(dir, { recursive: true, force: true });
+  });
 
   test("writes USER.md (user kind) and MEMORY.md (agent kind) with active + quarantined sections", () => {
     const db = freshDb();
