@@ -286,3 +286,16 @@ test("the live view switches to the marked reply once the marker opens", () => {
   p.push(textDelta(`\n${REPLY_OPEN}\nאין לך אירועים היום.`));
   expect(displayText(p.state())).toBe("אין לך אירועים היום.");
 });
+
+test("isError follows the result event's is_error flag and subtype", () => {
+  const run = (event: object) => {
+    const p = new StreamParser();
+    p.push(JSON.stringify({ type: "result", result: "x", ...event }));
+    return { done: p.done, isError: p.isError };
+  };
+  expect(run({ subtype: "success", is_error: false })).toEqual({ done: true, isError: false });
+  expect(run({})).toEqual({ done: true, isError: false });
+  expect(run({ subtype: "success", is_error: true })).toEqual({ done: true, isError: true });
+  expect(run({ subtype: "error_max_turns" })).toEqual({ done: true, isError: true });
+  expect(new StreamParser().isError).toBe(false);
+});

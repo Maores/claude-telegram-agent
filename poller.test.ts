@@ -39,6 +39,8 @@ import {
   CHOICE_LABEL_MAX,
   resolveChoiceOption,
   sanitizeOutgoing,
+  digestSpawnOpts,
+  digestParts,
 } from "./poller.ts";
 import { stripIsolates } from "./bidi.ts";
 
@@ -928,4 +930,30 @@ test("the caption is cosmetic: the payload still resolves by index", () => {
   const kb: any = choiceKeyboard("c3", [full, "בטל"], false);
   expect(kb.inline_keyboard[0][0].callback_data).toBe("ch:c3:0");
   expect(resolveChoiceOption({ options: [full, "בטל"] }, 0)).toBe(full); // untouched
+});
+
+test("digestSpawnOpts: a least-privilege turn with no tools that renders nothing and leaves /stop alone", () => {
+  const outcome = { timedOut: false, gotResult: false, isError: false, exitCode: null };
+  const opts = digestSpawnOpts(outcome);
+  // no built-in tools, and no MCP servers even if some are configured on the server later
+  expect(opts.extraArgs).toEqual(["--disallowedTools", ...AUTO_DISALLOWED_TOOLS, "--tools", "", "--strict-mcp-config"]);
+  expect(opts.env).toEqual({ CLAUDE_AUTO_SESSION: "1" });
+  expect(opts.silent).toBe(true);
+  expect(opts.trackForStop).toBe(false);
+  expect(opts.outcome).toBe(outcome);
+  expect(autoSessionSpawn().extraArgs).not.toContain("--tools"); // [AUTO] jobs are unchanged
+});
+
+test("digestParts keeps every part small enough that its bidi isolates still fit", () => {
+  const line = "• גרסה של ExampleApp עם Beta ו-Gamma עודכנה במסך"; // three Latin runs per line
+  const text = Array.from({ length: 80 }, (_, i) => `${line} ${i}`).join("\n");
+  expect(text.length).toBeGreaterThan(3_900);
+  const parts = digestParts(text);
+  expect(parts.length).toBe(2);
+  expect(parts.join("\n")).toBe(text);
+  for (const part of parts) {
+    expect(part.length).toBeLessThanOrEqual(3_500);
+    const sent = sanitizeOutgoing("sendMessage", { chat_id: 1, text: part }).text as string;
+    expect(sent).toContain(String.fromCharCode(0x2068)); // isolated, not sent raw
+  }
 });

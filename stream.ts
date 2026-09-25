@@ -71,6 +71,9 @@ export class StreamParser {
   /** The segment being streamed right now (since the last tool call). */
   text = "";
   done = false;
+  /** The terminal result event said the run failed (is_error, or a subtype other than
+   *  "success"). Read only by callers that must not treat a failed run as an answer. */
+  isError = false;
   private result: string | null = null;
   /** Completed segments after the first tool call, oldest first. */
   private segments: string[] = [];
@@ -147,6 +150,7 @@ export class StreamParser {
         if (typeof u.input_tokens === "number") this.inputTokens = u.input_tokens;
         if (typeof u.output_tokens === "number") this.outputTokens = u.output_tokens;
       }
+      if (o.is_error === true || (typeof o.subtype === "string" && o.subtype !== "success")) this.isError = true;
       this.done = true;
       this.status = null;
       return;
