@@ -80,8 +80,8 @@ Task "TelegramAgent cc-journal push"                poller.ts 30 s tick -> check
    `preview`, `last`, `pause`, `resume`, `init [--force]`, `resync`, `calendar`). It imports only the
    pure parts of `ccjournal.ts` and `detectUpstreamError` from `usage.ts`.
 3. **`scripts/cc-journal-push.ts`** plus a small **`scripts/cc-journal-push.ps1`** launcher that the
-   scheduled task starts with `pwsh -WindowStyle Hidden` (the launch style of the owner's existing
-   watchdog task). When bun cannot start, the launcher logs that and exits 3.
+   scheduled task starts through `conhost.exe --headless` in front of `pwsh -WindowStyle Hidden`
+   (see "Scheduled task"). When bun cannot start, the launcher logs that and exits 3.
 4. **`stream.ts`**: `StreamParser.isError` from the result event. **`poller.ts`**: three optional
    `SpawnOpts` fields (`silent`, `trackForStop`, `outcome`) whose defaults keep every existing caller
    exactly as it is, `digestSpawnOpts`, `digestParts`, `checkDigest` wiring the real I/O into
@@ -221,10 +221,14 @@ runs). A sanitizer change therefore needs the server deployed first and the copy
 - Name `TelegramAgent cc-journal push`; interactive logon (runs while the owner is signed in, like
   the backup pull); triggers hourly at :20 and at logon (2-minute delay); `StartWhenAvailable`,
   `ExecutionTimeLimit` PT5M, battery flags off. Its argument line names only the launcher.
-- Known risk: a console window may appear at each run even with `-WindowStyle Hidden`. The owner
-  watches the first manual run. If a window appears, a headless console host in front of pwsh is
-  tried first; the fallback after that is evening triggers only (for example 18:20 to 21:20) plus
-  logon.
+- Measured at deploy (2026-09-25): with Windows Terminal as the default terminal,
+  `pwsh -WindowStyle Hidden` alone still opened a terminal window, and that run failed. The action
+  therefore starts pwsh through `conhost.exe --headless`, which shows no window (checked by listing
+  every process the run started). The headless host hides the exit code (Last Run Result reads 0
+  even on failure), so a run is judged by the log and `last-push-ok`, as the watchdog does.
+- From a Claude desktop session, files written under `%LOCALAPPDATA%` (apart from `Temp`) land in
+  the app's private package folder, where the task cannot see them; DEPLOY step 14 says how to
+  place the copy and the settings file where the task finds them.
 
 ### Watchdog check (PC, outside the repo)
 
