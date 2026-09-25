@@ -1,5 +1,6 @@
-import { test, expect, beforeEach } from "bun:test";
-import { rmSync, readFileSync } from "node:fs";
+import { test, expect, beforeEach, afterAll } from "bun:test";
+import { rmSync, readFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Drives the real CLI. Every function-level test for snoozeFollowup passed
@@ -7,8 +8,10 @@ import { join } from "node:path";
 // because argv is destructured as [cmd, chatId, ...rest] before the switch and
 // this subcommand carries no chatId. Only running the binary caught it.
 
-const R = join(import.meta.dir, `remind.clitest-${process.pid}.json`);
-const F = join(import.meta.dir, `followups.clitest-${process.pid}.json`);
+// Both stores live in a temp dir that afterAll removes, never in the repo root.
+const DIR = mkdtempSync(join(tmpdir(), "remind-clitest-"));
+const R = join(DIR, "reminders.json");
+const F = join(DIR, "followups.json");
 process.env.REMINDERS_FILE = R;
 process.env.FOLLOWUPS_FILE = F;
 
@@ -17,6 +20,7 @@ import { addFollowup } from "./reminders.ts";
 beforeEach(() => {
   for (const p of [R, F, R + ".lock", F + ".lock"]) rmSync(p, { force: true });
 });
+afterAll(() => rmSync(DIR, { recursive: true, force: true }));
 
 const cli = (...args: string[]) =>
   Bun.spawnSync({

@@ -1,5 +1,7 @@
-import { test, expect, beforeEach } from "bun:test";
-import { rmSync } from "node:fs";
+import { test, expect, beforeEach, afterAll } from "bun:test";
+import { rmSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   proposeAction,
   takePending,
@@ -10,13 +12,16 @@ import {
   type PendingAction,
 } from "./pending";
 
-// Isolate the store per run.
-const TEST_FILE = `${import.meta.dir}/pending.test-${process.pid}.json`;
+// Isolate the store per run in a temp dir that afterAll removes, so no file is
+// left in the repo root.
+const DIR = mkdtempSync(join(tmpdir(), "pending-test-"));
+const TEST_FILE = join(DIR, "pending.json");
 process.env.PENDING_FILE = TEST_FILE;
 beforeEach(() => {
   rmSync(TEST_FILE, { force: true });
   rmSync(TEST_FILE + ".lock", { force: true });
 });
+afterAll(() => rmSync(DIR, { recursive: true, force: true }));
 
 const CAL_ADD = ["bun", "run", "cal.ts", "add", "--title", "רופא שיניים", "--start", "2026-06-13T15:00:00+03:00"];
 const TODO_DEL = ["bun", "run", "todo.ts", "delete", "--uid", "abc@maor-bot"];

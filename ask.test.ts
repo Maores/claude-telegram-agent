@@ -1,17 +1,22 @@
-import { test, expect, beforeEach } from "bun:test";
-import { rmSync, existsSync, readFileSync } from "node:fs";
+import { test, expect, beforeEach, afterAll } from "bun:test";
+import { rmSync, existsSync, readFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // ask.ts is a CLI, so this drives the real binary end to end. That matters:
 // the bug it guards lived in ask.ts alone, and a test against proposeChoice
 // would have passed while the CLI still truncated.
 
-const STORE = `${import.meta.dir}/choices.asktest-${process.pid}.json`;
+// The CLI's store lives in a temp dir that afterAll removes, never in the repo root.
+const DIR = mkdtempSync(join(tmpdir(), "ask-test-"));
+const STORE = join(DIR, "choices.json");
 const env = { ...process.env, CHOICES_FILE: STORE, TELEGRAM_CHAT_ID: "1", TELEGRAM_TURN_ID: "t-asktest" };
 
 beforeEach(() => {
   rmSync(STORE, { force: true });
   rmSync(STORE + ".lock", { force: true });
 });
+afterAll(() => rmSync(DIR, { recursive: true, force: true }));
 
 const runAsk = (options: string[]) =>
   Bun.spawnSync({

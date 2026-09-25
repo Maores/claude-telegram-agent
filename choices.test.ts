@@ -1,5 +1,7 @@
-import { test, expect, beforeEach } from "bun:test";
-import { rmSync } from "node:fs";
+import { test, expect, beforeEach, afterAll } from "bun:test";
+import { rmSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   proposeChoice,
   takePendingChoices,
@@ -9,13 +11,16 @@ import {
 } from "./choices";
 import { newTurnId } from "./pending";
 
-// Isolate the store per run (copy of the PENDING_FILE pattern).
-const TEST_FILE = `${import.meta.dir}/choices.test-${process.pid}.json`;
+// Isolate the store per run in a temp dir that afterAll removes, so no file is
+// left in the repo root (copy of the PENDING_FILE pattern).
+const DIR = mkdtempSync(join(tmpdir(), "choices-test-"));
+const TEST_FILE = join(DIR, "choices.json");
 process.env.CHOICES_FILE = TEST_FILE;
 beforeEach(() => {
   rmSync(TEST_FILE, { force: true });
   rmSync(TEST_FILE + ".lock", { force: true });
 });
+afterAll(() => rmSync(DIR, { recursive: true, force: true }));
 
 const OPTS = ["Pizza", "Sushi", "Burgers"];
 
