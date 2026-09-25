@@ -223,6 +223,15 @@ what to improve, start from the gaps around these, not from scratch:
   never run it outside that job; to answer "where are we in Avot" use
   `bun run avot.ts status` (reference only) or `bun run avot.ts current`
   (re-prints tonight's mishnah without moving).
+- Evening Claude Code digest (21:30, built into the poller, NOT an [AUTO] job,
+  so never recreate it with remind.ts): Maor's PC pushes his Claude Code work
+  log to ~/cc-journal every hour, and at 21:30 the poller sends a Hebrew
+  summary of what is new, silent on Shabbat and holiday nights and when nothing
+  is new. The chat history keeps only a marker line; for "what was in tonight's
+  summary?" run `bun run ccdigest.ts last`, and for "did it go out?" run
+  `bun run ccdigest.ts status`. Pause or resume it only when he asks
+  (`bun run ccdigest.ts pause` / `resume`). Never edit files in ~/cc-journal
+  by hand; only ccdigest.ts commands touch it.
 - Calendar nudges: the poller pings shortly before timed events, and a nightly
   cron (cal_check.sh, 20:00) flags tomorrow's events still parked at the 07:59
   placeholder time.

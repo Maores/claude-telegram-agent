@@ -486,6 +486,118 @@ crontab -l   # verify the line landed
 
 ---
 
+## Step 14 — Evening Claude Code digest (server + local)
+
+At 21:30 the poller sends a Hebrew summary of the Claude Code work logged since
+the previous digest. The source is the owner's daily log (an Obsidian vault on
+the PC, where every session appends `- HH:MM — topic: sentence ([[Note]])` to
+`Daily/YYYY-MM-DD.md`). Quiet on Shabbat and holiday nights and on nights with
+nothing new. Design: `docs/superpowers/specs/2026-09-25-cc-digest-design.md`.
+
+**(server)** nothing to install beyond the code. Once, after the deploy that
+brings it (over a non-interactive ssh, `bun` is `~/.bun/bin/bun`):
+
+```bash
+cd ~/claude-bot
+~/.bun/bin/bun run ccdigest.ts init      # count log entries from today on
+~/.bun/bin/bun run ccdigest.ts pause     # nothing goes out until the checks below pass
+~/.bun/bin/bun run ccdigest.ts calendar  # expect "0 unreadable"
+~/.bun/bin/bun run ccdigest.ts status
+```
+
+**(local) 1. The deployed copy.** The task never runs the development checkout,
+which switches branches. Build the copy from `origin/main`, and rebuild it at
+every deploy that changes `ccjournal.ts` or `scripts/cc-journal-push.*`
+(`status` on the server says "PC copy out of step" when it is stale):
+
+```powershell
+$repo = "<path-to-repo>"
+$copy = "$env:LOCALAPPDATA\TelegramAgent\cc-journal-push"
+$tar = Join-Path $env:TEMP "cc-journal-push.tar"
+git -C $repo fetch origin
+git -C $repo archive -o $tar origin/main ccjournal.ts scripts/cc-journal-push.ts scripts/cc-journal-push.ps1
+New-Item -ItemType Directory -Force $copy | Out-Null
+tar -xf $tar -C $copy
+git -C $repo rev-parse --short origin/main | Set-Content -Encoding ascii (Join-Path $copy "version.txt")
+```
+
+**(local) 2. The settings file,** `%LOCALAPPDATA%\TelegramAgent\cc-journal-push.json`
+(JSON, so backslashes are doubled). Write it with an editor; from a Claude
+session use its Write tool, because a vault guard that refuses shell commands
+naming the vault would refuse a command that writes it:
+
+```json
+{ "vault": "<vault>", "target": "claudebot@<YOUR_SERVER_IP>", "key": "<path to the ssh key>" }
+```
+
+Before anything leaves the PC, scan a dry run for contacts the sanitizer might
+miss (this names no vault, so a Claude session may run it); read both lists by
+eye, expecting no address and no phone number:
+
+```powershell
+$json = & "$env:LOCALAPPDATA\TelegramAgent\cc-journal-push\scripts\cc-journal-push.ps1" --dry-run
+[regex]::Matches($json, '[^" ]*@[^" ]*') | ForEach-Object Value | Sort-Object -Unique
+[regex]::Matches($json, '[+(0-9][0-9 ().-]{8,}[0-9]') | ForEach-Object Value | Sort-Object -Unique
+```
+
+**(local) 3. The hourly task.** Like the backup pull it runs while you are
+signed in, and it starts hidden; its command line names only the launcher:
+
+```powershell
+$pwsh = (Get-Command pwsh).Source
+$launcher = "$env:LOCALAPPDATA\TelegramAgent\cc-journal-push\scripts\cc-journal-push.ps1"
+$action = New-ScheduledTaskAction -Execute $pwsh -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
+$hourly = New-ScheduledTaskTrigger -Once -At "00:20" -RepetitionInterval (New-TimeSpan -Hours 1)
+$logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$logon.Delay = "PT2M"
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName "TelegramAgent cc-journal push" -Action $action -Trigger $hourly, $logon -Settings $settings
+(Get-ScheduledTask -TaskName "TelegramAgent cc-journal push").Triggers | Select-Object StartBoundary, @{n='Interval';e={$_.Repetition.Interval}}, @{n='Duration';e={$_.Repetition.Duration}}
+Start-ScheduledTask -TaskName "TelegramAgent cc-journal push"
+for ($i = 0; $i -lt 60 -and (Get-ScheduledTask -TaskName "TelegramAgent cc-journal push").State -ne 'Ready'; $i++) { Start-Sleep -Seconds 2 }
+Get-Content "$env:LOCALAPPDATA\TelegramAgent\cc-journal-push.log" -Tail 3
+```
+
+Read the triggers back: the hourly one must show `PT1H` with an empty
+(indefinite) duration. If it shows a finite duration instead, unregister the
+task and register it again with `-RepetitionDuration (New-TimeSpan -Days 3650)`
+added to `$hourly`. Each successful run touches `last-push-ok` beside the log;
+a watchdog can read its time. Watch the screen during the first manual run: if
+a console window appears despite `-WindowStyle Hidden`, try a headless console
+host in front of pwsh in the task's action, and only then fall back to evening
+triggers (for example 18:20 to 21:20) plus the logon trigger.
+
+**Verify (server), then resume.** `preview` prints only the ask; the real run
+also adds the memory block and a "New message from Maor:" line. A hand-run
+`claude -p` needs the service environment, or it fails with a misleading 401;
+the line below passes the poller's own flags (`digestSpawnOpts` in `poller.ts`),
+with text output instead of stream-json.
+Resume before 21:30 on the evening you want the first digest (a later `resume`
+also lets that evening's paused run go ahead); if days passed since `init`,
+run `init --force` first so the first digest covers one day:
+
+```bash
+cd ~/claude-bot
+~/.bun/bin/bun run ccdigest.ts status
+set -a && . ~/.claude/channels/telegram/.env && set +a && ~/.bun/bin/bun run ccdigest.ts preview | CLAUDE_AUTO_SESSION=1 claude -p --model claude-sonnet-5 --output-format text --dangerously-skip-permissions --disallowedTools "Bash(bun run remind.ts add-once *)" "Bash(bun run remind.ts add-repeat *)" "Bash(bun run monitor.ts add *)" "Bash(bun run ask.ts *)" --tools "" --strict-mcp-config
+~/.bun/bin/bun run ccdigest.ts resume
+```
+
+After the first 21:30: `TZ=Asia/Jerusalem journalctl -u telegram-agent --since 21:25 --no-pager | grep -F '[DIGEST]'`
+shows `[DIGEST] sent …`, `status` shows the last run as `sent`, and the usage log
+has a `kind = 'auto'` row from that minute:
+
+```bash
+cd ~/claude-bot && ~/.bun/bin/bun -e 'import { Database } from "bun:sqlite"; const db = new Database("memory/bot.db", { readonly: true }); console.log(db.query("SELECT datetime(ts, \"unixepoch\", \"localtime\") AS at, kind, model FROM usage_log WHERE kind = \"auto\" ORDER BY ts DESC LIMIT 3").all())'
+```
+
+A deploy that bumps `SANITIZER_VERSION` takes effect only when the PC copy is
+rebuilt: deploy the server first, then rebuild the copy (1 above). The next
+evening re-keys old lines by itself; `~/.bun/bin/bun run ccdigest.ts resync` is
+the manual fallback.
+
+---
+
 ## Updating the bot later (local → server)
 
 ```powershell
@@ -499,6 +611,9 @@ cd ~/claude-bot && git fetch origin && git reset --hard origin/main
 sudo systemctl restart telegram-agent
 sudo journalctl -u telegram-agent -n 5 --no-pager   # confirm the banner
 ```
+
+When the update changed `ccjournal.ts` or `scripts/cc-journal-push.*`, also
+rebuild the PC's deployed copy (step 14, local 1) after the server is updated.
 
 ---
 

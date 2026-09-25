@@ -37,6 +37,7 @@ import { resolveBackend, transcribeVoice, shouldEchoTranscript, needsConfirmatio
 import { HEARTBEAT_FILE } from "./health.ts";
 import { shouldReview, runReview } from "./review";
 import { classifyUpdate, ChatQueues, SerialChain, Debouncer, isStopCommand } from "./dispatch";
+import { runDigest, digestDir, type GenOutcome } from "./ccdigest.ts";
 export { isStopCommand }; // poller.test.ts and external users keep their import path
 
 // ---------------------------------------------------------------------------
@@ -1073,6 +1074,15 @@ export interface SpawnOpts {
    *  4096-char chunking), but NOT part of the returned/stored answer text.
    *  Used for the 🎤 low-confidence transcript echo. */
   renderPrefix?: string;
+  /** Generate without rendering: no live renders, no typing indicator, no final render.
+   *  The caller sends the answer itself once it has checked it (evening digest). The usage
+   *  heads-up below still applies, as it does to every run. */
+  silent?: boolean;
+  /** false: do not take the chat's single /stop slot (default true). */
+  trackForStop?: boolean;
+  /** Filled in after the child exits: whether the result event arrived, whether it was
+   *  an error, the exit code, and whether the timeout fired. */
+  outcome?: GenOutcome;
 }
 
 // Usage heads-up config (agenda #5). Self-set proxy — the real plan quota is not
@@ -1142,8 +1152,10 @@ async function streamClaude(
   );
   // Track this child so /stop can interrupt it; clear the slot when it exits,
   // however it exits (normal, error, timeout, or killed by /stop).
-  const flight = registerChild(chatId, proc);
-  void proc.exited.finally(() => unregisterChild(chatId, proc));
+  const silent = opts.silent === true;
+  const track = opts.trackForStop !== false;
+  const flight: Flight = track ? registerChild(chatId, proc) : { proc };
+  if (track) void proc.exited.finally(() => unregisterChild(chatId, proc));
   const stderrP = new Response(proc.stderr).text().catch(() => "");
   proc.stdin!.write(prompt);
   proc.stdin!.end();
@@ -1164,11 +1176,12 @@ async function streamClaude(
   // re-send the typing indicator (Telegram clears it after ~5s) so the chat
   // never looks dead mid-turn (2026-07-26: an 8-minute turn read as "not
   // answering" and cost an hour of waiting).
-  const typer = setInterval(() => void sendTyping(chatId), 7_000);
+  const typer = silent ? null : setInterval(() => void sendTyping(chatId), 7_000);
 
   // Throttle Telegram edits — deltas arrive far faster than we may edit.
   let lastFlush = 0;
   const flush = async () => {
+    if (silent) return;
     const now = Date.now();
     if (now - lastFlush < FLUSH_MS) return;
     lastFlush = now;
@@ -1191,12 +1204,15 @@ async function streamClaude(
     }
   } finally {
     clearTimeout(killer);
-    clearInterval(typer);
+    if (typer) clearInterval(typer);
   }
   if (buf.trim()) parser.push(buf);
 
   const code = await proc.exited;
   const final = parser.finalText();
+  if (opts.outcome) {
+    Object.assign(opts.outcome, { timedOut, gotResult: parser.done, isError: parser.isError, exitCode: code });
+  }
 
   // Compliance meter for the reply marker. A missing marker is not an error —
   // the reply falls back to the old rules and ships fine — but it is the one
@@ -1237,13 +1253,13 @@ async function streamClaude(
   }
 
   if (flight.stopped) {
-    await renderer.render(prefix + (final ? final + "\n\n" : "") + "נעצר ✋").catch(() => {});
+    if (!silent) await renderer.render(prefix + (final ? final + "\n\n" : "") + "נעצר ✋").catch(() => {});
     throw new TurnStopped();
   }
 
   if (timedOut) {
     if (final) {
-      await renderer.render(prefix + final).catch(() => {});
+      if (!silent) await renderer.render(prefix + final).catch(() => {});
       return final;
     }
     throw new Error(`claude timed out after ${CLAUDE_TIMEOUT_MS}ms`);
@@ -1251,9 +1267,11 @@ async function streamClaude(
   if (!final && code !== 0) {
     throw new Error(`claude exited ${code}: ${(await stderrP).slice(0, 300)}`);
   }
-  await renderer
-    .render(prefix + (final || "(no reply)"))
-    .catch((e) => console.error(`[ERR] final render: ${e?.message ?? e}`));
+  if (!silent) {
+    await renderer
+      .render(prefix + (final || "(no reply)"))
+      .catch((e) => console.error(`[ERR] final render: ${e?.message ?? e}`));
+  }
   return final;
 }
 
@@ -2600,6 +2618,78 @@ async function handleQzCallback(
 }
 
 // ---------------------------------------------------------------------------
+// Evening Claude Code digest (ccdigest.ts runDigest; spec
+// docs/superpowers/specs/2026-09-25-cc-digest-design.md). Code-level on purpose: an
+// [AUTO] job posts ⏳ before the model runs, and a quiet night must send nothing.
+// ---------------------------------------------------------------------------
+
+/** One tool-less, least-privilege turn that renders nothing and leaves /stop alone.
+ *  `--tools ""` removes the built-in tools; `--strict-mcp-config` (with no --mcp-config)
+ *  loads no MCP server, so the turn stays tool-less if servers are configured later. */
+export function digestSpawnOpts(outcome: GenOutcome): SpawnOpts {
+  const auto = autoSessionSpawn();
+  return { ...auto, extraArgs: [...auto.extraArgs, "--tools", "", "--strict-mcp-config"], silent: true, trackForStop: false, outcome };
+}
+
+/** The service's TELEGRAM_CHAT_ID, else the first allowlisted id (as the quiz does). */
+function digestTargetChat(): number | null {
+  const fromEnv = Number(process.env.TELEGRAM_CHAT_ID);
+  if (Number.isFinite(fromEnv) && fromEnv !== 0) return fromEnv;
+  const first = Number([...loadAllowList()][0]);
+  return Number.isFinite(first) && first !== 0 ? first : null;
+}
+
+/** The digest goes out in parts of at most 3,500 characters, cut at line breaks, so the
+ *  bidi isolates tg() adds never push a part past Telegram's 4,096 (isolateLatin would
+ *  then send that part with no isolation at all). */
+export function digestParts(text: string): string[] {
+  return chunkText(text, 3_500);
+}
+
+/** The evening run in flight, so a restart's drain can wait for it (see main). */
+let digestInFlight: Promise<void> | null = null;
+
+function checkDigest(): Promise<void> {
+  if (digestInFlight) return digestInFlight;
+  digestInFlight = runDigest({
+    now: () => new Date(),
+    dir: digestDir(),
+    pid: process.pid,
+    stopping: () => stopping,
+    targetChat: digestTargetChat,
+    makePrompt: (ask) => buildPrompt([], "Maor", ask, [], loadMemory(), ""),
+    generate: async (prompt, chatId) => {
+      const outcome: GenOutcome = { timedOut: false, gotResult: false, isError: false, exitCode: null };
+      const answer = await streamClaude(prompt, chatId, null, "sonnet", digestSpawnOpts(outcome));
+      return { answer, outcome };
+    },
+    send: async (chatId, text) => {
+      const parts = digestParts(text);
+      for (let i = 0; i < parts.length; i++) {
+        try {
+          await sendReply(chatId, null, parts[i]);
+        } catch (e: any) {
+          throw new Error(`part ${i + 1} of ${parts.length}: ${e?.message ?? e}`); // earlier parts did arrive
+        }
+      }
+    },
+    persist: (chatId, text, ts) => {
+      insertMessage(getDb(), { chatId, role: "assistant", content: text, ts, model: "sonnet" });
+    },
+    sleep,
+    log: (line) => console.log(line),
+    err: (line) => console.error(line),
+  })
+    .catch((e: any) => {
+      console.error(`[ERR] digest: ${e?.message ?? e}`);
+    })
+    .finally(() => {
+      digestInFlight = null;
+    });
+  return digestInFlight;
+}
+
+// ---------------------------------------------------------------------------
 // Reminder scheduler (fires due reminders on an interval)
 // ---------------------------------------------------------------------------
 
@@ -2905,6 +2995,7 @@ async function main() {
     void checkReminders();
     void checkMonitors();
     void checkQuiz();
+    void checkDigest();
   }, 30_000);
 
   setInterval(() => {
@@ -2989,7 +3080,7 @@ async function main() {
   // Buffered messages join the queues first — the offset was saved at fetch
   // time, so anything left in a debounce window would be lost forever.
   debouncer.flushAll();
-  await Promise.race([Promise.all([cbChain.idle(), chatQueues.idle()]), sleep(GRACE_MS)]);
+  await Promise.race([Promise.all([cbChain.idle(), chatQueues.idle(), digestInFlight ?? Promise.resolve()]), sleep(GRACE_MS)]);
   console.log("[BOT] drained — exiting");
   process.exit(0);
 }
