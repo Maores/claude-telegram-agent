@@ -66,6 +66,7 @@ export interface StoredRequest {
   otherOpenedAt: number | null; // when the tap or the last ✗ opened the window: it never outlasts OTHER_CAP_S from then
   shown: string | null; // the view last sent or edited in (JSON), so only a change is edited
   failedView: string | null; // the view whose edit last failed in passing, so the log says it once
+  moveDown?: boolean; // he wrote in an "אחר" window, so the talk sits below the card: its next view goes out at the bottom
   createdAt: number;
   sentAt: number | null;
   endedAt: number | null;
@@ -361,6 +362,11 @@ export function supersededView(req: StoredRequest): View {
   return { text: `${req.title}: הוחלף בעדכון של ${req.supersededOn ?? "היום"}.`, keyboard: null };
 }
 
+/** What the old message says once the request moved to a new message at the bottom. */
+export function movedView(req: StoredRequest): View {
+  return { text: `${req.title}: המשך בהודעה למטה.`, keyboard: null };
+}
+
 export function cardView(req: StoredRequest): View {
   const n = req.cursor + 1;
   const c = req.cards[req.cursor];
@@ -620,6 +626,20 @@ export function asData(t: string, max: number): string {
   return one.length > max ? `${one.slice(0, max - 1)}…` : one;
 }
 
+/** A ✓/✗ message whose card stopped waiting (handled on the PC, or its request superseded) loses
+ *  its buttons, so it never looks open on the phone; a tap on it would only say "כבר טופל". */
+export function retireProposals(s: Store): Edit[] {
+  const edits: Edit[] = [];
+  for (const p of s.proposals) {
+    if (p.status !== "sent") continue;
+    const req = s.requests.find((r) => r.id === p.request);
+    if (req && req.status === "showing" && req.cards[p.card - 1]?.state === "open") continue;
+    p.status = "cancelled";
+    if (p.messageId !== null) edits.push({ chatId: p.chatId, messageId: p.messageId, view: proposalView(p, headingOf(s, p), "stale") });
+  }
+  return edits;
+}
+
 /** Joined to the turn of a message he writes while an "אחר" window is open (poller.ts, through
  *  takeOther). Empty when the card is no longer open, so a late message flows on as normal chat.
  *  The new text travels on stdin through a quoted heredoc: on a command line, a Hebrew
@@ -653,7 +673,10 @@ export function takeOther(s: Store, chatId: number, nowS: number): string {
   const req = s.requests.find((r) => r.chatId === chatId && r.status === "showing" && r.mode === "other");
   if (!req || req.otherUntil === null || nowS > req.otherUntil) return "";
   const directive = otherDirective(s, req.short, req.cursor + 1);
-  if (directive) req.otherUntil = Math.min(nowS + OTHER_WINDOW_S, (req.otherOpenedAt ?? nowS) + OTHER_CAP_S);
+  if (directive) {
+    req.otherUntil = Math.min(nowS + OTHER_WINDOW_S, (req.otherOpenedAt ?? nowS) + OTHER_CAP_S);
+    req.moveDown = true; // his message, the reply and any proposal now sit below the card
+  }
   return directive;
 }
 
@@ -767,9 +790,12 @@ export function isGoneError(e: unknown): boolean {
  *  tap may have moved it since the edit was planned) and records `shown` once it landed, or once
  *  Telegram says the message is gone for good; a gone message is then left alone (he deleted it,
  *  and the routine's next request supersedes it). A passing failure records nothing, so every tick
- *  tries again; it is logged once per view. `tried` keeps each request to one try per tick. */
+ *  tries again; it is logged once per view. `tried` keeps each request to one try per tick.
+ *  After he wrote in an "אחר" window (`moveDown`), and given `send`, a request that is not
+ *  superseded is not edited but sent anew at the bottom of the chat, below the talk, and its old
+ *  message becomes a short line; a failed send leaves everything as it was for the next tick. */
 export async function performEdits(
-  d: Pick<TickDeps, "dir" | "edit" | "log">,
+  d: Pick<TickDeps, "dir" | "edit" | "log"> & Partial<Pick<TickDeps, "send">>,
   edits: Edit[],
   tried: Set<string> = new Set(),
 ): Promise<void> {
@@ -782,6 +808,10 @@ export async function performEdits(
       view = viewOf(cur);
       if (JSON.stringify(view) === cur.shown) continue;
       tried.add(e.request);
+      if (d.send && cur.moveDown && cur.status !== "superseded" && cur.chatId !== null) {
+        await moveToBottom({ ...d, send: d.send }, cur, e, view);
+        continue;
+      }
     }
     let outcome: "ok" | "gone" | "failed" = "ok";
     let why = "";
@@ -818,6 +848,59 @@ export async function performEdits(
   }
 }
 
+/** Send a request's view as a new message, record it as the request's message, then shorten the
+ *  old one. Only the message that shows a card takes its taps, so the old buttons stop acting at
+ *  once, even when the old message can no longer be edited. The flag is cleared before the send:
+ *  a tap and the tick can both be here at once, and from performEdits' read of the store to this
+ *  write there is no await, so the one that comes second finds no flag and does not send. */
+async function moveToBottom(d: Pick<TickDeps, "dir" | "send" | "edit" | "log">, cur: StoredRequest, e: Edit, view: View): Promise<void> {
+  const shown = JSON.stringify(view);
+  mutateStore(
+    d.dir,
+    (s) => {
+      const r = s.requests.find((x) => x.id === cur.id);
+      if (r) delete r.moveDown;
+    },
+    d.log,
+  );
+  let messageId: number;
+  try {
+    messageId = await d.send(cur.chatId!, view);
+  } catch (err: any) {
+    const why = String(err?.message ?? err);
+    mutateStore(
+      d.dir,
+      (s) => {
+        const r = s.requests.find((x) => x.id === cur.id);
+        if (!r || r.messageId !== e.messageId) return;
+        r.moveDown = true; // not moved: the next tick tries again
+        if (r.failedView === shown) return;
+        r.failedView = shown;
+        d.log(`[RC] move of ${cur.id} to the bottom failed, tried again each tick: ${why}`);
+      },
+      d.log,
+    );
+    return;
+  }
+  mutateStore(
+    d.dir,
+    (s) => {
+      const r = s.requests.find((x) => x.id === cur.id);
+      if (!r) return;
+      r.messageId = messageId;
+      r.shown = shown;
+      r.failedView = null;
+    },
+    d.log,
+  );
+  d.log(`[RC] ${cur.id} moved down to message ${messageId}`);
+  try {
+    await d.edit(e.chatId, e.messageId, movedView(cur));
+  } catch (err: any) {
+    d.log(`[RC] message ${e.messageId} of ${cur.id} was not shortened after the move: ${String(err?.message ?? err)}`);
+  }
+}
+
 /** The 30-second tick: housekeeping, the sends that are due (none in quiet time, and none once a
  *  restart's drain began), then every shown message brought in line with the store. */
 export async function runRchannelTick(d: TickDeps): Promise<void> {
@@ -832,7 +915,7 @@ export async function runRchannelTick(d: TickDeps): Promise<void> {
     (s) => {
       prune(s, nowS);
       closeLapsedOther(s, nowS);
-      const expired = expireProposals(s, nowS);
+      const expired = [...expireProposals(s, nowS), ...retireProposals(s)];
       const queued = s.requests.filter((r) => r.status === "queued").map((r) => r.id);
       return { expired, due: quiet || chatId === null ? [] : queued, queued: queued.length };
     },
