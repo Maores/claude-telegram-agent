@@ -850,9 +850,19 @@ export async function performEdits(
 
 /** Send a request's view as a new message, record it as the request's message, then shorten the
  *  old one. Only the message that shows a card takes its taps, so the old buttons stop acting at
- *  once, even when the old message can no longer be edited. */
+ *  once, even when the old message can no longer be edited. The flag is cleared before the send:
+ *  a tap and the tick can both be here at once, and from performEdits' read of the store to this
+ *  write there is no await, so the one that comes second finds no flag and does not send. */
 async function moveToBottom(d: Pick<TickDeps, "dir" | "send" | "edit" | "log">, cur: StoredRequest, e: Edit, view: View): Promise<void> {
   const shown = JSON.stringify(view);
+  mutateStore(
+    d.dir,
+    (s) => {
+      const r = s.requests.find((x) => x.id === cur.id);
+      if (r) delete r.moveDown;
+    },
+    d.log,
+  );
   let messageId: number;
   try {
     messageId = await d.send(cur.chatId!, view);
@@ -862,7 +872,9 @@ async function moveToBottom(d: Pick<TickDeps, "dir" | "send" | "edit" | "log">, 
       d.dir,
       (s) => {
         const r = s.requests.find((x) => x.id === cur.id);
-        if (!r || r.failedView === shown) return;
+        if (!r || r.messageId !== e.messageId) return;
+        r.moveDown = true; // not moved: the next tick tries again
+        if (r.failedView === shown) return;
         r.failedView = shown;
         d.log(`[RC] move of ${cur.id} to the bottom failed, tried again each tick: ${why}`);
       },
@@ -878,7 +890,6 @@ async function moveToBottom(d: Pick<TickDeps, "dir" | "send" | "edit" | "log">, 
       r.messageId = messageId;
       r.shown = shown;
       r.failedView = null;
-      delete r.moveDown;
     },
     d.log,
   );

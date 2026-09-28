@@ -115,6 +115,23 @@ test("after he wrote in the window, ✓ on the proposal sends the next card at t
   expect(first(tg.edits.at(-1)!.view)).toBe("מפת הסקילים · פריט 3 מתוך 3");
 });
 
+test("a tap and the tick that both reach a move send the card once", async () => {
+  const dir = scratch();
+  const tg = fakeTelegram(dir);
+  await afterHeWrote(dir, tg);
+  mutateStore(dir, (s) => registerProposal(s, { short: "q1", card: 1, text: "תיאור קצר.", chatId: 42, turnId: "t1" }, NOW + 10));
+  await sendRcProposals(tg.deps, 42, "t1"); // message 1001
+  const r = tapIn(dir, "rc:q1:1:ok", 1001, NOW + 20);
+  // a slow Telegram: both calls are in flight at once, as when the interval fires during a tap
+  const slow: TickDeps = { ...tg.deps, send: async (c, v) => (await Bun.sleep(20), tg.deps.send(c, v)) };
+  await Promise.all([performEdits(slow, r.edits), runRchannelTick(slow)]);
+  expect(tg.sends.filter((x) => first(x.view) === "מפת הסקילים · פריט 2 מתוך 3").length).toBe(1);
+  expect(tg.edits.filter((e) => e.messageId === 1000 && e.view.text === MOVED.text).length).toBe(1);
+  const stored = loadStore(dir).requests[0];
+  expect(stored.messageId).toBe(1002);
+  expect(stored.moveDown).toBeUndefined();
+});
+
 test("\"back\" before he wrote anything keeps the card where it is", async () => {
   const dir = scratch();
   const tg = fakeTelegram(dir);
