@@ -438,8 +438,9 @@ export function snoozeAskDirective(fuId: string, followupText: string): string {
 }
 
 /** "אחר…" on a routine card (rchannel.ts): while its window is open (10 minutes from the tap or
- *  his last message about the card; kept in the store, so a restart keeps it), his message's turn
- *  carries the card's directive. "" when no window is open in this chat. */
+ *  his last message, never past 30 minutes from the tap or the last ✗; kept in the store, so a
+ *  restart keeps it), his message's turn carries the card's directive. "" when no window is open
+ *  in this chat. */
 function takeRcOtherDirective(chatId: number): string {
   try {
     return mutateStore(rchannelDir(), (s) => takeOther(s, chatId, Math.floor(Date.now() / 1000)), rcLog);
