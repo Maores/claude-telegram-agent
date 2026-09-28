@@ -85,6 +85,20 @@ export function hebrewDate(date: string): HebrewDate | null {
 }
 
 /**
+ * Is the civil day `date` itself a Saturday or a Yom Tov? calendarOk=false means the Hebrew
+ * date was needed and could not be read. Shared with rchannel.ts, whose quiet time is by day.
+ */
+export function sacredDay(
+  date: string,
+  readHebrew: (date: string) => HebrewDate | null = hebrewDate,
+): { sacred: boolean; calendarOk: boolean } {
+  if (weekday(date) === 6) return { sacred: true, calendarOk: true };
+  const h = readHebrew(date);
+  if (!h) return { sacred: false, calendarOk: false };
+  return { sacred: (YOM_TOV[h.month] ?? []).includes(h.day), calendarOk: true };
+}
+
+/**
  * Does 21:30 on `date` fall inside Shabbat or a Yom Tov? It does exactly when the next
  * civil day is a Saturday or a Yom Tov (Friday nights, holiday eves, the first night of
  * Rosh Hashanah). calendarOk=false means the Hebrew date was needed and could not be read;
@@ -94,11 +108,8 @@ export function quietNight(
   date: string,
   readHebrew: (date: string) => HebrewDate | null = hebrewDate,
 ): { quiet: boolean; calendarOk: boolean } {
-  const next = addDays(date, 1);
-  if (weekday(next) === 6) return { quiet: true, calendarOk: true };
-  const h = readHebrew(next);
-  if (!h) return { quiet: true, calendarOk: false };
-  return { quiet: (YOM_TOV[h.month] ?? []).includes(h.day), calendarOk: true };
+  const next = sacredDay(addDays(date, 1), readHebrew);
+  return { quiet: next.sacred || !next.calendarOk, calendarOk: next.calendarOk };
 }
 
 /** The quiet-night check over `days` nights from `from`; `unreadable` must be 0. */

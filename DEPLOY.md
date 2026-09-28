@@ -615,6 +615,31 @@ the manual fallback.
 
 ---
 
+## Step 15 — Routine channel (server + local)
+
+Claude Desktop routines on the owner's PC leave requests for him (a plain notice,
+or cards he answers one at a time with ✓ מאשר, ✗ דוחה, מאשר הכל and אחר…). A PC
+task hands them to the server every 5 minutes over the existing ssh key and takes
+his answers back; a handler registered on the PC carries them out. New messages
+wait through Shabbat and holidays (from 14:00 the day before until 21:00 on the
+day). Design: `docs/superpowers/specs/2026-09-27-routine-channel-design.md`.
+
+**(server)** nothing to install beyond the code; the store is
+`~/rchannel/store.json`, outside the repo and outside the nightly backup (the PC
+keeps a copy of every request it sent). After the deploy that brings it, check
+the sync contract over a non-interactive ssh, where `bun` is `~/.bun/bin/bun`:
+
+```bash
+cd ~/claude-bot
+echo '{"v":1,"requests":[],"acks":[],"results":[],"closes":[]}' | ~/.bun/bin/bun run rchannel.ts sync
+# expect: {"v":1,"received":[],"answers":[]}
+~/.bun/bin/bun run ccdigest.ts calendar   # the quiet-time check reads the same calendar: expect "0 unreadable"
+```
+
+The channel logs `[RC]` lines: `TZ=Asia/Jerusalem journalctl -u telegram-agent --since today --no-pager | grep -F '[RC]'`.
+
+---
+
 ## Updating the bot later (local → server)
 
 ```powershell
