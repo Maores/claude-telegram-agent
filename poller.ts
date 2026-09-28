@@ -2771,7 +2771,7 @@ async function handleRcCallback(
     return;
   }
   await ack(r.toast);
-  await performEdits({ dir: rchannelDir(), edit: rcEdit, log: rcLog }, r.edits);
+  await performEdits({ dir: rchannelDir(), send: rcSend, edit: rcEdit, log: rcLog }, r.edits);
   console.log(`[RC] tap ${tap.short}:${tap.n}:${tap.act}${r.toast ? ` (${r.toast})` : ""}`);
 }
 
