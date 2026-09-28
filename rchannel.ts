@@ -608,11 +608,6 @@ export function expireProposals(s: Store, nowS: number): Edit[] {
   return edits;
 }
 
-/** Joined to the turn of a message he writes while an "אחר" window is open (poller.ts, through
- *  takeOther). Empty when the card is no longer open, so a late message flows on as normal chat.
- *  The new text travels on stdin through a quoted heredoc: on a command line, a Hebrew
- *  abbreviation's double quote (ע"י) would break it, and bash would expand $ and backticks before
- *  the check that refuses them could see them. */
 /** Item text quoted into the directive as data. Nothing in it can close the fence or the
  *  guillemets around it (angle marks become ‹ ›, guillemets go), it stays on one line, and it is
  *  capped. The threat scan knows English phrasing only, so for Hebrew text this fencing is the
@@ -625,6 +620,11 @@ export function asData(t: string, max: number): string {
   return one.length > max ? `${one.slice(0, max - 1)}…` : one;
 }
 
+/** Joined to the turn of a message he writes while an "אחר" window is open (poller.ts, through
+ *  takeOther). Empty when the card is no longer open, so a late message flows on as normal chat.
+ *  The new text travels on stdin through a quoted heredoc: on a command line, a Hebrew
+ *  abbreviation's double quote (ע"י) would break it, and bash would expand $ and backticks before
+ *  the check that refuses them could see them. */
 export function otherDirective(s: Store, short: string, n: number): string {
   const req = s.requests.find((r) => r.short === short);
   const card = req?.cards[n - 1];

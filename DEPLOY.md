@@ -638,6 +638,76 @@ echo '{"v":1,"requests":[],"acks":[],"results":[],"closes":[]}' | ~/.bun/bin/bun
 
 The channel logs `[RC]` lines: `TZ=Asia/Jerusalem journalctl -u telegram-agent --since today --no-pager | grep -F '[RC]'`.
 
+**(local)** The PC half lives in `%USERPROFILE%\.claude\tools\routine-channel`
+(below: the channel's home). The Claude desktop app does not redirect that folder,
+so, unlike step 14's `%LOCALAPPDATA%` folder, a Claude session may write it
+directly and the scheduled task sees the same files.
+
+**(local) 1. The deployed copy.** The task never runs the development checkout,
+which switches branches. Build the copy from `origin/main`, and rebuild it at
+every deploy that changes `rchannel-schema.ts` or `scripts/rchannel-*`:
+
+```powershell
+$repo = "<path-to-repo>"
+$chan = "$env:USERPROFILE\.claude\tools\routine-channel"
+$tar = Join-Path $env:TEMP "rchannel-app.tar"
+git -C $repo fetch origin
+git -C $repo archive -o $tar origin/main rchannel-schema.ts scripts/rchannel-pc.ts scripts/rchannel-sync.ps1
+New-Item -ItemType Directory -Force "$chan\app" | Out-Null
+tar -xf $tar -C "$chan\app"
+git -C $repo rev-parse --short origin/main | Set-Content -Encoding ascii "$chan\app\version.txt"
+```
+
+**(local) 2. The settings,** two JSON files in the channel's home (backslashes
+doubled). `config.json` names the server and the key's path, never a key.
+`handlers.json` names, per routine, the program that carries out its answers;
+the task appends a work file's path to that argv and runs it with no shell.
+
+```json
+{ "target": "claudebot@<YOUR_SERVER_IP>", "key": "<path to the ssh key>" }
+```
+
+```json
+{ "map": { "argv": ["<python>", "<map script>", "--phone-answers"], "timeout_s": 120 } }
+```
+
+Check they parse: `& "$env:USERPROFILE\.bun\bin\bun.exe" "$chan\app\scripts\rchannel-pc.ts" open`
+prints `nothing is waiting`.
+
+**(local) 3. The 5-minute task,** registered like step 14's: while you are signed
+in, never waking the machine, with no window through a headless console host:
+
+```powershell
+$pwsh = (Get-Command pwsh).Source
+$launcher = "$env:USERPROFILE\.claude\tools\routine-channel\app\scripts\rchannel-sync.ps1"
+$action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\conhost.exe" -Argument "--headless `"$pwsh`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`" sync"
+$every5 = New-ScheduledTaskTrigger -Once -At "00:02" -RepetitionInterval (New-TimeSpan -Minutes 5)
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName "TelegramAgent routine channel" -Action $action -Trigger $every5 -Settings $settings
+(Get-ScheduledTask -TaskName "TelegramAgent routine channel").Triggers | Select-Object StartBoundary, @{n='Interval';e={$_.Repetition.Interval}}, @{n='Duration';e={$_.Repetition.Duration}}
+Start-ScheduledTask -TaskName "TelegramAgent routine channel"
+for ($i = 0; $i -lt 60 -and (Get-ScheduledTask -TaskName "TelegramAgent routine channel").State -ne 'Ready'; $i++) { Start-Sleep -Seconds 2 }
+Get-Item "$env:USERPROFILE\.claude\tools\routine-channel\last-sync-ok" | Select-Object LastWriteTime
+```
+
+The trigger must read `PT5M` with an empty (indefinite) duration; if not, register
+it again with `-RepetitionDuration (New-TimeSpan -Days 3650)` added to `$every5`.
+The headless host hides the exit code (Last Run Result reads 0 even on failure):
+judge a run by `last-sync-ok` and by `sync.log`, which gets a line only when
+something was sent, answered or refused, or a call failed. A request file that
+fails validation moves to `outbox\rejected\` with its reason in the log.
+
+A run stays inside the task's 5 minutes: each ssh call gets at most 60 s, each
+handler at most its `timeout_s` (capped at 150 s), and a second routine's handler
+starts only when it can run to its timeout and still leave 60 s for the last
+call before 285 s (otherwise its answers wait for the next cycle).
+A handler that stays busy for an hour has its answers reported failed. A
+`state.json` that cannot be read at all (busy, or not a file) stops the cycle
+with a `FAILED: cannot read state.json` line and is left as it is. If it is ever
+lost or damaged (a damaged one is kept aside as `state.json.corrupt-<ms>`), move the request files from `sent\` back to
+`outbox\`: the next sync sends them again, the server reports them received,
+and the PC records them.
+
 ---
 
 ## Updating the bot later (local → server)
@@ -656,6 +726,9 @@ sudo journalctl -u telegram-agent -n 5 --no-pager   # confirm the banner
 
 When the update changed `ccjournal.ts` or `scripts/cc-journal-push.*`, also
 rebuild the PC's deployed copy (step 14, local 1) after the server is updated.
+
+When it changed `rchannel-schema.ts` or `scripts/rchannel-*`, rebuild the routine
+channel's copy the same way (step 15, local 1).
 
 ---
 
