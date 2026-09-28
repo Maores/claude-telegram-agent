@@ -38,6 +38,7 @@ import { HEARTBEAT_FILE } from "./health.ts";
 import { shouldReview, runReview } from "./review";
 import { classifyUpdate, ChatQueues, SerialChain, Debouncer, isStopCommand } from "./dispatch";
 import { runDigest, digestDir, type GenOutcome } from "./ccdigest.ts";
+import { rchannelDir, mutateStore, applyTap, parseRcCallback, takeOther, performEdits, runRchannelTick, sendRcProposals, RcGone, isGoneError, type RcTap, type View } from "./rchannel.ts";
 export { isStopCommand }; // poller.test.ts and external users keep their import path
 
 // ---------------------------------------------------------------------------
@@ -434,6 +435,18 @@ export function snoozeAskDirective(fuId: string, followupText: string): string {
     "If it turns out NOT to be a time, ignore this block entirely and answer the message normally.",
     "</snooze-ask>",
   ].join("\n");
+}
+
+/** "אחר…" on a routine card (rchannel.ts): while its window is open (10 minutes from the tap or
+ *  his last message about the card; kept in the store, so a restart keeps it), his message's turn
+ *  carries the card's directive. "" when no window is open in this chat. */
+function takeRcOtherDirective(chatId: number): string {
+  try {
+    return mutateStore(rchannelDir(), (s) => takeOther(s, chatId, Math.floor(Date.now() / 1000)), rcLog);
+  } catch (e: any) {
+    console.error(`[ERR] rc directive: ${e?.message ?? e}`);
+    return "";
+  }
 }
 
 export function fuKeyboard(id: string): unknown {
@@ -1481,6 +1494,8 @@ async function handleMessage(msg: TgMessage) {
   // An open "זמן אחר…" snooze ask consumes the next message when it's a time.
   const snoozeAsk = await consumeCustomSnooze(chatId, voiceText ?? words);
   if (snoozeAsk.kind === "handled") return;
+  // An open "אחר…" ask on a routine card: this message is his answer about that card.
+  const rcDirective = takeRcOtherDirective(chatId);
 
   const { model, prompt: userMsg } = pickModel(voiceText ?? words);
 
@@ -1566,7 +1581,7 @@ async function handleMessage(msg: TgMessage) {
     }
     const snoozeDirective =
       snoozeAsk.kind === "miss" ? snoozeAskDirective(snoozeAsk.fuId, snoozeAsk.followupText) : "";
-    const directive = [devDirective, quizDirective, snoozeDirective].filter(Boolean).join("\n\n");
+    const directive = [devDirective, quizDirective, snoozeDirective, rcDirective].filter(Boolean).join("\n\n");
     // Native Telegram reply (#308): tell the model which earlier message Maor quoted.
     const replyContext = replyContextLine(msg.reply_to_message, botUserId, name) ?? "";
     const echoPrefix =
@@ -1592,6 +1607,7 @@ async function handleMessage(msg: TgMessage) {
     }
     await sendPendingProposals(chatId, turnId);
     await sendPendingChoices(chatId, turnId);
+    await sendRcProposalsAfter(chatId, turnId);
     console.log(`[DONE] replied to ${fromId}`);
     void setReaction(chatId, msg.message_id, outcomeReaction(true));
     // Self-improvement pass (Phase 7): detached, cooldown-gated, never blocks.
@@ -1808,6 +1824,9 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
     return;
   }
 
+  // After the confirmation gate, so a held burst leaves the "אחר…" ask for its confirmed replay.
+  const rcDirective = takeRcOtherDirective(chatId);
+
   const { model, prompt: userMsg } = pickModel(combined);
   console.log(redact(`[MSG] ${name} (${model}) [batch:${msgs.length}]: ${userMsg.slice(0, 100)}`));
 
@@ -1850,7 +1869,7 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
     }
     const snoozeDirective =
       snoozeAsk.kind === "miss" ? snoozeAskDirective(snoozeAsk.fuId, snoozeAsk.followupText) : "";
-    const directive = [devDirective, quizDirective, snoozeDirective].filter(Boolean).join("\n\n");
+    const directive = [devDirective, quizDirective, snoozeDirective, rcDirective].filter(Boolean).join("\n\n");
     const replyContext = replyContextLine(last.reply_to_message, botUserId, name) ?? "";
     const turnId = newTurnId();
     const batchOpts = echoes.length ? { renderPrefix: echoes.join("\n") + "\n\n" } : {};
@@ -1872,6 +1891,7 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
     }
     await sendPendingProposals(chatId, turnId);
     await sendPendingChoices(chatId, turnId);
+    await sendRcProposalsAfter(chatId, turnId);
     console.log(`[DONE] replied to batch of ${msgs.length} from ${fromId}`);
     void setReaction(chatId, last.message_id, outcomeReaction(true));
     if (shouldReview(chatId, Math.floor(Date.now() / 1000))) {
@@ -1913,9 +1933,10 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   const ch = qz || pa ? null : parseChCallback(cq.data ?? "");
   const fuu = qz || pa || ch ? null : parseFuuCallback(cq.data ?? "");
   const vc = qz || pa || ch || fuu ? null : parseVcCallback(cq.data ?? "");
-  const parsed = qz || pa || ch || fuu || vc ? null : parseFuCallback(cq.data ?? "");
+  const rc = qz || pa || ch || fuu || vc ? null : parseRcCallback(cq.data ?? "");
+  const parsed = qz || pa || ch || fuu || vc || rc ? null : parseFuCallback(cq.data ?? "");
   console.log(
-    `[CB] ${qz ? `qz:${qz.kind}:${qz.choice}` : pa ? `pa:${pa.action}:${pa.id}` : ch ? `ch:${ch.id}:${ch.idx}` : fuu ? `undo:${fuu.fuId}` : vc ? `vc:${vc.id}:${vc.ok ? "y" : "n"}` : parsed ? `${parsed.action}:${parsed.id}` : `?:${(cq.data ?? "").slice(0, 24)}`} from ${cq.from.id}`,
+    `[CB] ${qz ? `qz:${qz.kind}:${qz.choice}` : pa ? `pa:${pa.action}:${pa.id}` : ch ? `ch:${ch.id}:${ch.idx}` : fuu ? `undo:${fuu.fuId}` : vc ? `vc:${vc.id}:${vc.ok ? "y" : "n"}` : rc ? `rc:${rc.short}:${rc.n}:${rc.act}` : parsed ? `${parsed.action}:${parsed.id}` : `?:${(cq.data ?? "").slice(0, 24)}`} from ${cq.from.id}`,
   );
   const ack = (text?: string) =>
     tg("answerCallbackQuery", { callback_query_id: cq.id, ...(text ? { text } : {}) }).catch(() => {});
@@ -1925,8 +1946,12 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   }
   const chatId = cq.message?.chat.id;
   const messageId = cq.message?.message_id;
-  if (chatId == null || messageId == null || (!qz && !pa && !ch && !fuu && !vc && !parsed)) {
+  if (chatId == null || messageId == null || (!qz && !pa && !ch && !fuu && !vc && !rc && !parsed)) {
     await ack(); // unknown namespace — ignore
+    return;
+  }
+  if (rc) {
+    await handleRcCallback(rc, chatId, messageId, ack);
     return;
   }
   if (qz) {
@@ -2385,9 +2410,11 @@ async function answerConfirmedVoice(chatId: number, pending: PendingVoice) {
       console.error(`[ERR] skills: ${e?.message ?? e}`);
     }
     const turnId = newTurnId();
+    // A recording held for confirmation is still his answer to an open "אחר…" ask.
+    const rcDirective = takeRcOtherDirective(chatId);
     const answer =
       (await streamClaudeResilient(
-        buildPrompt(history, name, prompt, recall, loadMemory(), skills, "", "", recentUploadsBlock()),
+        buildPrompt(history, name, prompt, recall, loadMemory(), skills, rcDirective, "", recentUploadsBlock()),
         chatId,
         placeholderId,
         model,
@@ -2400,6 +2427,7 @@ async function answerConfirmedVoice(chatId: number, pending: PendingVoice) {
     }
     await sendPendingProposals(chatId, turnId);
     await sendPendingChoices(chatId, turnId);
+    await sendRcProposalsAfter(chatId, turnId);
     console.log(`[VOICE] answered confirmed turn for ${chatId}`);
   } catch (e: any) {
     if (e instanceof TurnStopped) {
@@ -2687,6 +2715,99 @@ function checkDigest(): Promise<void> {
       digestInFlight = null;
     });
   return digestInFlight;
+}
+
+// ---------------------------------------------------------------------------
+// Routine channel (rchannel.ts; spec docs/superpowers/specs/2026-09-27-routine-channel-design.md).
+// Requests from the owner's PC routines go out on the 30 s tick; the rc: buttons answer them.
+// ---------------------------------------------------------------------------
+
+/** The Telegram parameters for a view. No reply_markup means no keyboard: Telegram drops the
+ *  buttons of an edited message that is sent without one. Exported for tests. */
+export function rcParams(view: View): Record<string, unknown> {
+  return { text: view.text, ...(view.keyboard ? { reply_markup: { inline_keyboard: view.keyboard } } : {}) };
+}
+
+/** An edit Telegram refuses only because the message already shows exactly this. */
+export function isNotModified(e: unknown): boolean {
+  return /message is not modified/i.test(String((e as any)?.message ?? e));
+}
+
+async function rcSend(chatId: number, view: View): Promise<number> {
+  const sent = await tg("sendMessage", { chat_id: chatId, ...rcParams(view) });
+  return sent.message_id;
+}
+
+/** A refusal of the message itself, gone for good, becomes RcGone, so the channel stops editing
+ *  it; any other failure is passing and the tick tries again. */
+async function rcEdit(chatId: number, messageId: number, view: View): Promise<void> {
+  try {
+    await tg("editMessageText", { chat_id: chatId, message_id: messageId, ...rcParams(view) });
+  } catch (e: any) {
+    if (isNotModified(e)) return;
+    if (isGoneError(e)) throw new RcGone(String(e?.message ?? e));
+    throw e;
+  }
+}
+
+const rcLog = (line: string) => console.log(redact(line));
+
+/** A tap on a routine card or on a ✓/✗ for a new description. The store decides (rchannel.ts
+ *  applyTap), then the messages are edited; a stale tap only gets "כבר טופל". */
+async function handleRcCallback(
+  tap: RcTap,
+  chatId: number,
+  messageId: number,
+  ack: (text?: string) => Promise<unknown>,
+) {
+  const nowS = Math.floor(Date.now() / 1000);
+  let r;
+  try {
+    r = mutateStore(rchannelDir(), (s) => applyTap(s, tap, chatId, messageId, nowS), rcLog);
+  } catch (e: any) {
+    console.error(`[ERR] rc tap ${tap.short}:${tap.n}:${tap.act}: ${e?.message ?? e}`);
+    await ack();
+    return;
+  }
+  await ack(r.toast);
+  await performEdits({ dir: rchannelDir(), edit: rcEdit, log: rcLog }, r.edits);
+  console.log(`[RC] tap ${tap.short}:${tap.n}:${tap.act}${r.toast ? ` (${r.toast})` : ""}`);
+}
+
+/** After an interactive turn: the ✓/✗ for a new description that turn proposed. */
+async function sendRcProposalsAfter(chatId: number, turnId: string) {
+  try {
+    await sendRcProposals({ dir: rchannelDir(), send: rcSend, log: rcLog }, chatId, turnId);
+  } catch (e: any) {
+    console.error(`[ERR] rc proposals: ${e?.message ?? e}`);
+  }
+}
+
+/** The tick in flight, so a slow Telegram call never overlaps the next one, and a restart's
+ *  drain can wait for it (see main). */
+let rchannelInFlight: Promise<void> | null = null;
+
+function checkRchannel(): Promise<void> {
+  if (rchannelInFlight) return rchannelInFlight;
+  // The interval keeps firing during a restart's drain; a tick started then could send a card
+  // and be killed before recording it, and the next process would send it again.
+  if (stopping) return Promise.resolve();
+  rchannelInFlight = runRchannelTick({
+    now: () => new Date(),
+    dir: rchannelDir(),
+    targetChat: digestTargetChat, // the owner's chat, as for the digest
+    send: rcSend,
+    edit: rcEdit,
+    log: rcLog,
+    stopping: () => stopping,
+  })
+    .catch((e: any) => {
+      console.error(`[ERR] rchannel: ${e?.message ?? e}`);
+    })
+    .finally(() => {
+      rchannelInFlight = null;
+    });
+  return rchannelInFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -2996,6 +3117,7 @@ async function main() {
     void checkMonitors();
     void checkQuiz();
     void checkDigest();
+    void checkRchannel();
   }, 30_000);
 
   setInterval(() => {
@@ -3080,7 +3202,7 @@ async function main() {
   // Buffered messages join the queues first — the offset was saved at fetch
   // time, so anything left in a debounce window would be lost forever.
   debouncer.flushAll();
-  await Promise.race([Promise.all([cbChain.idle(), chatQueues.idle(), digestInFlight ?? Promise.resolve()]), sleep(GRACE_MS)]);
+  await Promise.race([Promise.all([cbChain.idle(), chatQueues.idle(), digestInFlight ?? Promise.resolve(), rchannelInFlight ?? Promise.resolve()]), sleep(GRACE_MS)]);
   console.log("[BOT] drained — exiting");
   process.exit(0);
 }

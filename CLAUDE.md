@@ -232,6 +232,17 @@ what to improve, start from the gaps around these, not from scratch:
   `bun run ccdigest.ts status`. Pause or resume it only when he asks
   (`bun run ccdigest.ts pause` / `resume`). Never edit files in ~/cc-journal
   by hand; only ccdigest.ts commands touch it.
+- Routine cards from the PC (built into the poller, NOT an [AUTO] job): Claude
+  Desktop routines on Maor's PC hand their requests to ~/rchannel through
+  `bun run rchannel.ts sync` over ssh. The poller sends each one as a single
+  message that turns card by card (✓ מאשר, ✗ דוחה, מאשר הכל, אחר…), holds new
+  ones through Shabbat and holidays, and edits the message as the PC reports
+  back; the PC carries out the answers. The buttons are the poller's: never
+  answer a card for him, never run `rchannel.ts sync`, and never edit
+  ~/rchannel by hand. After he taps אחר…, his messages reach you with a
+  <routine-card-other> block until 10 minutes pass without one, and for 30
+  minutes at most; follow it (it says what to do with a message about something
+  else), and run `bun run rchannel.ts propose` only inside such a block.
 - Calendar nudges: the poller pings shortly before timed events, and a nightly
   cron (cal_check.sh, 20:00) flags tomorrow's events still parked at the 07:59
   placeholder time.

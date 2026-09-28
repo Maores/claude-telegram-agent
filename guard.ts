@@ -48,6 +48,9 @@ const WRITE_INTENT =
 const SSH_PATH = /(?:~|\$\{?HOME\}?|\/home\/[\w.-]+|\/root)\/\.ssh\b/i;
 const ENV_PATH = /\.claude\/channels\/telegram\/\.env\b/i;
 const SELF_PATH = /(?:^|[\s'"=/])(?:guard\.ts|hooks\/pretooluse-guard\.ts|hooks\/[\w.-]+\.ts)\b/i;
+// The routine channel's store: only the poller and the PC's sync (over ssh, never through this
+// hook) write it; an answer written into it by a turn would be carried out on the PC.
+const RCHANNEL_STORE = /\brchannel\/store\.json\b/i;
 
 interface Rule {
   name: string;
@@ -102,6 +105,16 @@ const RULES: Rule[] = [
     name: "self-tamper",
     reason: "refused: editing guard.ts or the hook files would disable the safety policy",
     test: (c) => SELF_PATH.test(c) && WRITE_INTENT.test(c),
+  },
+  {
+    name: "rchannel-store-tamper",
+    reason: "refused: the routine channel's store is written only by the poller and the PC's sync",
+    test: (c) => RCHANNEL_STORE.test(c) && WRITE_INTENT.test(c),
+  },
+  {
+    name: "rchannel-sync",
+    reason: "refused: rchannel.ts sync is the PC's own call over ssh; a turn never runs it",
+    test: (c) => /\brchannel\.ts\s+sync\b/i.test(c),
   },
   {
     name: "force-push-main",
@@ -183,7 +196,8 @@ function isProtectedFile(p: string): boolean {
   return (
     /(?:^|\/)guard\.ts$/.test(s) ||
     /(?:^|\/)hooks\/[\w.-]+\.ts$/.test(s) ||
-    /(?:^|\/)\.claude\/channels\/telegram\/\.env$/.test(s)
+    /(?:^|\/)\.claude\/channels\/telegram\/\.env$/.test(s) ||
+    /(?:^|\/)rchannel\/store\.json(?:\.tmp|\.lock)?$/.test(s)
   );
 }
 
