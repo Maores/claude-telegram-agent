@@ -22,17 +22,26 @@ export function isStopCommand(text: string, botUsername: string): boolean {
 /** The slice of a Telegram update that triage needs. */
 export interface DispatchUpdate {
   update_id: number;
-  message?: { chat: { id: number }; text?: string };
+  message?: { chat: { id: number; type?: string }; text?: string };
   callback_query?: unknown;
 }
 
-export type UpdateKind = "callback" | "stop" | "message" | "ignore";
+export type UpdateKind = "callback" | "stop" | "message" | "inbox" | "foreign-group" | "ignore";
 
-/** Triage an update WITHOUT doing any work. /stop outranks "message" so it
- *  interrupts instead of queueing behind the very turn it targets. */
-export function classifyUpdate(u: DispatchUpdate, botUsername: string): UpdateKind {
+const GROUP_TYPES = new Set(["group", "supergroup"]);
+
+/** Triage an update WITHOUT doing any work. The phone inbox's group outranks everything a
+ *  message can be (a "/stop" there is an item to store, not a command), and any other group is
+ *  never answered (spec 2026-10-05). /stop outranks "message" so it interrupts instead of
+ *  queueing behind the very turn it targets. */
+export function classifyUpdate(u: DispatchUpdate, botUsername: string, inboxChatId: number | null = null): UpdateKind {
   if (u.callback_query) return "callback";
-  if (u.message) return isStopCommand(u.message.text ?? "", botUsername) ? "stop" : "message";
+  if (u.message) {
+    const group = GROUP_TYPES.has(u.message.chat.type ?? "");
+    if (group && inboxChatId !== null && u.message.chat.id === inboxChatId) return "inbox";
+    if (group) return "foreign-group";
+    return isStopCommand(u.message.text ?? "", botUsername) ? "stop" : "message";
+  }
   return "ignore";
 }
 
