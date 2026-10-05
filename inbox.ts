@@ -419,3 +419,292 @@ export function foreignGroupNote(msg: InboxMessage, seen: Set<string>, allowed: 
   seen.add(key);
   return `[INBOX?] chat ${id} (${msg.chat.type ?? "unknown"}, sender allowlisted: ${yes ? "yes" : "no"}): a group that is not the inbox; never answered`;
 }
+
+// ---------------------------------------------------------------------------
+// Lifetime (owner's choice, 2026-10-05): deleted once it landed on the PC (ack), or after a week,
+// never sooner than a day after a warning in the group, and never later than ten days. The
+// poller's tick drives it.
+// ---------------------------------------------------------------------------
+
+export const WARN_AFTER_S = 6 * 24 * 3600;
+export const KEEP_S = 7 * 24 * 3600;
+export const WARN_STANDS_S = 24 * 3600;
+export const HARD_CAP_S = 10 * 24 * 3600;
+export const ORPHAN_AFTER_S = 3600;
+export const CORRUPT_KEEP_S = 7 * 24 * 3600;
+/** The poller's MAX_FILE_BYTES default: Telegram's getFile cap for bots. */
+export const MAX_GET_BYTES = 20 * 1024 * 1024;
+
+/** A warning is due when an unwarned item turns 6 days old; it then also covers every unwarned
+ *  item within 6 hours of that age, so a burst sent together gets one message. */
+export const WARN_BATCH_S = 6 * 3600;
+export function dueWarnings(s: InboxStore, nowS: number): InboxItem[] {
+  const unwarned = s.items.filter((i) => i.warnedAt === undefined);
+  if (!unwarned.some((i) => nowS - i.receivedAt >= WARN_AFTER_S)) return [];
+  return unwarned.filter((i) => nowS - i.receivedAt >= WARN_AFTER_S - WARN_BATCH_S);
+}
+
+/** Items due for deletion: past the hard cap always; past the week only after a warning that
+ *  stood a day, and never inside quiet time. */
+export function expiredItems(s: InboxStore, nowS: number, quiet: boolean): InboxItem[] {
+  return s.items.filter((i) => {
+    const age = nowS - i.receivedAt;
+    if (age >= HARD_CAP_S) return true;
+    return !quiet && age >= KEEP_S && i.warnedAt !== undefined && nowS - i.warnedAt >= WARN_STANDS_S;
+  });
+}
+
+/** Pure Hebrew and digits. */
+export function inboxWarningText(n: number): string {
+  return n === 1
+    ? "בתיבה יש פריט אחד שעוד לא נמשך למחשב. מחר הוא יימחק מהשרת, והמקור נשאר כאן בקבוצה."
+    : `בתיבה יש ${n} פריטים שעוד לא נמשכו למחשב. מחר הם יימחקו מהשרת, והמקור נשאר כאן בקבוצה.`;
+}
+
+/** Delete an item's file, but only a path the inbox itself could have written. */
+function removeItemFile(dir: string, item: InboxItem, log: (line: string) => void): void {
+  if (!item.file) return;
+  if (!FILE_RE.test(item.file)) {
+    log(`[INBOX] item ${item.id} named a file outside files/; not removed`);
+    return;
+  }
+  rmSync(join(dir, item.file), { force: true });
+}
+
+function removeWhere(dir: string, pick: (s: InboxStore) => InboxItem[], log: (line: string) => void): InboxItem[] {
+  const gone = mutateInbox(
+    dir,
+    (s) => {
+      const out = pick(s);
+      if (out.length) s.items = s.items.filter((i) => !out.includes(i));
+      return out;
+    },
+    log,
+  );
+  for (const item of gone) removeItemFile(dir, item, log);
+  return gone;
+}
+
+export function removeExpired(dir: string, nowS: number, quiet: boolean, log: (line: string) => void): number {
+  return removeWhere(dir, (s) => expiredItems(s, nowS, quiet), log).length;
+}
+
+/** Delete what a crash can leave behind: a file in files/ that no item names (or a .part file),
+ *  older than an hour, and a set-aside unreadable store older than a week. Never logs a name. */
+export function sweepLeftovers(dir: string, nowMs: number, log: (line: string) => void): number {
+  let n = 0;
+  // Only a readable store may say which files are orphans: a missing or broken one would make
+  // every stored file look unnamed (its set-aside copy still names them).
+  // And not while a recent set-aside copy exists: a store rebuilt after a corruption names only
+  // what arrived since, and the copy is what a recovery would read.
+  let storeOk = false;
+  try {
+    const s = JSON.parse(readFileSync(join(dir, "items.json"), "utf8"));
+    storeOk = !!s && s.v === 1 && Array.isArray(s.items);
+  } catch {}
+  try {
+    for (const name of readdirSync(dir)) {
+      if (name.startsWith("items.json.corrupt-") && nowMs - statSync(join(dir, name)).mtimeMs < CORRUPT_KEEP_S * 1000) storeOk = false;
+    }
+  } catch {}
+  const named = new Set(loadInbox(dir).items.map((i) => i.file).filter((f): f is string => !!f));
+  const old = (p: string, limitS: number) => {
+    try {
+      return nowMs - statSync(p).mtimeMs >= limitS * 1000;
+    } catch {
+      return false;
+    }
+  };
+  let files: string[] = [];
+  try {
+    if (storeOk) files = readdirSync(join(dir, "files"));
+  } catch {}
+  for (const name of files) {
+    const p = join(dir, "files", name);
+    if (named.has(`files/${name}`) || !old(p, ORPHAN_AFTER_S)) continue;
+    rmSync(p, { force: true });
+    n++;
+  }
+  let top: string[] = [];
+  try {
+    top = readdirSync(dir);
+  } catch {}
+  for (const name of top) {
+    const p = join(dir, name);
+    if (!name.startsWith("items.json.corrupt-") || !old(p, CORRUPT_KEEP_S)) continue;
+    rmSync(p, { force: true });
+    n++;
+  }
+  if (n) log(`[INBOX] removed ${n} leftover file(s)`);
+  return n;
+}
+
+/** One pass of the poller's 30-second tick. With `send` null (the setting unset) nothing is sent
+ *  and only the deletions run. The warning is held while quiet time is on or starts within a day.
+ *  The due items are marked warned BEFORE the send (a store that cannot be written then sends
+ *  nothing, instead of the same warning every 30 seconds), and the marks are taken back when the
+ *  send fails; a failure is logged at most once an hour (errClock). The deletions and the
+ *  leftover sweep run whatever happened. */
+export async function runInboxTick(d: {
+  dir: string;
+  nowS: number;
+  quietAt: (ms: number) => boolean;
+  send: ((text: string) => Promise<void>) | null;
+  log: (line: string) => void;
+  errClock: { at: number };
+}): Promise<void> {
+  const nowMs = d.nowS * 1000;
+  const quiet = d.quietAt(nowMs);
+  // Deletions first, so a warning never counts an item deleted in the same tick.
+  const n = removeExpired(d.dir, d.nowS, quiet, d.log);
+  if (n) d.log(`[INBOX] deleted ${n} item(s) after their week`);
+  let held = quiet || d.send === null;
+  for (let h = 1; h <= 24 && !held; h++) held = d.quietAt(nowMs + h * 3600_000);
+  const logOnce = (line: string) => {
+    if (d.nowS - d.errClock.at < 3600) return;
+    d.errClock.at = d.nowS;
+    d.log(line);
+  };
+  if (!held && d.send) {
+    let marked: string[] = [];
+    let waiting = 0;
+    try {
+      [marked, waiting] = mutateInbox(d.dir, (s) => {
+        const ids = dueWarnings(s, d.nowS).map((i) => i.id);
+        for (const i of s.items) if (ids.includes(i.id)) i.warnedAt = d.nowS;
+        return [ids, s.items.filter((i) => i.warnedAt !== undefined).length] as [string[], number];
+      }, d.log);
+    } catch (e: any) {
+      logOnce(`[INBOX] could not mark items warned, so no warning was sent: ${redact(String(e?.message ?? e))}`);
+    }
+    if (marked.length) {
+      try {
+        await d.send(inboxWarningText(waiting));
+        d.log(`[INBOX] warned the group about ${waiting} item(s) due tomorrow`);
+      } catch (e: any) {
+        logOnce(`[INBOX] the warning could not be sent: ${redact(String(e?.message ?? e))}`);
+        try {
+          mutateInbox(d.dir, (s) => {
+            for (const i of s.items) if (marked.includes(i.id) && i.warnedAt === d.nowS) delete i.warnedAt;
+          }, d.log);
+        } catch (e2: any) {
+          // never through logOnce: these items will now go without their warning
+          d.log(`[INBOX] a warning was not sent and its marks could not be taken back: ${redact(String(e2?.message ?? e2))}`);
+        }
+      }
+    }
+  }
+  sweepLeftovers(d.dir, nowMs, d.log);
+}
+
+// ---------------------------------------------------------------------------
+// The CLI. list/ack/get reach the PC only through `gate`, which the PC key's authorized_keys line
+// forces; `status` is for the agent and the health sweep.
+// ---------------------------------------------------------------------------
+
+export interface InboxCliIo {
+  out: (s: string) => void;
+  outBytes: (b: Uint8Array) => Promise<void> | void;
+  err: (s: string) => void;
+  env: Record<string, string | undefined>;
+  now: () => Date;
+}
+
+const INBOX_USAGE = "usage: inbox.ts list | ack <id>... | get <id> | purge | status | gate";
+const GATE_REFUSED = "refused: the inbox key may only list, ack or get";
+
+export async function runInboxCli(argv: string[], io: InboxCliIo): Promise<number> {
+  const [cmd, ...rest] = argv;
+  const dir = inboxDir(io.env);
+  const nowS = Math.floor(io.now().getTime() / 1000);
+  if (cmd === "gate") {
+    // The PC key's forced command. Only lowercase letters, digits, single spaces and dashes; then
+    // exactly one of three shapes. Nothing is passed to a shell.
+    const req = io.env.SSH_ORIGINAL_COMMAND ?? "";
+    if (!/^[a-z0-9 -]{1,4000}$/.test(req)) {
+      io.err(GATE_REFUSED);
+      return 2;
+    }
+    const [op, ...args] = req.split(" ");
+    if (op === "list" && args.length === 0) return runInboxCli(["list"], io);
+    if (op === "ack" && args.length >= 1 && args.length <= 200 && args.every((a) => ID_RE.test(a))) return runInboxCli(["ack", ...args], io);
+    if (op === "get" && args.length === 1 && ID_RE.test(args[0])) return runInboxCli(["get", args[0]], io);
+    io.err(GATE_REFUSED);
+    return 2;
+  }
+  if (cmd === "list") {
+    // Only reads: deleting here could destroy the very items a pull came to fetch.
+    const items = [...loadInbox(dir).items].sort((a, b) => a.receivedAt - b.receivedAt || a.messageId - b.messageId || a.id.localeCompare(b.id));
+    io.out(JSON.stringify({ v: 1, items }) + "\n");
+    return 0;
+  }
+  if (cmd === "ack") {
+    if (!rest.length || !rest.every((id) => ID_RE.test(id))) {
+      io.err(INBOX_USAGE);
+      return 2;
+    }
+    const wanted = new Set(rest);
+    const gone = removeWhere(dir, (s) => s.items.filter((i) => wanted.has(i.id)), io.err);
+    const acked = gone.map((i) => i.id);
+    io.out(JSON.stringify({ v: 1, acked, unknown: rest.filter((id) => !acked.includes(id)) }) + "\n");
+    return 0;
+  }
+  if (cmd === "get") {
+    if (rest.length !== 1 || !ID_RE.test(rest[0])) {
+      io.err(`refused: ${INBOX_USAGE}`);
+      return 2;
+    }
+    const item = loadInbox(dir).items.find((i) => i.id === rest[0]);
+    if (!item?.file || !FILE_RE.test(item.file)) {
+      io.err("refused: no stored file for that id");
+      return 2;
+    }
+    const path = join(dir, item.file);
+    let bytes: Uint8Array;
+    try {
+      if (statSync(path).size > MAX_GET_BYTES) {
+        io.err("refused: the file is over the cap");
+        return 2;
+      }
+      bytes = readFileSync(path);
+    } catch {
+      io.err("refused: the file is missing");
+      return 2;
+    }
+    await io.outBytes(bytes);
+    return 0;
+  }
+  if (cmd === "purge") {
+    const n = removeExpired(dir, nowS, false, io.err);
+    sweepLeftovers(dir, io.now().getTime(), io.err);
+    io.out(JSON.stringify({ v: 1, purged: n }) + "\n");
+    return 0;
+  }
+  if (cmd === "status") {
+    const items = loadInbox(dir).items;
+    let files = 0;
+    let bytes = 0;
+    try {
+      for (const name of readdirSync(join(dir, "files"))) {
+        files++;
+        bytes += statSync(join(dir, "files", name)).size;
+      }
+    } catch {}
+    const oldest = items.reduce<number | null>((m, i) => (m === null || i.receivedAt < m ? i.receivedAt : m), null);
+    io.out(JSON.stringify({ v: 1, waiting: items.length, files, bytes, oldestAgeS: oldest === null ? null : nowS - oldest }) + "\n");
+    return 0;
+  }
+  io.err(INBOX_USAGE);
+  return 1;
+}
+
+if (import.meta.main) {
+  const code = await runInboxCli(process.argv.slice(2), {
+    out: (s) => process.stdout.write(s),
+    outBytes: async (b) => void (await Bun.write(Bun.stdout, b)), // awaited, so exit never cuts a file short
+    err: (s) => console.error(s),
+    env: process.env,
+    now: () => new Date(),
+  });
+  process.exit(code);
+}
