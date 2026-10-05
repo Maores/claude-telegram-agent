@@ -282,3 +282,140 @@ export function mutateInbox<T>(dir: string, fn: (s: InboxStore) => T, log: (line
     return out;
   });
 }
+
+// ---------------------------------------------------------------------------
+// Filing a message (the poller's handler; Telegram calls injected)
+// ---------------------------------------------------------------------------
+
+// Pure Hebrew and digits: nothing for the BiDi algorithm to reorder.
+export const INBOX_TOO_LARGE = "הקובץ הזה לא נשמר בתיבה, הוא גדול מדי (מעל 20 מגה).";
+export const INBOX_DOWNLOAD_FAILED = "הקובץ הזה לא נשמר בתיבה, ההורדה מטלגרם נכשלה. אפשר לשלוח אותו שוב.";
+export const INBOX_UNSUPPORTED = "סוג הודעה כזה לא נשמר בתיבה.";
+export const INBOX_STORE_FAILED = "לא הצלחתי לשמור את זה בתיבה.";
+export const INBOX_MOVED = "הקבוצה קיבלה מספר זיהוי חדש. התיבה ממשיכה לעבוד, אבל צריך לעדכן את ההגדרה בשרת.";
+
+/** How long a handed-out id stays reserved after it was issued (its item may be long gone). */
+export const ISSUED_KEEP_S = 10 * 24 * 3600;
+
+export interface InboxDeps {
+  dir: string;
+  now: () => Date;
+  allowed: (fromId: string) => boolean;
+  fetchFile: (fileId: string) => Promise<{ bytes: ArrayBuffer | Uint8Array; remotePath: string }>;
+  react: (emoji: string) => Promise<void>;
+  reply: (text: string) => Promise<void>;
+  log: (line: string) => void;
+  maxBytes: number;
+  rand?: () => string;
+}
+export type InboxOutcome = "moved" | "skipped" | "ignored" | "unsupported" | "duplicate" | "stored" | "stored-with-error" | "failed";
+
+/** Store one message from the inbox group as an item, then 👍 it (or say in one Hebrew line why
+ *  its file did not come through). The journal gets the item's id and kind, never its words. */
+export async function fileInboxMessage(msg: InboxMessage, d: InboxDeps): Promise<InboxOutcome> {
+  if (msg.migrate_to_chat_id) return "moved"; // the poller's followInbox logs and acts on it
+  if (!msg.from || !d.allowed(String(msg.from.id))) {
+    d.log(`[INBOX] skipped message ${msg.message_id}: the sender is not on the allowlist`);
+    return "skipped";
+  }
+  const draft = describeInboxMessage(msg);
+  if (draft === null) {
+    d.log(`[INBOX] nothing to store in message ${msg.message_id}`);
+    return "ignored";
+  }
+  if (draft === "unsupported") {
+    d.log(`[INBOX] message ${msg.message_id} is a kind the inbox does not keep`);
+    await d.reply(INBOX_UNSUPPORTED);
+    return "unsupported";
+  }
+  const store = loadInbox(d.dir);
+  if (store.items.some((i) => i.messageId === msg.message_id)) {
+    d.log(`[INBOX] message ${msg.message_id} is already stored`);
+    return "duplicate";
+  }
+
+  const nowS = Math.floor(d.now().getTime() / 1000);
+  const receivedAt = msg.date ?? nowS;
+  const taken = new Set([...store.items.map((i) => i.id), ...(store.issued ?? []).map((x) => x.id)]);
+  const id = newItemId(new Date(receivedAt * 1000), taken, d.rand);
+  const item: InboxItem = { id, messageId: msg.message_id, receivedAt, kind: draft.kind };
+  if (draft.mediaGroupId) item.mediaGroupId = draft.mediaGroupId;
+  if (draft.text !== undefined) item.text = draft.text;
+  if (draft.entities) item.entities = draft.entities;
+  if (draft.caption !== undefined) item.caption = draft.caption;
+  if (draft.captionEntities) item.captionEntities = draft.captionEntities;
+
+  let failReply: string | null = null;
+  if (draft.file) {
+    if (draft.file.name) item.fileName = draft.file.name;
+    if (draft.file.size != null && draft.file.size > d.maxBytes) {
+      item.error = "too large";
+      item.reportedSize = draft.file.size;
+      failReply = INBOX_TOO_LARGE;
+    } else {
+      try {
+        const got = await d.fetchFile(draft.file.fileId);
+        const name = diskName(id, draft.kind, draft.file.name, got.remotePath);
+        const filesDir = join(d.dir, "files");
+        mkdirSync(filesDir, { recursive: true });
+        const part = join(filesDir, `${name}.part`);
+        const bytes = got.bytes instanceof Uint8Array ? got.bytes : new Uint8Array(got.bytes);
+        writeFileSync(part, bytes);
+        renameSync(part, join(filesDir, name));
+        item.file = `files/${name}`;
+        item.size = statSync(join(filesDir, name)).size;
+        item.sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+      } catch (e: any) {
+        const why = redact(String(e?.message ?? e)).slice(0, 200);
+        // Telegram's own refusal of a big file reads the same as the size pre-check, on both ends
+        item.error = /too big/i.test(why) ? "too large" : why;
+        if (draft.file.size != null) item.reportedSize = draft.file.size;
+        failReply = item.error === "too large" ? INBOX_TOO_LARGE : INBOX_DOWNLOAD_FAILED;
+      }
+    }
+  }
+
+  let added: boolean;
+  try {
+    added = mutateInbox(
+      d.dir,
+      (s) => {
+        if (s.items.some((i) => i.messageId === item.messageId)) return false; // a second delivery raced in
+        s.items.push(item);
+        s.issued = [...(s.issued ?? []).filter((x) => nowS - x.at < ISSUED_KEEP_S), { id, at: nowS }];
+        return true;
+      },
+      d.log,
+    );
+  } catch (e: any) {
+    d.log(`[INBOX] could not store item ${id}: ${e?.message ?? e}`);
+    if (item.file) rmSync(join(d.dir, item.file), { force: true });
+    await d.reply(INBOX_STORE_FAILED);
+    // An album's reactions all land on its first message, where the next 👍 would overwrite this.
+    if (!item.mediaGroupId) await d.react("👎");
+    return "failed";
+  }
+  if (!added) {
+    if (item.file) rmSync(join(d.dir, item.file), { force: true });
+    return "duplicate";
+  }
+  d.log(`[INBOX] stored ${id} (${item.kind}${item.error ? ", its file did not come through" : ""})`);
+  if (failReply) {
+    await d.reply(failReply);
+    return "stored-with-error";
+  }
+  await d.react("👍");
+  return "stored";
+}
+
+/** The journal line for a message in a group that is not the inbox: once per chat and sender
+ *  kind (setup reads the inbox's id from the line marked "yes"), and every move. */
+export function foreignGroupNote(msg: InboxMessage, seen: Set<string>, allowed: (fromId: string) => boolean): string | null {
+  const id = msg.chat.id;
+  if (msg.migrate_to_chat_id) return `[INBOX?] chat ${id} moved to chat ${msg.migrate_to_chat_id}`;
+  const yes = msg.from ? allowed(String(msg.from.id)) : false;
+  const key = `${id}:${yes ? "yes" : "no"}`;
+  if (seen.has(key)) return null;
+  seen.add(key);
+  return `[INBOX?] chat ${id} (${msg.chat.type ?? "unknown"}, sender allowlisted: ${yes ? "yes" : "no"}): a group that is not the inbox; never answered`;
+}
