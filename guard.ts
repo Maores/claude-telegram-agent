@@ -44,9 +44,11 @@ const hasDangerousRoot = (c: string): boolean =>
 // Write-intent verbs/operators, used only together with a sensitive-path match. A `>&1`, `>&2` or
 // `>&-` copies or closes an output stream and writes no file, so `2>&1` alone is not write intent.
 // Only when the word after `>&` is exactly digits or `-` and ends there: bash writes `>&2/../x`
-// (with a folder named 2) to the file x, so that still counts.
+// (with a folder named 2) to the file x, so that still counts. Only bash's own blanks (space, tab,
+// newline) end that word: JavaScript's \s also takes CR, VT, FF, NBSP, U+2028, U+3000 and BOM,
+// which bash keeps inside the word, so `>&2` + CR + `/../x` writes x as well.
 const WRITE_INTENT =
-  /(?:>>?(?!&(?:\d+|-)(?=$|[\s;&|)<>]))|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b|\btruncate\b|\binstall\b|\bdd\b|\bchmod\b|\bchown\b|\bln\b)/i;
+  /(?:>>?(?!&(?:\d+|-)(?=$|[ \t\n;&|)<>]))|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b|\btruncate\b|\binstall\b|\bdd\b|\bchmod\b|\bchown\b|\bln\b)/i;
 
 // Sensitive paths.
 const SSH_PATH = /(?:~|\$\{?HOME\}?|\/home\/[\w.-]+|\/root)\/\.ssh\b/i;

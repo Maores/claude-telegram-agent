@@ -117,7 +117,13 @@ test("inbox.ts is protected like the guard; its tests stay editable", () => {
     expect(checkCommand(cmd).reason).toContain("inbox.ts");
   }
   // `>&WORD` writes to WORD unless WORD is exactly digits or `-`; a name right after `>` counts
-  for (const cmd of ["mkdir -p 2 && echo EVIL >&2/../inbox.ts", "echo x >inbox.ts"]) {
+  // a CR or a BOM stays inside bash's word, so it does not end `>&2` (built from codes)
+  for (const cmd of [
+    "mkdir -p 2 && echo EVIL >&2/../inbox.ts",
+    "echo x >inbox.ts",
+    "mkdir -p 2 && echo EVIL >&2" + String.fromCharCode(13) + "/../inbox.ts",
+    "mkdir -p 2 && echo EVIL >&2" + String.fromCharCode(0xfeff) + "/../inbox.ts",
+  ]) {
     expect(checkCommand(cmd)).toEqual({
       verdict: "block",
       reason: "refused: editing guard.ts, inbox.ts or the hook files would disable the safety policy",

@@ -15,6 +15,9 @@ test("a turn cannot write the routine channel's store, and can still read it", (
     "rm ~/rchannel/store.json",
     // `>&WORD` writes to WORD unless WORD is exactly digits or `-`
     "mkdir -p 2 && echo '{}' >&2/../rchannel/store.json",
+    // a CR or a BOM stays inside bash's word, so it does not end `>&2` (built from codes)
+    "mkdir -p 2 && echo '{}' >&2" + String.fromCharCode(13) + "/../rchannel/store.json",
+    "mkdir -p 2 && echo '{}' >&2" + String.fromCharCode(0xfeff) + "/../rchannel/store.json",
   ]) {
     expect(checkCommand(cmd)).toEqual({ verdict: "block", reason: "refused: the routine channel's store is written only by the poller and the PC's sync" });
   }

@@ -170,6 +170,29 @@ describe("checkCommand redirect spellings", () => {
     }
   });
 
+  // JavaScript's \s also matches characters bash keeps inside a word, so `>&2` + CR + `/../guard.ts`
+  // is one word `2<CR>/../guard.ts` to bash, and it writes guard.ts. Built from codes, never typed.
+  const ODD_BLANKS: Array<[string, string]> = [
+    ["CR", String.fromCharCode(13)],
+    ["VT", String.fromCharCode(11)],
+    ["FF", String.fromCharCode(12)],
+    ["NBSP", String.fromCharCode(0xa0)],
+    ["U+2028", String.fromCharCode(0x2028)],
+    ["U+3000", String.fromCharCode(0x3000)],
+    ["BOM", String.fromCharCode(0xfeff)],
+  ];
+
+  test("a character bash keeps inside a word does not end a duplicated stream", () => {
+    for (const [name, ch] of ODD_BLANKS) {
+      const cmd = "mkdir -p 2 && echo EVIL >&2" + ch + "/../guard.ts";
+      expect([name, checkCommand(cmd)]).toEqual([name, { verdict: "block", reason: SELF }]);
+    }
+    for (const [name, ch] of ODD_BLANKS.filter(([n]) => n === "CR" || n === "BOM")) {
+      const cmd = "mkdir -p 2 && echo k >&2" + ch + "/../../.claude/channels/telegram/.env";
+      expect([name, checkCommand(cmd)]).toEqual([name, { verdict: "block", reason: ENV }]);
+    }
+  });
+
   test("a protected file name right after a redirect operator is caught", () => {
     for (const cmd of ["echo x >guard.ts", "echo x >>guard.ts", "echo x &>guard.ts", "echo x >|guard.ts", "echo x >&guard.ts"]) {
       expect(checkCommand(cmd)).toEqual({ verdict: "block", reason: SELF });
