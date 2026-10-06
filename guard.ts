@@ -176,6 +176,35 @@ const RULES: Rule[] = [
   },
 ];
 
+/**
+ * The shell command a tool call will run, whatever the tool is called: Bash, Monitor (which runs
+ * its command in the background), a namespaced variant, or a tool added later. Any tool input with
+ * a string `command` counts, so the hook checks it the same way it checks Bash. Null when the
+ * input carries no string command.
+ */
+export function commandOf(toolInput: unknown): string | null {
+  if (!toolInput || typeof toolInput !== "object") return null;
+  const c = (toolInput as { command?: unknown }).command;
+  return typeof c === "string" ? c : null;
+}
+
+/** Tools no spawned claude -p turn may use at all, denied at Claude Code's own tool layer.
+ *  Monitor runs a shell command in the background; the hook checks it too, and this keeps it
+ *  out of the turn in the first place. */
+export const ALWAYS_DISALLOWED_TOOLS = ["Monitor"];
+
+/**
+ * Add ALWAYS_DISALLOWED_TOOLS to a claude argv. When the argv already has a --disallowedTools
+ * list, the tools join that list, so there is one flag; otherwise one list is appended at the end
+ * (the flag takes every following word up to the next flag, so it must not sit before a prompt).
+ * Returns a new array.
+ */
+export function withAlwaysDisallowed(args: string[]): string[] {
+  const i = args.findIndex((a) => a === "--disallowedTools" || a === "--disallowed-tools");
+  if (i === -1) return [...args, "--disallowedTools", ...ALWAYS_DISALLOWED_TOOLS];
+  return [...args.slice(0, i + 1), ...ALWAYS_DISALLOWED_TOOLS, ...args.slice(i + 1)];
+}
+
 /** The hardline floor. Returns block (with a reason) for catastrophic commands. */
 export function checkCommand(cmd: string): GuardVerdict {
   const c = (cmd ?? "").trim();
@@ -192,31 +221,33 @@ export function checkCommand(cmd: string): GuardVerdict {
  * more reminders — a self-replication guard — or (b) file Gmail drafts. The
  * Gmail connector's server name is a per-deployment UUID, so we match on the
  * tool's action suffix rather than the full namespaced tool name.
+ * `command` is the call's shell command from commandOf, whatever tool carries it
+ * (Bash, Monitor, ...); the command rules apply to every one of them.
  */
 export function checkAutoSession(toolName: string, command: string | undefined): GuardVerdict {
-  if (toolName === "Bash" && command) {
+  if (command) {
     const base = checkCommand(command);
     if (base.verdict === "block") return base;
   }
   if (/(?:^|__)create_draft$/i.test(toolName)) {
     return { verdict: "block", reason: "refused: [AUTO] sessions may not create Gmail drafts" };
   }
-  if (toolName === "Bash" && command && /\bremind\.ts\s+add(?:-once|-repeat)?\b/i.test(command)) {
+  if (command && /\bremind\.ts\s+add(?:-once|-repeat)?\b/i.test(command)) {
     return { verdict: "block", reason: "refused: [AUTO] sessions may not schedule reminders" };
   }
-  if (toolName === "Bash" && command && /\bmonitor\.ts\s+add\b/i.test(command)) {
+  if (command && /\bmonitor\.ts\s+add\b/i.test(command)) {
     return { verdict: "block", reason: "refused: [AUTO] sessions may not create monitors" };
   }
-  if (toolName === "Bash" && command && /\bconfirm\.ts\s+approve\b/i.test(command)) {
+  if (command && /\bconfirm\.ts\s+approve\b/i.test(command)) {
     return { verdict: "block", reason: "refused: [AUTO] sessions may not approve pending actions" };
   }
-  if (toolName === "Bash" && command && /\bcal\.ts\s+(add|edit|delete)\b/i.test(command)) {
+  if (command && /\bcal\.ts\s+(add|edit|delete)\b/i.test(command)) {
     return { verdict: "block", reason: "refused: [AUTO] sessions propose calendar writes via confirm.ts, not directly" };
   }
-  if (toolName === "Bash" && command && /\btodo\.ts\s+delete\b/i.test(command)) {
+  if (command && /\btodo\.ts\s+delete\b/i.test(command)) {
     return { verdict: "block", reason: "refused: [AUTO] sessions propose task deletions via confirm.ts, not directly" };
   }
-  if (toolName === "Bash" && command && /\bask\.ts\b/i.test(command)) {
+  if (command && /\bask\.ts\b/i.test(command)) {
     return { verdict: "block", reason: "refused: [AUTO] sessions have no human at fire time to answer a choice question" };
   }
   return { verdict: "allow" };

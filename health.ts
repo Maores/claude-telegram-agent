@@ -22,6 +22,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isolateLatin } from "./bidi";
+import { withAlwaysDisallowed } from "./guard";
 
 /** A poll cycle is ~POLL_TIMEOUT seconds, so a heartbeat older than this means
  *  the loop is not turning even if the process is alive. */
@@ -114,8 +115,14 @@ async function serviceActive(): Promise<boolean> {
 /** Cheapest possible round trip that proves the CLI can still reach the API.
  *  Covers auth failures (2026-06-20) and upstream overload (2026-07-29) — both
  *  can arrive as printed output on a zero exit code. */
+/** The probe's argv. The tools every turn is denied (Monitor) come last, after the
+ *  prompt, since the flag takes every following word up to the next flag. */
+export function healthProbeArgv(): string[] {
+  return withAlwaysDisallowed(["claude", "-p", "reply with the single word ok"]);
+}
+
 async function claudeAuthOk(): Promise<boolean> {
-  const p = Bun.spawn(["claude", "-p", "reply with the single word ok"], {
+  const p = Bun.spawn(healthProbeArgv(), {
     stdout: "pipe", stderr: "pipe",
   });
   const killer = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} }, 120_000);

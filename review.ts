@@ -12,6 +12,7 @@
  * on the whitelist are denied, which is the point. CLAUDE_AUTO_SESSION=1 keeps
  * the guard hook's least-privilege layer on as defense in depth.
  */
+import { withAlwaysDisallowed } from "./guard";
 
 export const REVIEW_COOLDOWN_S = Number(process.env.REVIEW_COOLDOWN_S ?? 900) || 900;
 
@@ -20,8 +21,10 @@ export const REVIEW_ALLOWED_TOOLS = [
   "Bash(bun run skill.ts *)",
 ];
 
+/** The review's claude argv. It also starts without the tools every turn is denied
+ *  (guard.ALWAYS_DISALLOWED_TOOLS: Monitor), as a list of its own after the whitelist. */
 export function reviewSpawnArgs(model = "haiku"): string[] {
-  return ["-p", "--model", model, "--allowedTools", ...REVIEW_ALLOWED_TOOLS];
+  return withAlwaysDisallowed(["-p", "--model", model, "--allowedTools", ...REVIEW_ALLOWED_TOOLS]);
 }
 
 const lastReviewAt = new Map<number, number>();

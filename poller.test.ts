@@ -41,8 +41,12 @@ import {
   sanitizeOutgoing,
   digestSpawnOpts,
   digestParts,
+  claudeTurnArgv,
 } from "./poller.ts";
 import { stripIsolates } from "./bidi.ts";
+import { ALWAYS_DISALLOWED_TOOLS } from "./guard.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 test("short text stays one chunk", () => {
   expect(chunkText("hello")).toEqual(["hello"]);
@@ -942,6 +946,48 @@ test("digestSpawnOpts: a least-privilege turn with no tools that renders nothing
   expect(opts.trackForStop).toBe(false);
   expect(opts.outcome).toBe(outcome);
   expect(autoSessionSpawn().extraArgs).not.toContain("--tools"); // [AUTO] jobs are unchanged
+});
+
+// --- claudeTurnArgv: every turn starts without the Monitor tool --------------------------------
+
+const denyList = (argv: string[]): string[] => {
+  const i = argv.indexOf("--disallowedTools");
+  const rest = argv.slice(i + 1);
+  const end = rest.findIndex((a) => a.startsWith("-"));
+  return end === -1 ? rest : rest.slice(0, end);
+};
+
+test("claudeTurnArgv: a normal turn ends with one --disallowedTools list naming Monitor", () => {
+  const argv = claudeTurnArgv("sonnet");
+  expect(argv[1]).toBe("-p");
+  expect(argv).toContain("--dangerously-skip-permissions");
+  expect(argv.filter((a) => a === "--disallowedTools").length).toBe(1);
+  expect(argv.slice(-1 - ALWAYS_DISALLOWED_TOOLS.length)).toEqual(["--disallowedTools", ...ALWAYS_DISALLOWED_TOOLS]);
+  expect(denyList(argv)).toContain("Monitor");
+});
+
+test("claudeTurnArgv: an [AUTO] turn carries Monitor and its own denials in one list", () => {
+  const argv = claudeTurnArgv("sonnet", autoSessionSpawn().extraArgs);
+  expect(argv.filter((a) => a === "--disallowedTools").length).toBe(1);
+  const list = denyList(argv);
+  expect(list).toContain("Monitor");
+  for (const t of AUTO_DISALLOWED_TOOLS) expect(list).toContain(t);
+  expect(argv[argv.length - 1]).toBe(AUTO_DISALLOWED_TOOLS[AUTO_DISALLOWED_TOOLS.length - 1]); // the list stays last
+});
+
+test("claudeTurnArgv: the digest's tool-less turn keeps --tools \"\" after the combined list", () => {
+  const outcome = { timedOut: false, gotResult: false, isError: false, exitCode: null };
+  const argv = claudeTurnArgv("sonnet", digestSpawnOpts(outcome).extraArgs);
+  expect(argv.filter((a) => a === "--disallowedTools").length).toBe(1);
+  expect(denyList(argv)).toEqual(["Monitor", ...AUTO_DISALLOWED_TOOLS]);
+  expect(argv.slice(-3)).toEqual(["--tools", "", "--strict-mcp-config"]);
+});
+
+test("streamClaude builds its argv only through claudeTurnArgv (source pin)", () => {
+  const src = readFileSync(join(import.meta.dir, "poller.ts"), "utf8");
+  // the claude binary appears at the head of an argv array in exactly one place: claudeTurnArgv
+  expect(src.match(/\[\s*CLAUDE_BIN\s*,/g)?.length).toBe(1);
+  expect(src).toMatch(/Bun\.spawn\(\s*claudeTurnArgv\(/);
 });
 
 test("digestParts keeps every part small enough that its bidi isolates still fit", () => {

@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
-  assessHealth, shouldAlert, formatAlert, HEARTBEAT_STALE_S,
+  assessHealth, shouldAlert, formatAlert, HEARTBEAT_STALE_S, healthProbeArgv,
   type Probe, type AlertState,
 } from "./health";
+
+test("the health probe's claude -p starts without the Monitor tool, the list last", () => {
+  expect(healthProbeArgv()).toEqual(["claude", "-p", "reply with the single word ok", "--disallowedTools", "Monitor"]);
+});
 
 const NOW = 1_781_000_000;
 

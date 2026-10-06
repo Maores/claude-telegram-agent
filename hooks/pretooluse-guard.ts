@@ -8,10 +8,12 @@
  *   - exits 0 to allow it.
  *
  * What it enforces:
- *   1. The hardline floor (guard.checkCommand) on every Bash command — refuses
+ *   1. The hardline floor (guard.checkCommand) on every shell command — refuses
  *      the handful of catastrophic commands (rm -rf /, mkfs, dd to a device,
  *      fork bombs, shutdown, ssh/.env/self tampering, force-push to main,
- *      curl|sh). Applies in every session, even full-permission ones.
+ *      curl|sh). Applies in every session, even full-permission ones. Any tool
+ *      whose input has a string `command` is checked the same way as Bash
+ *      (Monitor, a namespaced variant, a tool added later): guard.commandOf.
  *   2. Extra least-privilege denials (guard.checkAutoSession) ONLY when the
  *      spawning process set CLAUDE_AUTO_SESSION=1 — i.e. unattended [AUTO]
  *      reminder runs. Those sessions additionally may not schedule reminders
@@ -30,7 +32,7 @@
  * droplet — see hooks/README.md.
  * It is intentionally NOT registered automatically by the PR that adds it.
  */
-import { checkCommand, checkAutoSession, checkFileWrite, checkInboxAccess } from "../guard";
+import { checkCommand, checkAutoSession, checkFileWrite, checkInboxAccess, commandOf } from "../guard";
 
 function block(reason: string): never {
   console.error(`[guard] ${reason}`);
@@ -48,18 +50,19 @@ try {
 }
 
 const toolName: string = typeof input?.tool_name === "string" ? input.tool_name : "";
-const command: string | undefined =
-  typeof input?.tool_input?.command === "string" ? input.tool_input.command : undefined;
 const filePath: string | undefined =
   typeof input?.tool_input?.file_path === "string" ? input.tool_input.file_path : undefined;
 const isAuto = process.env.CLAUDE_AUTO_SESSION === "1";
 
 try {
+  // The shell command of this call, whatever the tool is called (Bash, Monitor, ...). Inside the
+  // try, so a surprise here denies rather than allows.
+  const command: string | undefined = commandOf(input?.tool_input) ?? undefined;
   if (isAuto) {
     const a = checkAutoSession(toolName, command);
     if (a.verdict === "block") block(a.reason ?? "blocked by [AUTO] least-privilege policy");
   }
-  if (toolName === "Bash" && typeof command === "string") {
+  if (typeof command === "string") {
     const v = checkCommand(command);
     if (v.verdict === "block") block(v.reason ?? "blocked by the hardline guard");
   }
