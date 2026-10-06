@@ -11,7 +11,7 @@ Claude Code runs the script once before each tool call it's registered for. The
 script reads the hook payload from stdin, applies the guard, and exits `2` to
 block (printing the reason to stderr, which Claude sees) or `0` to allow.
 
-It enforces three layers:
+It enforces four layers:
 
 1. **Hardline floor** — `guard.checkCommand` runs on every `Bash` command in
    every session, even full-permission ones. It refuses only the unambiguously
@@ -36,6 +36,13 @@ It enforces three layers:
    the layer that stops the bot from disabling its own guard via the Edit tool.
    Every other file stays editable, so the bot keeps improving its own code.
 
+4. **The phone inbox** — `guard.checkInboxAccess` runs on the file tools
+   (`Read`/`Grep`/`Glob` as well as the editors) in every session and refuses any
+   path under an `inbox/` folder, and any search rooted at or above the home
+   folder. The `inbox-store` and `inbox-pull` rules in layer 1 refuse the same
+   folder to `Bash`, and `inbox.ts list`/`ack`/`get`/`purge`/`gate`. A turn may
+   run `bun run inbox.ts status`; the code itself (`inbox.ts`) stays open.
+
 **Fail-closed:** if a guard rule throws on a real tool call, the hook denies
 rather than allows. A payload it can't parse at all is passed through (exit 0)
 so a malformed hook event can never brick the bot.
@@ -57,9 +64,10 @@ can't be named in a static `--disallowedTools` value.
 > spawn behaves, so it is left for a deliberate deploy step. Nothing here edits
 > `settings.json`.
 
-Merge the following into the bot's Claude Code settings — the project file
-`/home/claudebot/claude-bot/.claude/settings.json` is the natural home (it
-already carries the `permissions` block):
+Merge the following into the bot's Claude Code settings. On the server the
+wiring lives in the untracked `~/claude-bot/.claude/settings.local.json` (the
+nightly `backup.ts` copies it), never in the tracked `.claude/settings.json`,
+which a deploy would autosave and reset:
 
 ```json
 {
@@ -69,7 +77,7 @@ already carries the `permissions` block):
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|create_draft",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|create_draft",
         "hooks": [
           {
             "type": "command",
@@ -84,13 +92,15 @@ already carries the `permissions` block):
 
 Notes:
 
-- **`matcher`** is a regex against the tool name. `Bash|Edit|Write|MultiEdit|create_draft`
-  fires the hook for every `Bash` command (the hardline floor + the `[AUTO]` reminder
-  block), for the file-editing tools (the protected-file block), and for Gmail's
-  `create_draft` (the `[AUTO]` draft block), and for nothing else — so unrelated
-  tools (`Read`, `Grep`, …) keep zero overhead. The `Edit|Write|MultiEdit` part is
-  REQUIRED for the protected-file layer (`checkFileWrite`) to fire; with just
-  `"Bash"` the bot could still edit `guard.ts` through the Edit tool.
+- **`matcher`** is a regex against the tool name.
+  `Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|create_draft` fires the hook
+  for every `Bash` command (the hardline floor + the `[AUTO]` reminder block), for the
+  file-editing tools (the protected-file block), for Gmail's `create_draft` (the
+  `[AUTO]` draft block), and for nothing else. The reading tools (`Read|Grep|Glob`)
+  are matched only for the phone inbox's refusal (`checkInboxAccess`). The
+  `Edit|Write|MultiEdit` part is REQUIRED for the protected-file layer
+  (`checkFileWrite`) to fire; with just `"Bash"` the bot could still edit `guard.ts`
+  through the Edit tool.
 - **Absolute paths.** Hook commands don't inherit the interactive `PATH`, so
   point at the real `bun` (confirm with `which bun`; it's usually
   `~/.bun/bin/bun`) and at the absolute hook path. Adjust both if the repo or
@@ -104,8 +114,10 @@ Notes:
 
 ## Tests
 
-The rules are covered by `guard.test.ts` (golden block/allow table). Run:
+The rules are covered by `guard.test.ts` (golden block/allow table), with the
+routine channel's and the phone inbox's rules in `guard-rchannel.test.ts` and
+`guard-inbox.test.ts`. Run:
 
 ```
-bun test guard.test.ts
+bun test guard.test.ts guard-rchannel.test.ts guard-inbox.test.ts
 ```

@@ -18,6 +18,7 @@
  *  - Pure functions, no IO: the hook does the IO and fails closed if a rule
  *    throws (see hooks/pretooluse-guard.ts).
  */
+import { posix } from "node:path";
 
 export type GuardVerdict = { verdict: "allow" | "block"; reason?: string };
 
@@ -51,6 +52,16 @@ const SELF_PATH = /(?:^|[\s'"=/])(?:guard\.ts|hooks\/pretooluse-guard\.ts|hooks\
 // The routine channel's store: only the poller and the PC's sync (over ssh, never through this
 // hook) write it; an answer written into it by a turn would be carried out on the PC.
 const RCHANNEL_STORE = /\brchannel\/store\.json\b/i;
+// The phone inbox: only the poller files items, and only the PC's own key (through `inbox.ts
+// gate`, never through this hook) lists, acks and fetches them. A turn may run `bun run inbox.ts
+// status` and nothing else: the store holds forwarded content, so reading it would also be a road
+// for injected text. This refuses the obvious routes; the PC trusts nothing it receives either way.
+// The store and files by name; the folder from home (~, $HOME, /home/x); the folder relative to a
+// turn's working folder (../inbox, ./inbox) and a bare `inbox/` path.
+const INBOX_PATH =
+  /(?:\binbox\/+(?:items\.json|files)\b|(?:~|\$\{?HOME\}?|\/home\/[\w.-]+)\/+["']?inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])(?:\.{1,2}\/+)+inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])inbox\/)/i;
+const INBOX_PULL = /\bbun\b[^;&|\n]*\binbox\.ts["']?\s+["']?(?:list|ack|get|purge|gate)\b/i;
+const INBOX_EVAL = /\b(?:bun|node|deno)\b[^;&|\n]*\s(?:-e|--eval|-p|--print)\b[^;&|\n]*\binbox\b/i;
 
 interface Rule {
   name: string;
@@ -115,6 +126,16 @@ const RULES: Rule[] = [
     name: "rchannel-sync",
     reason: "refused: rchannel.ts sync is the PC's own call over ssh; a turn never runs it",
     test: (c) => /\brchannel\.ts\s+sync\b/i.test(c),
+  },
+  {
+    name: "inbox-store",
+    reason: "refused: the phone inbox is read and written only by the poller and the PC's pull; a turn may run `bun run inbox.ts status`",
+    test: (c) => INBOX_PATH.test(c),
+  },
+  {
+    name: "inbox-pull",
+    reason: "refused: inbox.ts list, ack, get, purge and gate are the PC's or the poller's; a turn never runs them",
+    test: (c) => INBOX_PULL.test(c) || INBOX_EVAL.test(c),
   },
   {
     name: "force-push-main",
@@ -216,6 +237,56 @@ export function checkFileWrite(toolName: string, filePath: string | undefined): 
       reason:
         "refused: editing guard.ts, the hook files, or the telegram .env would disable the safety policy",
     };
+  }
+  return { verdict: "allow" };
+}
+
+// The file tools that can read or write a path. Tolerate a namespaced prefix.
+const FILE_TOOL = /(?:^|__)(?:Read|Grep|Glob|Edit|Write|MultiEdit|NotebookEdit)$/i;
+const SEARCH_TOOL = /(?:^|__)(?:Grep|Glob)$/i;
+// A search rooted here would walk into ~/inbox.
+const ABOVE_INBOX = /^(?:\/|\/home\/?|\/home\/[^/]+\/?|\/root\/?|~\/?|\$\{?HOME\}?\/?)$/i;
+
+/** Refuse the file tools any path under an `inbox/` folder (the phone inbox's store and files),
+ *  and a search (Grep, Glob) rooted at or above the home folder. Relative paths are resolved
+ *  against the turn's working folder (`cwd`, from the hook payload) first, so `..` from
+ *  ~/claude-bot is the home folder; backslashes, doubled slashes and `..` are normalized. A glob
+ *  is judged by its fixed prefix (the part before its first wildcard). The code (`inbox.ts`)
+ *  stays open. */
+export function checkInboxAccess(
+  toolName: string,
+  input: { file_path?: unknown; path?: unknown; pattern?: unknown; glob?: unknown; notebook_path?: unknown },
+  cwd?: unknown,
+): GuardVerdict {
+  if (!FILE_TOOL.test(toolName)) return { verdict: "allow" };
+  const refuse: GuardVerdict = { verdict: "block", reason: "refused: the phone inbox is read and written only by the poller and the PC's pull" };
+  const base = typeof cwd === "string" && cwd.startsWith("/") ? cwd : null;
+  const resolve = (v: string): string => {
+    const s = v.replace(/\\/g, "/").replace(/\/+/g, "/");
+    if (base && !s.startsWith("/") && !s.startsWith("~") && !s.startsWith("$")) return posix.resolve(base, s);
+    return posix.normalize(s);
+  };
+  const isGlob = /(?:^|__)Glob$/i.test(toolName);
+  const search = SEARCH_TOOL.test(toolName);
+  // Glob's pattern and Grep's glob are paths; Grep's pattern is a regex over contents, not a path.
+  const globs = [input.glob, isGlob ? input.pattern : undefined].filter((v): v is string => typeof v === "string" && !!v);
+  const root = typeof input.path === "string" && input.path ? resolve(input.path) : base;
+  for (const v of [input.file_path, input.path, input.notebook_path, ...globs]) {
+    if (typeof v !== "string" || !v) continue;
+    const n = resolve(v);
+    if (/(?:^|\/)inbox(?:\/|$)/i.test(n)) return refuse;
+    if (!base && /^\.\.(?:\/|$)/.test(n)) return refuse; // no working folder to resolve against
+  }
+  if (search) {
+    if (root && ABOVE_INBOX.test(root)) return refuse;
+    for (const g of globs) {
+      // The fixed folder part: up to the last slash before the first wildcard (`../inb*` is `../`).
+      const head = g.replace(/\\/g, "/").split(/[*?[{]/)[0];
+      const prefix = head.slice(0, head.lastIndexOf("/") + 1);
+      if (!prefix) continue;
+      const p = prefix.startsWith("/") || !root ? resolve(prefix) : posix.resolve(root, prefix);
+      if (ABOVE_INBOX.test(p) || /(?:^|\/)inbox(?:\/|$)/i.test(p)) return refuse;
+    }
   }
   return { verdict: "allow" };
 }
