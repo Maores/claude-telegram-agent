@@ -16,18 +16,21 @@
  *      spawning process set CLAUDE_AUTO_SESSION=1 — i.e. unattended [AUTO]
  *      reminder runs. Those sessions additionally may not schedule reminders
  *      (self-replication guard) or create Gmail drafts.
+ *   3. Protected-file edits (guard.checkFileWrite) and the phone inbox
+ *      (guard.checkInboxAccess: the file tools never reach an inbox/ folder or
+ *      search from above it), in every session.
  *
- * Non-Bash tools pass through in normal sessions; the only non-Bash tool this
- * hook ever blocks is Gmail's create_draft, and only inside an [AUTO] session.
+ * Gmail's create_draft is blocked only inside an [AUTO] session.
  *
  * Fail-closed: if a guard rule throws on a real tool call, the hook denies
  * rather than allows. A payload it cannot parse at all is passed through (exit
  * 0) so a malformed hook event can never brick the bot.
  *
- * This file is wired via settings.json on the droplet — see hooks/README.md.
+ * This file is wired via the untracked .claude/settings.local.json on the
+ * droplet — see hooks/README.md.
  * It is intentionally NOT registered automatically by the PR that adds it.
  */
-import { checkCommand, checkAutoSession, checkFileWrite } from "../guard";
+import { checkCommand, checkAutoSession, checkFileWrite, checkInboxAccess } from "../guard";
 
 function block(reason: string): never {
   console.error(`[guard] ${reason}`);
@@ -64,6 +67,9 @@ try {
   // bash floor above never sees tool-based file writes.
   const fw = checkFileWrite(toolName, filePath);
   if (fw.verdict === "block") block(fw.reason ?? "blocked: edit to a protected safety file");
+  // The phone inbox: the file tools (Read/Grep/Glob as well as the editors) never reach it.
+  const ia = checkInboxAccess(toolName, input?.tool_input ?? {}, input?.cwd);
+  if (ia.verdict === "block") block(ia.reason ?? "blocked: the phone inbox");
 } catch (e: any) {
   // Deny on error — the hardline layer fails closed (see the survey's
   // "don't regress" note on fail-open scanners).

@@ -243,3 +243,25 @@ test("a throwing onFlush does not break the debouncer", async () => {
   await sleep(80);
   expect(flushes).toEqual([["b"]]);
 });
+
+test("classifyUpdate: the inbox group outranks stop and message, and other groups are foreign", () => {
+  const inbox = -1001;
+  const msg = (id: number, type: string | undefined, text?: string) => ({ update_id: 1, message: { chat: { id, type }, text } });
+  expect(classifyUpdate(msg(inbox, "supergroup", "hello"), "bot", inbox)).toBe("inbox");
+  expect(classifyUpdate(msg(inbox, "supergroup", "/stop"), "bot", inbox)).toBe("inbox");
+  expect(classifyUpdate(msg(inbox, "group"), "bot", inbox)).toBe("inbox");
+  expect(classifyUpdate(msg(-2002, "group", "hello"), "bot", inbox)).toBe("foreign-group");
+  expect(classifyUpdate(msg(-2002, "supergroup", "/stop"), "bot", inbox)).toBe("foreign-group");
+  expect(classifyUpdate(msg(7, "private", "hello"), "bot", inbox)).toBe("message");
+  expect(classifyUpdate(msg(7, "private", "/stop"), "bot", inbox)).toBe("stop");
+  expect(classifyUpdate({ update_id: 2, callback_query: {} }, "bot", inbox)).toBe("callback");
+  // a matching id outside a group is never the inbox (a regression guard inside a test that fails first)
+  expect(classifyUpdate(msg(inbox, "channel", "x"), "bot", inbox)).toBe("message");
+  expect(classifyUpdate(msg(inbox, undefined, "x"), "bot", inbox)).toBe("message");
+});
+
+test("classifyUpdate with the inbox off: groups are still never answered, a private chat behaves as before", () => {
+  expect(classifyUpdate({ update_id: 1, message: { chat: { id: -2002, type: "group" }, text: "hi" } }, "bot", null)).toBe("foreign-group");
+  expect(classifyUpdate({ update_id: 2, message: { chat: { id: 7, type: "private" }, text: "/stop" } }, "bot", null)).toBe("stop");
+  expect(classifyUpdate({ update_id: 3, message: { chat: { id: 7 } } }, "bot")).toBe("message");
+});

@@ -18,6 +18,7 @@
  *  - Pure functions, no IO: the hook does the IO and fails closed if a rule
  *    throws (see hooks/pretooluse-guard.ts).
  */
+import { posix } from "node:path";
 
 export type GuardVerdict = { verdict: "allow" | "block"; reason?: string };
 
@@ -40,17 +41,49 @@ const hasRecursive = (c: string): boolean =>
 const hasDangerousRoot = (c: string): boolean =>
   /(?:^|\s)(["']?)(?:\/|~|\$\{?HOME\}?)(?:\/\*?|\*)?\1(?=$|\s|[;&|])/.test(c);
 
-// Write-intent verbs/operators, used only together with a sensitive-path match.
+// Write-intent verbs/operators, used only together with a sensitive-path match. A `>&1`, `>&2` or
+// `>&-` copies or closes an output stream and writes no file, so `2>&1` alone is not write intent.
+// Only when the word after `>&` is exactly digits or `-` and ends there: bash writes `>&2/../x`
+// (with a folder named 2) to the file x, so that still counts. Only bash's own blanks (space, tab,
+// newline) end that word: JavaScript's \s also takes CR, VT, FF, NBSP, U+2028, U+3000 and BOM,
+// which bash keeps inside the word, so `>&2` + CR + `/../x` writes x as well.
 const WRITE_INTENT =
-  /(?:>>?|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b|\btruncate\b|\binstall\b|\bdd\b|\bchmod\b|\bchown\b|\bln\b)/i;
+  /(?:>>?(?!&(?:\d+|-)(?=$|[ \t\n;&|)<>]))|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b|\btruncate\b|\binstall\b|\bdd\b|\bchmod\b|\bchown\b|\bln\b)/i;
 
 // Sensitive paths.
 const SSH_PATH = /(?:~|\$\{?HOME\}?|\/home\/[\w.-]+|\/root)\/\.ssh\b/i;
 const ENV_PATH = /\.claude\/channels\/telegram\/\.env\b/i;
-const SELF_PATH = /(?:^|[\s'"=/])(?:guard\.ts|hooks\/pretooluse-guard\.ts|hooks\/[\w.-]+\.ts)\b/i;
+// inbox.ts is here too: it is the PC key's forced command (`inbox.ts gate`), so changing it would
+// change what that key can do. A name right after a redirect (`>guard.ts`, `>|guard.ts`,
+// `&>guard.ts`, `>&guard.ts`) counts as well.
+// Known limits: the forced command also runs inbox.ts's imports (redact.ts, reminders.ts), which
+// stay editable; and this fence does not stop a pull spelled through shell splitting (variables,
+// quotes inside the word). The PC trusts nothing it receives either way.
+const SELF_PATH = /(?:^|[\s'"=/>|&])(?:guard\.ts|inbox\.ts|hooks\/pretooluse-guard\.ts|hooks\/[\w.-]+\.ts)\b/i;
 // The routine channel's store: only the poller and the PC's sync (over ssh, never through this
 // hook) write it; an answer written into it by a turn would be carried out on the PC.
 const RCHANNEL_STORE = /\brchannel\/store\.json\b/i;
+// The phone inbox: only the poller files items, and only the PC's own key (through `inbox.ts
+// gate`, never through this hook) lists, acks and fetches them. A turn may run `bun run inbox.ts
+// status` and nothing else: the store holds forwarded content, so reading it would also be a road
+// for injected text. This refuses the obvious routes; the PC trusts nothing it receives either way.
+// The store and files by name; the folder from home (~, $HOME, /home/x, also "$HOME"/inbox); the
+// folder relative to a turn's working folder or through a dot segment (../inbox, ./inbox,
+// ~/x/../inbox); a bare `inbox/` path; and a cd or
+// pushd straight into a bare `inbox` (flags such as `-P` or `--` before it included).
+// Left open on purpose: a recursive tool aimed at the bare folder after a cd (`cd .. && grep -r x
+// inbox`, `tar ... inbox`), and a cd made in one Bash call followed by a bare path in the next (the
+// tool keeps its folder between calls). This is a fence, not a wall; the PC distrusts everything.
+const INBOX_PATH =
+  /(?:\binbox\/+(?:items\.json|files)\b|(?:~|\$\{?HOME\}?|\/home\/[\w.-]+)["']?\/+["']?inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:\/])(?:\.{1,2}\/+)+inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])inbox\/|(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+(?:-\S*\s+)*["']?inbox["']?(?=$|[\s;&|)\/]))/i;
+// An allowlist: a bun command in one segment that names inbox.ts is refused unless the next word is
+// exactly `status`. So a subcommand the guard cannot read (`$x`, `$(...)`, xargs, a quoted `--`)
+// is refused too. `bun.lock` and a `.bun/` folder are not the bun command. Bun also runs `inbox`
+// with no extension or as `inbox.js`, so any script extension or none counts, while `inbox.test.ts`
+// and `inbox-cli.test.ts` do not.
+const INBOX_PULL =
+  /\bbun\b(?![./-])[^;&|\n]*\binbox(?:\.(?:[cm]?[jt]sx?))?(?![\w.-])(?!["']?\s+["']?status["']?(?=$|[\s;&|)]))/i;
+const INBOX_EVAL = /\b(?:bun|node|deno)\b[^;&|\n]*\s(?:-e|--eval|-p|--print)\b[^;&|\n]*\binbox\b/i;
 
 interface Rule {
   name: string;
@@ -103,7 +136,7 @@ const RULES: Rule[] = [
   },
   {
     name: "self-tamper",
-    reason: "refused: editing guard.ts or the hook files would disable the safety policy",
+    reason: "refused: editing guard.ts, inbox.ts or the hook files would disable the safety policy",
     test: (c) => SELF_PATH.test(c) && WRITE_INTENT.test(c),
   },
   {
@@ -115,6 +148,16 @@ const RULES: Rule[] = [
     name: "rchannel-sync",
     reason: "refused: rchannel.ts sync is the PC's own call over ssh; a turn never runs it",
     test: (c) => /\brchannel\.ts\s+sync\b/i.test(c),
+  },
+  {
+    name: "inbox-store",
+    reason: "refused: the phone inbox is read and written only by the poller and the PC's pull; a turn may run `bun run inbox.ts status`",
+    test: (c) => INBOX_PATH.test(c),
+  },
+  {
+    name: "inbox-pull",
+    reason: "refused: a turn may run only `bun run inbox.ts status`; run the inbox tests by their full file names (e.g. `bun test inbox.test.ts`)",
+    test: (c) => INBOX_PULL.test(c) || INBOX_EVAL.test(c),
   },
   {
     name: "force-push-main",
@@ -186,7 +229,7 @@ const EDIT_TOOL = /(?:^|__)(?:Edit|Write|MultiEdit|NotebookEdit)$/i;
 
 /**
  * Is `p` one of the safety files that must never be edited by the bot — guard.ts,
- * a hook file, or the telegram .env? Matched on the path's tail so absolute
+ * inbox.ts (the PC key's forced command), a hook file, or the telegram .env? Matched on the path's tail so absolute
  * (`/home/claudebot/claude-bot/guard.ts`), relative (`./guard.ts`), and bare
  * (`guard.ts`) forms all hit, while a merely similar name (`myguard.ts`,
  * `guard.test.ts`) does not.
@@ -195,6 +238,7 @@ function isProtectedFile(p: string): boolean {
   const s = p.replace(/\\/g, "/");
   return (
     /(?:^|\/)guard\.ts$/.test(s) ||
+    /(?:^|\/)inbox\.ts$/.test(s) ||
     /(?:^|\/)hooks\/[\w.-]+\.ts$/.test(s) ||
     /(?:^|\/)\.claude\/channels\/telegram\/\.env$/.test(s) ||
     /(?:^|\/)rchannel\/store\.json(?:\.tmp|\.lock)?$/.test(s)
@@ -214,8 +258,59 @@ export function checkFileWrite(toolName: string, filePath: string | undefined): 
     return {
       verdict: "block",
       reason:
-        "refused: editing guard.ts, the hook files, or the telegram .env would disable the safety policy",
+        "refused: editing guard.ts, inbox.ts, the hook files, or the telegram .env would disable the safety policy",
     };
+  }
+  return { verdict: "allow" };
+}
+
+// The file tools that can read or write a path. Tolerate a namespaced prefix.
+const FILE_TOOL = /(?:^|__)(?:Read|Grep|Glob|LS|Edit|Write|MultiEdit|NotebookEdit)$/i;
+const SEARCH_TOOL = /(?:^|__)(?:Grep|Glob)$/i;
+// A search rooted here would walk into ~/inbox.
+const ABOVE_INBOX = /^(?:\/|\/home\/?|\/home\/[^/]+\/?|\/root\/?|~\/?|\$\{?HOME\}?\/?)$/i;
+
+/** Refuse the file tools any path under an `inbox/` folder (the phone inbox's store and files),
+ *  and a search (Grep, Glob) rooted at or above the home folder. Relative paths are resolved
+ *  against the turn's working folder (`cwd`, from the hook payload) first, so `..` from
+ *  ~/claude-bot is the home folder; backslashes, doubled slashes and `..` are normalized. A glob
+ *  is judged by its fixed prefix (the part before its first wildcard). The code (`inbox.ts`)
+ *  stays readable here; editing it is refused by `checkFileWrite`. */
+export function checkInboxAccess(
+  toolName: string,
+  input: { file_path?: unknown; path?: unknown; pattern?: unknown; glob?: unknown; notebook_path?: unknown },
+  cwd?: unknown,
+): GuardVerdict {
+  if (!FILE_TOOL.test(toolName)) return { verdict: "allow" };
+  const refuse: GuardVerdict = { verdict: "block", reason: "refused: the phone inbox is read and written only by the poller and the PC's pull" };
+  const base = typeof cwd === "string" && cwd.startsWith("/") ? cwd : null;
+  const resolve = (v: string): string => {
+    const s = v.replace(/\\/g, "/").replace(/\/+/g, "/");
+    if (base && !s.startsWith("/") && !s.startsWith("~") && !s.startsWith("$")) return posix.resolve(base, s);
+    return posix.normalize(s);
+  };
+  const isGlob = /(?:^|__)Glob$/i.test(toolName);
+  const search = SEARCH_TOOL.test(toolName);
+  // Glob's pattern and Grep's glob are paths; Grep's pattern is a regex over contents, not a path.
+  const globs = [input.glob, isGlob ? input.pattern : undefined].filter((v): v is string => typeof v === "string" && !!v);
+  const root = typeof input.path === "string" && input.path ? resolve(input.path) : base;
+  for (const v of [input.file_path, input.path, input.notebook_path, ...globs]) {
+    if (typeof v !== "string" || !v) continue;
+    const n = resolve(v);
+    if (/(?:^|\/)inbox(?:\/|$)/i.test(n)) return refuse;
+    if (!base && /^\.\.(?:\/|$)/.test(n)) return refuse; // no working folder to resolve against
+  }
+  if (search) {
+    if (root && ABOVE_INBOX.test(root)) return refuse;
+    for (const g of globs) {
+      // The fixed folder part: up to the last slash before the first wildcard (`../inb*` is `../`).
+      const head = g.replace(/\\/g, "/").split(/[*?[{]/)[0];
+      const prefix = head.slice(0, head.lastIndexOf("/") + 1);
+      if (!prefix) continue;
+      // An absolute or home prefix (/, ~, $HOME) is not relative to the search root.
+      const p = /^[\/~$]/.test(prefix) || !root ? resolve(prefix) : posix.resolve(root, prefix);
+      if (ABOVE_INBOX.test(p) || /(?:^|\/)inbox(?:\/|$)/i.test(p)) return refuse;
+    }
   }
   return { verdict: "allow" };
 }
