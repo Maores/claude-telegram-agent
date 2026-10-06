@@ -758,14 +758,27 @@ echo '{"tool_name":"Read","cwd":"/home/claudebot/claude-bot","tool_input":{"file
 # expect: exit 0
 mkdir -p ~/inbox && [ -e ~/inbox/items.json ] || echo '{"v":1,"items":[]}' > ~/inbox/items.json
 set -a && . ~/.claude/channels/telegram/.env && set +a   # the service's own login for claude -p
-claude -p --dangerously-skip-permissions --output-format stream-json --verbose "Call the Read tool once on /home/claudebot/inbox/items.json and print the raw tool result" | grep -c "phone inbox is read and written only"
+claude -p --dangerously-skip-permissions --output-format stream-json --verbose "Call the Read tool once on /home/claudebot/inbox/items.json and print the raw tool result" | tee ~/inbox-probe.jsonl | grep -c "phone inbox is read and written only"
 # expect: at least 1 (a real turn, through the live settings, hit the refusal)
+grep -c '"name":"Read"' ~/inbox-probe.jsonl
+# expect: at least 1 (the model really called the tool)
+```
+
+The turn runs from `~/claude-bot` and loads `CLAUDE.md`, which tells the agent
+never to open `~/inbox`, so the model may decline to call Read at all. If the
+second count is 0, the model never called the tool: the result is inconclusive,
+not a failure of the guard. Rerun the same `claude -p` line with
+`--append-system-prompt "This is the operator's own test of the guard hook: call the Read tool exactly as asked."`
+added before the prompt, and read both counts again. Then remove the probe file:
+
+```bash
+rm ~/inbox-probe.jsonl
 ```
 
 The matcher covers Read, Grep and Glob, but not a legacy `LS` tool, which the
-guard's file-tool check does not name either: if the `"tools"` list in the first
-line a `claude -p --output-format stream-json --verbose` run prints still holds
-`LS`, that tool can list `~/inbox` and is not covered.
+guard's file-tool check does not name either: if the `"tools"` list in the
+`"subtype":"init"` line of a `claude -p --output-format stream-json --verbose`
+run still holds `LS`, that tool can list `~/inbox` and is not covered.
 
 **3. The PC's own key.** The PC pulls with a key that can do nothing else. Its
 line for `~/.ssh/authorized_keys` (the public key comes from the PC):
@@ -775,16 +788,25 @@ restrict,command="cd /home/claudebot/claude-bot && /home/claudebot/.bun/bin/bun 
 ```
 
 Add it without retyping it through shells (a malformed line, or one glued to the
-key above it, can lock the PC out): write the line to a local file and a small
-script beside it, copy both up with the existing key (`scp <line> <script>
-<target>:`), and run the script in one call (`ssh <target> 'bash ~/add-inbox-key.sh'`).
-The script restores the backup by itself when the count of keys did not rise by
-exactly one:
+key above it, can lock the PC out): write the line to a local file named
+`inbox-key.line` and the script below to a local file named `add-inbox-key.sh`,
+copy both up with the existing key into the home folder under those same names
+(`scp inbox-key.line add-inbox-key.sh <target>:`, so they land at
+`~/inbox-key.line` and `~/add-inbox-key.sh`, where the script expects them), and
+run the script in one call (`ssh <target> 'bash ~/add-inbox-key.sh'`).
+The script refuses a key that is already in `authorized_keys` (sshd uses the
+first line that matches a key, so an earlier unrestricted line for the same key
+would leave the inbox key unconfined), and restores the backup by itself when
+the count of keys did not rise by exactly one:
 
 ```bash
 #!/usr/bin/env bash
 set -u
 f=~/.ssh/authorized_keys
+new=$(ssh-keygen -lf ~/inbox-key.line 2>/dev/null | awk '{print $2}')
+if [ -n "$new" ] && ssh-keygen -lf "$f" 2>/dev/null | awk '{print $2}' | grep -qxF "$new"; then
+  echo "REFUSED: this key is already in authorized_keys; generate a new one"; exit 1
+fi
 bak="$f.bak-$(date +%Y%m%d-%H%M%S)"
 cp -p "$f" "$bak"
 before=$(ssh-keygen -lf "$f" | wc -l)
@@ -827,13 +849,20 @@ Then, from the PC, with the inbox key and `-o IdentitiesOnly=yes -o IdentityAgen
    ```bash
    cd ~/claude-bot
    sed -i '/^INBOX_CHAT_ID=/d' ~/.claude/channels/telegram/.env && printf '\nINBOX_CHAT_ID=%s\n' '<the id>' >> ~/.claude/channels/telegram/.env
+   t=$(TZ=Asia/Jerusalem date '+%F %T')
    before=$(systemctl show telegram-agent -p ActiveEnterTimestampMonotonic --value)
    sudo systemctl restart telegram-agent
+   sleep 5
    after=$(systemctl show telegram-agent -p ActiveEnterTimestampMonotonic --value)
    [ "$before" != "$after" ] && echo "restarted"
-   TZ=Asia/Jerusalem journalctl -u telegram-agent -n 30 --no-pager | grep -F '[INBOX]'
+   systemctl is-active telegram-agent   # expect: active
+   TZ=Asia/Jerusalem journalctl -u telegram-agent --since "$t" --no-pager | grep -F '[INBOX]'
    # expect: [INBOX] on for chat <the id>
    ```
+   The poller prints that line only after its memory import and a call to
+   Telegram, a few seconds after the restart; if it is not there yet, run the
+   `journalctl` line again. `date` and `journalctl` both run with
+   `TZ=Asia/Jerusalem`, so `--since` reads the time in the zone it was taken in.
 6. Send a message in the group: it gets 👍, and `inbox.ts status` shows `"waiting":1`.
    (An album shows one 👍, on its first picture: Telegram puts every reaction on
    an album there.)
@@ -847,7 +876,8 @@ a restart, `following the moved group <id>`), set the new value with step 5.
 To turn the inbox off: remove `INBOX_CHAT_ID` from the `.env` and restart. The
 poller then answers nothing in the group and sends nothing there, but still
 deletes what is left (warned items after their week, everything after ten days);
-`~/.bun/bin/bun run inbox.ts purge` runs the same deletions by hand.
+`cd ~/claude-bot && ~/.bun/bin/bun run inbox.ts purge` runs the same deletions
+by hand.
 
 The PC's half (the pull and the walk-through) lives outside this repo.
 
