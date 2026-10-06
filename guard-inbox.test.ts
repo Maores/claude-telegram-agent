@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { checkCommand, checkInboxAccess } from "./guard";
+import { checkCommand, checkFileWrite, checkInboxAccess } from "./guard";
 
 // The phone inbox is read and written only by the poller and by the PC's own key (which never
 // passes through this hook). A turn may run `bun run inbox.ts status`, and nothing else.
@@ -59,6 +59,14 @@ test("a turn never runs list, ack, get, purge or gate, however it is spelled", (
     "bun run inbox.ts status; bun run inbox.ts list",
     "bun run inbox.ts statuslist",
     "bun run inbox.ts",
+    // Bun runs a module named without its extension, and maps `.js` to `.ts`
+    "bun run inbox list",
+    "bun inbox ack 261005-a1b2",
+    "bun run inbox purge",
+    "~/.bun/bin/bun run inbox get 261005-a1b2",
+    "bun inbox.js list",
+    "bun /home/someone/claude-bot/inbox list",
+    "bun run inbox.ts status && bun run inbox list",
   ]) {
     expect(checkCommand(cmd)).toEqual({ verdict: "block", reason: PULL });
   }
@@ -71,6 +79,9 @@ test("status, the code, the tests and unrelated commands stay open", () => {
     "bun run inbox.ts status 2>&1 | jq .",
     "bun run inbox.ts status && echo ok",
     "bun run inbox.ts \"status\"",
+    "bun run inbox status",
+    "bun test inbox-cli.test.ts",
+    "grep -n checkCommand guard.ts 2>&1 | head",
     "git add bun.lock inbox.ts",
     "grep -n purge inbox.ts",
     "grep -n \"inbox.ts list\" CLAUDE.md",
@@ -84,6 +95,26 @@ test("status, the code, the tests and unrelated commands stay open", () => {
     "echo inbox",
   ]) {
     expect(checkCommand(cmd).verdict).toBe("allow");
+  }
+});
+
+// inbox.ts is also the PC key's forced command (`inbox.ts gate`), so a turn may not change it.
+test("inbox.ts is protected like the guard; its tests stay editable", () => {
+  for (const p of ["/home/someone/claude-bot/inbox.ts", "inbox.ts", "./inbox.ts"]) {
+    expect(checkFileWrite("Edit", p).verdict).toBe("block");
+    expect(checkFileWrite("Write", p).verdict).toBe("block");
+  }
+  for (const p of ["/home/someone/claude-bot/inbox-cli.test.ts", "inbox.test.ts", "myinbox.ts"]) {
+    expect(checkFileWrite("Edit", p).verdict).toBe("allow");
+  }
+  for (const cmd of [
+    "sed -i s/a/b/ inbox.ts",
+    "echo x > inbox.ts",
+    "cp /tmp/x.ts ~/claude-bot/inbox.ts",
+    "echo x >& guard.ts",
+  ]) {
+    expect(checkCommand(cmd).verdict).toBe("block");
+    expect(checkCommand(cmd).reason).toContain("inbox.ts");
   }
 });
 

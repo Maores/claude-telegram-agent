@@ -133,8 +133,8 @@ So when you make non-trivial changes to your own `*.ts` source:
   A pre-commit hook (scripts/git-pre-commit, installed at .git/hooks/pre-commit)
   blocks runtime/private files and token shapes; if it fires, the answer is to
   unstage, not --no-verify.
-- You cannot edit `guard.ts`, the hook files, or the telegram `.env` — the guard blocks
-  it, since those protect the safety policy itself.
+- You cannot edit `guard.ts`, `inbox.ts` (the PC key's forced command), the hook files,
+  or the telegram `.env` — the guard blocks it, since those protect the safety policy itself.
 
 ## Web access
 - You have WebSearch and WebFetch (load them via ToolSearch when needed).

@@ -18,7 +18,7 @@ It enforces four layers:
    catastrophic: `rm -rf /` / `~` / `$HOME`, `mkfs`, `dd` to a block device,
    fork bombs, `shutdown`/`reboot`/`halt`/`poweroff`, recursive `chmod`/`chown`
    on `/`, writes to `~/.ssh`, writes to the telegram `.env`, writes to
-   `guard.ts` or the hook files themselves, `git push --force` to `main`, and
+   `guard.ts`, `inbox.ts` or the hook files themselves, `git push --force` to `main`, and
    `curl`/`wget` piped straight into a shell. Commands that merely *mention*
    these as text (`echo "shutdown"`, `grep "rm -rf"`) are left alone.
 
@@ -31,8 +31,8 @@ It enforces four layers:
 
 3. **Protected-file edits** — `guard.checkFileWrite` runs on the file-editing
    tools (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`) in every session and refuses
-   writes to the safety files themselves — `guard.ts`, the hook files, and the
-   telegram `.env`. The bash floor (layer 1) only sees shell commands, so this is
+   writes to the safety files themselves — `guard.ts`, `inbox.ts` (the PC key's
+   forced command), the hook files, and the telegram `.env`. The bash floor (layer 1) only sees shell commands, so this is
    the layer that stops the bot from disabling its own guard via the Edit tool.
    Every other file stays editable, so the bot keeps improving its own code.
 
@@ -40,8 +40,10 @@ It enforces four layers:
    (`Read`/`Grep`/`Glob` as well as the editors) in every session and refuses any
    path under an `inbox/` folder, and any search rooted at or above the home
    folder. The `inbox-store` and `inbox-pull` rules in layer 1 refuse the same
-   folder to `Bash`, and `inbox.ts list`/`ack`/`get`/`purge`/`gate`. A turn may
-   run `bun run inbox.ts status`; the code itself (`inbox.ts`) stays open.
+   folder to `Bash`, and `inbox.ts list`/`ack`/`get`/`purge`/`gate` (also spelled
+   `inbox` or `inbox.js`, which Bun runs as `inbox.ts`). A turn may run
+   `bun run inbox.ts status`; the code itself (`inbox.ts`) stays readable, and
+   layer 3 refuses edits to it.
 
 **Fail-closed:** if a guard rule throws on a real tool call, the hook denies
 rather than allows. A payload it can't parse at all is passed through (exit 0)
