@@ -40,6 +40,7 @@ import { classifyUpdate, ChatQueues, SerialChain, Debouncer, isStopCommand } fro
 import { runDigest, digestDir, type GenOutcome } from "./ccdigest.ts";
 import { rchannelDir, mutateStore, applyTap, parseRcCallback, takeOther, performEdits, runRchannelTick, sendRcProposals, RcGone, isGoneError, quietNow, type RcTap, type View } from "./rchannel.ts";
 import { inboxDir, parseInboxChatId, resolveInboxChatId, writeMoved, fileInboxMessage, foreignGroupNote, runInboxTick, INBOX_MOVED } from "./inbox.ts";
+import { withAlwaysDisallowed } from "./guard";
 export { isStopCommand }; // poller.test.ts and external users keep their import path
 
 // ---------------------------------------------------------------------------
@@ -1165,6 +1166,15 @@ async function streamClaudeResilient(
   return msg;
 }
 
+/** The argv of one claude -p turn. Every turn starts without the tools in
+ *  ALWAYS_DISALLOWED_TOOLS (Monitor runs a shell command in the background). They
+ *  join an [AUTO] turn's own --disallowedTools list, so there is one flag, and
+ *  extraArgs stay at the end (the prompt goes in on stdin, never as a word here). */
+export function claudeTurnArgv(model: string, extraArgs: string[] = []): string[] {
+  // prettier-ignore
+  return withAlwaysDisallowed([CLAUDE_BIN, "-p", "--model", MODEL_IDS[model] ?? model, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions", ...extraArgs]);
+}
+
 async function streamClaude(
   prompt: string,
   chatId: number,
@@ -1173,8 +1183,7 @@ async function streamClaude(
   opts: SpawnOpts = {},
 ): Promise<string> {
   const proc = Bun.spawn(
-    // prettier-ignore
-    [CLAUDE_BIN, "-p", "--model", MODEL_IDS[model] ?? model, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions", ...(opts.extraArgs ?? [])],
+    claudeTurnArgv(model, opts.extraArgs),
     {
       cwd: PROJECT_DIR,
       stdin: "pipe",

@@ -13,8 +13,11 @@ block (printing the reason to stderr, which Claude sees) or `0` to allow.
 
 It enforces four layers:
 
-1. **Hardline floor** — `guard.checkCommand` runs on every `Bash` command in
-   every session, even full-permission ones. It refuses only the unambiguously
+1. **Hardline floor** — `guard.checkCommand` runs on every shell command in
+   every session, even full-permission ones. Any tool whose input has a string
+   `command` is checked like `Bash` (`Monitor`, which runs its command in the
+   background, a namespaced variant, or a tool added later; see
+   `guard.commandOf`). It refuses only the unambiguously
    catastrophic: `rm -rf /` / `~` / `$HOME`, `mkfs`, `dd` to a block device,
    fork bombs, `shutdown`/`reboot`/`halt`/`poweroff`, recursive `chmod`/`chown`
    on `/`, writes to `~/.ssh`, writes to the telegram `.env`, writes to
@@ -61,6 +64,11 @@ that reliably blocks Gmail `create_draft`, because that tool's full name is
 `mcp__<server-uuid>__create_draft` and the UUID differs per deployment, so it
 can't be named in a static `--disallowedTools` value.
 
+Every `claude -p` the code starts (each turn, `[AUTO]` jobs, the review pass,
+the health probe) is also started without the `Monitor` tool
+(`guard.ALWAYS_DISALLOWED_TOOLS`, added by `guard.withAlwaysDisallowed`). An
+`[AUTO]` turn gets it inside its own `--disallowedTools` list, so there is one flag.
+
 ## Wiring it on the droplet — NOT applied automatically
 
 > **This PR does not register the hook.** Adding it changes how every `claude -p`
@@ -80,7 +88,7 @@ which a deploy would autosave and reset:
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|create_draft",
+        "matcher": "Bash|Monitor|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|create_draft",
         "hooks": [
           {
             "type": "command",
@@ -96,8 +104,8 @@ which a deploy would autosave and reset:
 Notes:
 
 - **`matcher`** is a regex against the tool name.
-  `Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|create_draft` fires the hook
-  for every `Bash` command (the hardline floor + the `[AUTO]` reminder block), for the
+  `Bash|Monitor|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|create_draft` fires the hook
+  for every `Bash` and `Monitor` command (the hardline floor + the `[AUTO]` reminder block), for the
   file-editing tools (the protected-file block), for Gmail's `create_draft` (the
   `[AUTO]` draft block), and for nothing else. The reading tools (`Read|Grep|Glob|LS`)
   are matched only for the phone inbox's refusal (`checkInboxAccess`). The
@@ -119,8 +127,9 @@ Notes:
 
 The rules are covered by `guard.test.ts` (golden block/allow table), with the
 routine channel's and the phone inbox's rules in `guard-rchannel.test.ts` and
-`guard-inbox.test.ts`. Run:
+`guard-inbox.test.ts`; `guard-monitor.test.ts` covers commands from tools other
+than `Bash` and runs the hook script itself end to end. Run:
 
 ```
-bun test guard.test.ts guard-rchannel.test.ts guard-inbox.test.ts
+bun test guard.test.ts guard-rchannel.test.ts guard-inbox.test.ts guard-monitor.test.ts
 ```

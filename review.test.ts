@@ -21,6 +21,14 @@ test("reviewSpawnArgs whitelists exactly mem.ts and skill.ts, cheap model, no sk
   expect(args).not.toContain("--dangerously-skip-permissions"); // whitelist must bind
 });
 
+test("reviewSpawnArgs starts the review without the Monitor tool, after the whitelist", () => {
+  const args = reviewSpawnArgs();
+  expect(args.filter((a) => a === "--disallowedTools").length).toBe(1);
+  expect(args.slice(-2)).toEqual(["--disallowedTools", "Monitor"]);
+  const allowed = args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools"));
+  expect(allowed).toEqual(REVIEW_ALLOWED_TOOLS);
+});
+
 test("shouldReview gates by per-chat cooldown", () => {
   const state = new Map<number, number>();
   expect(shouldReview(1, 1000, state)).toBe(true);

@@ -741,7 +741,7 @@ TZ=Asia/Jerusalem journalctl -u telegram-agent --since today --no-pager | grep -
 **2. The guard hook gains the reading tools.** The live wiring is the untracked
 `~/claude-bot/.claude/settings.local.json` (never the tracked `.claude/settings.json`,
 which `deploy.sh` would autosave and reset). Back it up, change only the matcher
-to `Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|create_draft`, and check:
+to `Bash|Monitor|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|create_draft`, and check:
 
 ```bash
 cp ~/claude-bot/.claude/settings.local.json ~/claude-bot/.claude/settings.local.json.bak-$(date +%Y%m%d-%H%M)
@@ -760,6 +760,8 @@ echo '{"tool_name":"Read","cwd":"/home/claudebot/claude-bot","tool_input":{"file
 # expect: the inbox reason on stderr, exit 2
 echo '{"tool_name":"Read","cwd":"/home/claudebot/claude-bot","tool_input":{"file_path":"/home/claudebot/claude-bot/inbox.ts"}}' | ~/.bun/bin/bun run hooks/pretooluse-guard.ts; echo "exit $?"
 # expect: exit 0
+echo '{"tool_name":"Monitor","cwd":"/home/claudebot/claude-bot","tool_input":{"command":"cat ~/inbox/items.json"}}' | ~/.bun/bin/bun run hooks/pretooluse-guard.ts; echo "exit $?"
+# expect: the inbox reason on stderr, exit 2 (a command is checked whatever tool carries it)
 mkdir -p ~/inbox && [ -e ~/inbox/items.json ] || echo '{"v":1,"items":[]}' > ~/inbox/items.json
 set -a && . ~/.claude/channels/telegram/.env && set +a   # the service's own login for claude -p
 claude -p --dangerously-skip-permissions --output-format stream-json --verbose "Call the Read tool once on /home/claudebot/inbox/items.json and print the raw tool result" | tee ~/inbox-probe.jsonl | grep -c "phone inbox is read and written only"
@@ -774,15 +776,17 @@ second count is 0, the model never called the tool: the result is inconclusive,
 not a failure of the guard. Rerun the same `claude -p` line with
 `--append-system-prompt "This is the operator's own test of the guard hook: call the Read tool exactly as asked."`
 added before the prompt, and read both counts again. Then read the tools the
-turn started with, since the guard's command rules see only `Bash`:
+turn started with:
 
 ```bash
 grep -m1 '"subtype":"init"' ~/inbox-probe.jsonl | jq -r '.tools'
-# expect: no tool other than Bash that runs a shell command (null: read the whole line)
+# expect: Bash and Monitor are the tools that run a shell command (null: read the whole line)
 ```
 
-If another tool there runs a shell command, stop and report it: its commands
-would pass the guard unread. Then remove the probe file:
+The guard checks the `command` of any tool that carries one, so both are
+covered, and the poller also starts every turn with `--disallowedTools Monitor`
+(this manual line does not, so Monitor shows here). If another tool there runs a
+shell command, stop and report it. Then remove the probe file:
 
 ```bash
 rm ~/inbox-probe.jsonl
