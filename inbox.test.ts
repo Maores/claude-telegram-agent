@@ -17,6 +17,8 @@ import {
   mutateInbox,
   newItemId,
   parseInboxChatId,
+  resolveInboxChatId,
+  writeMoved,
   type InboxDeps,
   type InboxMessage,
 } from "./inbox.ts";
@@ -351,4 +353,15 @@ test("two deliveries of one message racing through the download store one item a
   expect(loadInbox(dir).items).toHaveLength(1);
   expect(readdirSync(join(dir, "files"))).toEqual([loadInbox(dir).items[0].file!.slice("files/".length)]);
   expect(calls.reacts).toEqual(["👍"]);
+});
+
+test("a followed move is remembered across a restart until the setting is updated", () => {
+  expect(resolveInboxChatId(-1001, dir)).toBe(-1001);
+  writeMoved(dir, -1001, -100777);
+  expect(resolveInboxChatId(-1001, dir)).toBe(-100777); // restarted before the setting changed
+  expect(resolveInboxChatId(-100777, dir)).toBe(-100777); // the setting was updated
+  expect(resolveInboxChatId(-2002, dir)).toBe(-2002); // another group altogether
+  expect(resolveInboxChatId(null, dir)).toBeNull();
+  writeFileSync(join(dir, "moved.json"), '{"from":-1001,"to":42}'); // a positive id is never an inbox
+  expect(resolveInboxChatId(-1001, dir)).toBe(-1001);
 });

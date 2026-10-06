@@ -707,6 +707,26 @@ export async function runInboxCli(argv: string[], io: InboxCliIo): Promise<numbe
   return 1;
 }
 
+// ---------------------------------------------------------------------------
+// A moved group (Telegram upgraded it to a supergroup): remembered until the setting is updated
+// ---------------------------------------------------------------------------
+
+export function writeMoved(dir: string, from: number, to: number): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "moved.json"), JSON.stringify({ from, to }));
+}
+
+/** The inbox chat to use: the setting, or the group it moved to while the setting still names
+ *  the old one. */
+export function resolveInboxChatId(envId: number | null, dir: string): number | null {
+  if (envId === null) return null;
+  try {
+    const m = JSON.parse(readFileSync(join(dir, "moved.json"), "utf8"));
+    if (m && m.from === envId && Number.isSafeInteger(m.to) && m.to < 0) return m.to;
+  } catch {}
+  return envId;
+}
+
 if (import.meta.main) {
   const code = await runInboxCli(process.argv.slice(2), {
     out: (s) => process.stdout.write(s),

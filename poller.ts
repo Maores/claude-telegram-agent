@@ -38,7 +38,8 @@ import { HEARTBEAT_FILE } from "./health.ts";
 import { shouldReview, runReview } from "./review";
 import { classifyUpdate, ChatQueues, SerialChain, Debouncer, isStopCommand } from "./dispatch";
 import { runDigest, digestDir, type GenOutcome } from "./ccdigest.ts";
-import { rchannelDir, mutateStore, applyTap, parseRcCallback, takeOther, performEdits, runRchannelTick, sendRcProposals, RcGone, isGoneError, type RcTap, type View } from "./rchannel.ts";
+import { rchannelDir, mutateStore, applyTap, parseRcCallback, takeOther, performEdits, runRchannelTick, sendRcProposals, RcGone, isGoneError, quietNow, type RcTap, type View } from "./rchannel.ts";
+import { inboxDir, parseInboxChatId, resolveInboxChatId, writeMoved, fileInboxMessage, foreignGroupNote, runInboxTick, INBOX_MOVED } from "./inbox.ts";
 export { isStopCommand }; // poller.test.ts and external users keep their import path
 
 // ---------------------------------------------------------------------------
@@ -82,6 +83,13 @@ const DEBOUNCE_MS = Number(process.env.DEBOUNCE_MS ?? 3500); // quiet gap after 
 export const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES ?? 20 * 1024 * 1024); // Telegram getFile caps bot downloads at ~20MB
 const DOWNLOAD_TIMEOUT_MS = Number(process.env.DOWNLOAD_TIMEOUT_MS ?? 60_000); // give up on a stuck file download
 const UPLOADS_MAX_BYTES = Number(process.env.UPLOADS_MAX_BYTES ?? 500 * 1024 * 1024); // evict oldest files when uploads/ exceeds this
+// Phone inbox (spec 2026-10-05): the group whose messages are stored, never answered. Unset = off.
+// Mutable: when Telegram moves the group to a new id, the poller follows it (and remembers it in
+// ~/inbox/moved.json until the setting names the new id).
+let inboxChatId: number | null = resolveInboxChatId(parseInboxChatId(process.env.INBOX_CHAT_ID), inboxDir());
+const foreignGroupsSeen = new Set<string>(); // "<chat>:<yes|no>" already logged as [INBOX?]
+let inboxInFlight: Promise<void> | null = null;
+const inboxWarnErr = { at: -Infinity }; // a failed warning is logged at most once an hour
 
 // ---------------------------------------------------------------------------
 // Types
@@ -124,8 +132,12 @@ interface TgAudio {
 }
 interface TgMessage {
   message_id: number;
-  chat: { id: number };
+  chat: { id: number; type?: string };
   from?: TgUser;
+  date?: number;
+  media_group_id?: string;
+  migrate_to_chat_id?: number;
+  migrate_from_chat_id?: number;
   text?: string;
   caption?: string;
   photo?: TgPhotoSize[];
@@ -805,17 +817,23 @@ export function shouldDeclineUnreadable(
   return !attachment && !words && voiceText === null;
 }
 
-/** Download a Telegram file by file_id into ./uploads and return its local path. */
-async function downloadFile(fileId: string, preferredName?: string): Promise<string> {
+/** Fetch a Telegram file's bytes by file_id: getFile, then the file URL. */
+async function fetchTelegramFile(fileId: string): Promise<{ bytes: ArrayBuffer; remotePath: string }> {
   const info = await tg("getFile", { file_id: fileId });
   const remotePath: string = info.file_path; // e.g. "photos/file_123.jpg"
   const url = `https://api.telegram.org/file/bot${TOKEN}/${remotePath}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`file download HTTP ${res.status}`);
+  return { bytes: await res.arrayBuffer(), remotePath };
+}
+
+/** Download a Telegram file by file_id into ./uploads and return its local path. */
+async function downloadFile(fileId: string, preferredName?: string): Promise<string> {
+  const { bytes, remotePath } = await fetchTelegramFile(fileId);
   ensureDir(UPLOADS_DIR);
   const safe = safeDiskName(preferredName || basename(remotePath));
   const dest = join(UPLOADS_DIR, `${Date.now()}-${safe}`);
-  await Bun.write(dest, await res.arrayBuffer());
+  await Bun.write(dest, bytes);
   return dest;
 }
 
@@ -2459,6 +2477,63 @@ async function handleStopDispatch(msg: TgMessage) {
   await tg("sendMessage", { chat_id: chatId, text }).catch(() => {});
 }
 
+/** A message in the phone inbox's group: stored as an item and 👍'd. Never a Claude turn, never
+ *  a history row, never the debouncer (spec 2026-10-05). */
+async function handleInboxMessage(msg: TgMessage) {
+  await fileInboxMessage(msg, {
+    dir: inboxDir(),
+    now: () => new Date(),
+    allowed: (fromId) => loadAllowList().has(fromId),
+    fetchFile: fetchTelegramFile,
+    react: (emoji) => setReaction(msg.chat.id, msg.message_id, emoji),
+    reply: async (text) => {
+      await tg("sendMessage", {
+        chat_id: msg.chat.id,
+        text,
+        reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
+      }).catch((e: any) => console.error(`[ERR] inbox reply: ${e?.message ?? e}`));
+    },
+    log: (line) => console.log(line),
+    maxBytes: MAX_FILE_BYTES,
+  });
+}
+
+/** Follow the inbox group to its new id (Telegram moved it to a supergroup), and remember it. */
+function followInbox(to: number) {
+  if (inboxChatId === null || inboxChatId === to) return;
+  const from = inboxChatId;
+  inboxChatId = to;
+  try {
+    writeMoved(inboxDir(), from, to);
+  } catch (e: any) {
+    console.error(`[ERR] inbox moved.json: ${e?.message ?? e}`);
+  }
+  console.log(`[INBOX] the inbox group moved to chat ${to}: set INBOX_CHAT_ID to it and restart`);
+  void tg("sendMessage", { chat_id: to, text: INBOX_MOVED }).catch((e: any) => console.error(`[ERR] inbox moved notice: ${e?.message ?? e}`));
+}
+
+/** The inbox's lifetime on the 30-second tick: the day-before warning, the deletions, the sweep. */
+function checkInbox(): Promise<void> {
+  if (stopping) return Promise.resolve();
+  if (inboxInFlight) return inboxInFlight;
+  const chatId = inboxChatId;
+  // Unset: nothing is sent, but items left from before still go (the hard cap and warned items).
+  if (chatId === null && !existsSync(join(inboxDir(), "items.json"))) return Promise.resolve();
+  inboxInFlight = runInboxTick({
+    dir: inboxDir(),
+    nowS: Math.floor(Date.now() / 1000),
+    quietAt: (ms) => quietNow(new Date(ms)),
+    send: chatId === null ? null : async (text) => void (await tg("sendMessage", { chat_id: chatId, text })),
+    log: (line) => console.log(line),
+    errClock: inboxWarnErr,
+  })
+    .catch((e: any) => console.error(`[ERR] inbox tick: ${e?.message ?? e}`))
+    .finally(() => {
+      inboxInFlight = null;
+    });
+  return inboxInFlight;
+}
+
 // ---------------------------------------------------------------------------
 // Offset persistence (so restarts don't drop or replay messages)
 // ---------------------------------------------------------------------------
@@ -3106,6 +3181,11 @@ async function main() {
   botUsername = me.username ?? "";
   botUserId = me.id ?? 0;
   console.log(`[BOT] Poller started as @${me.username}`);
+  const fromEnv = parseInboxChatId(process.env.INBOX_CHAT_ID);
+  if (inboxChatId !== null && inboxChatId !== fromEnv) console.log(`[INBOX] following the moved group ${inboxChatId}; update INBOX_CHAT_ID`);
+  else if (inboxChatId !== null) console.log(`[INBOX] on for chat ${inboxChatId}`);
+  else if ((process.env.INBOX_CHAT_ID ?? "").trim()) console.error("[INBOX] INBOX_CHAT_ID is not a group id; the inbox is off");
+  else console.log("[INBOX] off (INBOX_CHAT_ID is unset)");
   // Stamp a heartbeat before the first long-poll. Without this there is a
   // POLL_TIMEOUT-wide window after every restart where the file does not exist
   // yet and health.ts would read a perfectly healthy boot as a stall.
@@ -3119,6 +3199,7 @@ async function main() {
     void checkQuiz();
     void checkDigest();
     void checkRchannel();
+    void checkInbox();
   }, 30_000);
 
   setInterval(() => {
@@ -3153,6 +3234,24 @@ async function main() {
 
     for (const u of updates) {
       offset = u.update_id + 1;
+      const kind = classifyUpdate(u, botUsername, inboxChatId);
+      if (kind === "inbox") {
+        const m = u.message!;
+        // Follow a move at once, so the next messages in this batch are already inbox messages.
+        if (m.migrate_to_chat_id) followInbox(m.migrate_to_chat_id);
+        // Its own per-chat FIFO keeps items in the order he sent them; the drain waits for it.
+        if (serialMode) await handleInboxMessage(m).catch((e: any) => console.error(`[ERR] inbox: ${e?.message ?? e}`));
+        else chatQueues.enqueue(m.chat.id, () => handleInboxMessage(m));
+        continue;
+      }
+      if (kind === "foreign-group") {
+        const m = u.message!;
+        // The new supergroup announces where it came from; that, too, is the inbox moving.
+        if (inboxChatId !== null && m.migrate_from_chat_id === inboxChatId) followInbox(m.chat.id);
+        const line = foreignGroupNote(m, foreignGroupsSeen, (id) => loadAllowList().has(id));
+        if (line) console.log(line);
+        continue;
+      }
       if (serialMode) {
         // Rollback mode: today's strictly sequential behavior, verbatim.
         if (u.message) {
@@ -3170,7 +3269,7 @@ async function main() {
         }
         continue;
       }
-      switch (classifyUpdate(u, botUsername)) {
+      switch (kind) {
         case "callback":
           // Fire onto the serialized chain — ACK happens inside, instantly.
           cbChain.enqueue(() => handleCallback(u.callback_query!));
@@ -3203,7 +3302,7 @@ async function main() {
   // Buffered messages join the queues first — the offset was saved at fetch
   // time, so anything left in a debounce window would be lost forever.
   debouncer.flushAll();
-  await Promise.race([Promise.all([cbChain.idle(), chatQueues.idle(), digestInFlight ?? Promise.resolve(), rchannelInFlight ?? Promise.resolve()]), sleep(GRACE_MS)]);
+  await Promise.race([Promise.all([cbChain.idle(), chatQueues.idle(), digestInFlight ?? Promise.resolve(), rchannelInFlight ?? Promise.resolve(), inboxInFlight ?? Promise.resolve()]), sleep(GRACE_MS)]);
   console.log("[BOT] drained — exiting");
   process.exit(0);
 }
