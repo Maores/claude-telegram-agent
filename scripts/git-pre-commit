@@ -9,7 +9,7 @@
 # in tracked docs and tests, so scanning it would only train people to bypass
 # the hook.
 
-BLOCK_NAMES='(^|/)(wal-salvage[^/]*|[^/]*\.db|[^/]*\.db-wal|[^/]*\.db-shm|[^/]*\.log|\.env[^/]*|followups[^/]*\.json|pending[^/]*\.json|choices[^/]*\.json|reminders[^/]*\.json|monitors[^/]*\.json|usage[^/]*\.json|quiz-state[^/]*\.json)$|(^|/)(uploads|history|memory|backups)/'
+BLOCK_NAMES='(^|/)(wal-salvage[^/]*|[^/]*\.db|[^/]*\.db-wal|[^/]*\.db-shm|[^/]*\.log|\.env[^/]*|followups[^/]*\.json|pending[^/]*\.json|choices[^/]*\.json|reminders[^/]*\.json|monitors[^/]*\.json|usage[^/]*\.json|quiz-state[^/]*\.json)$|(^|/)(uploads|history|memory|backups|inbox)/'
 
 staged=$(git diff --cached --name-only --diff-filter=ACR)
 bad=$(echo "$staged" | grep -E "$BLOCK_NAMES" || true)

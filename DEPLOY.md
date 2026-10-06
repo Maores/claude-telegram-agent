@@ -710,6 +710,149 @@ and the PC records them.
 
 ---
 
+## Step 16 — Phone inbox (server)
+
+A Telegram group that holds only you and the bot becomes a drop box: the poller
+stores each message there under `~/inbox/` (`items.json` and `files/`, outside
+the repo and outside the nightly backup) and reacts 👍, with no Claude turn. A PC
+session pulls the items with a key of its own when you ask; the server deletes
+what landed, and after a week what was never pulled, warning in the group the
+day before (never right before or during Shabbat and holidays; ten days is the
+hard limit). Design: `docs/superpowers/specs/2026-10-05-phone-inbox-design.md`.
+
+**1. The code, with the setting unset.** `./deploy.sh` (it captures droplet
+edits and proves the restart). From then on a message in any group is logged
+once as `[INBOX?] chat <id>` and never answered. That holds in rollback mode
+(`POLL_SERIAL=1`) too: a message in a group that is not the inbox is now logged
+and skipped there, not answered. Then:
+
+```bash
+cd ~/claude-bot
+~/.bun/bin/bun run inbox.ts status
+# expect: {"v":1,"waiting":0,"files":0,"bytes":0,"oldestAgeS":null}
+TZ=Asia/Jerusalem journalctl -u telegram-agent --since today --no-pager | grep -F '[INBOX'
+# expect: [INBOX] off (INBOX_CHAT_ID is unset)
+```
+
+**2. The guard hook gains the reading tools.** The live wiring is the untracked
+`~/claude-bot/.claude/settings.local.json` (never the tracked `.claude/settings.json`,
+which `deploy.sh` would autosave and reset). Back it up, change only the matcher
+to `Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|create_draft`, and check:
+
+```bash
+cp ~/claude-bot/.claude/settings.local.json ~/claude-bot/.claude/settings.local.json.bak-$(date +%Y%m%d-%H%M)
+jq . ~/claude-bot/.claude/settings.local.json > /dev/null && echo parses
+git -C ~/claude-bot status --porcelain .claude   # expect: nothing
+```
+
+Then prove the refusal mechanically (the agent's own instructions already tell
+it not to read the inbox, so asking it in the chat proves nothing):
+
+```bash
+jq -r '.hooks.PreToolUse[].matcher' ~/claude-bot/.claude/settings.local.json
+# expect the new matcher
+cd ~/claude-bot
+echo '{"tool_name":"Read","cwd":"/home/claudebot/claude-bot","tool_input":{"file_path":"/home/claudebot/inbox/items.json"}}' | ~/.bun/bin/bun run hooks/pretooluse-guard.ts; echo "exit $?"
+# expect: the inbox reason on stderr, exit 2
+echo '{"tool_name":"Read","cwd":"/home/claudebot/claude-bot","tool_input":{"file_path":"/home/claudebot/claude-bot/inbox.ts"}}' | ~/.bun/bin/bun run hooks/pretooluse-guard.ts; echo "exit $?"
+# expect: exit 0
+mkdir -p ~/inbox && [ -e ~/inbox/items.json ] || echo '{"v":1,"items":[]}' > ~/inbox/items.json
+set -a && . ~/.claude/channels/telegram/.env && set +a   # the service's own login for claude -p
+claude -p --dangerously-skip-permissions --output-format stream-json --verbose "Call the Read tool once on /home/claudebot/inbox/items.json and print the raw tool result" | grep -c "phone inbox is read and written only"
+# expect: at least 1 (a real turn, through the live settings, hit the refusal)
+```
+
+The matcher covers Read, Grep and Glob, but not a legacy `LS` tool, which the
+guard's file-tool check does not name either: if the `"tools"` list in the first
+line a `claude -p --output-format stream-json --verbose` run prints still holds
+`LS`, that tool can list `~/inbox` and is not covered.
+
+**3. The PC's own key.** The PC pulls with a key that can do nothing else. Its
+line for `~/.ssh/authorized_keys` (the public key comes from the PC):
+
+```
+restrict,command="cd /home/claudebot/claude-bot && /home/claudebot/.bun/bin/bun run inbox.ts gate" ssh-ed25519 AAAA... phone-inbox
+```
+
+Add it without retyping it through shells (a malformed line, or one glued to the
+key above it, can lock the PC out): write the line to a local file and a small
+script beside it, copy both up with the existing key (`scp <line> <script>
+<target>:`), and run the script in one call (`ssh <target> 'bash ~/add-inbox-key.sh'`).
+The script restores the backup by itself when the count of keys did not rise by
+exactly one:
+
+```bash
+#!/usr/bin/env bash
+set -u
+f=~/.ssh/authorized_keys
+bak="$f.bak-$(date +%Y%m%d-%H%M%S)"
+cp -p "$f" "$bak"
+before=$(ssh-keygen -lf "$f" | wc -l)
+[ -z "$(tail -c1 "$f")" ] || echo >> "$f"
+cat ~/inbox-key.line >> "$f"
+after=$(ssh-keygen -lf "$f" 2>/dev/null | wc -l)
+if [ "$after" -ne $((before + 1)) ]; then cp -p "$bak" "$f"; echo "RESTORED: keys $before -> $after"; exit 1; fi
+rm ~/inbox-key.line ~/add-inbox-key.sh
+stat -c %a "$f"   # expect: 600
+echo "added: keys $before -> $after"
+```
+
+Then, at once, a new connection with the old key (`ssh <target> echo ok`).
+Then, from the PC, with the inbox key and `-o IdentitiesOnly=yes -o IdentityAgent=none`:
+
+- `list` prints `{"v":1,"items":[]}` (the gate reads it from `SSH_ORIGINAL_COMMAND`);
+- `ls`, `status` and `list; id` print `refused: the inbox key may only list, ack or get`, exit 2;
+- `ssh -t ... list` prints `PTY allocation request failed` (and still answers);
+- `ssh -o ExitOnForwardFailure=yes -N -R 127.0.0.1:18080:localhost:22 ...` exits at once with `remote port forwarding failed`;
+- `ssh -N -L 18080:localhost:22 ...` in the background for 20 seconds, while `Test-NetConnection 127.0.0.1 -Port 18080` connects once: ssh's error output says `administratively prohibited`;
+- `sftp -i <inbox key> <target>` fails without a session.
+
+**4. The group** (with you at the phone, one step at a time):
+
+1. In Telegram, create a group with only you and the bot.
+2. Make the bot an admin and switch OFF every admin right Telegram pre-ticks
+   (delete messages, invite users, pin, and the rest): it needs none, only the
+   admin status, which lets it see every message under privacy mode. If Telegram
+   will not keep an admin with no rights, keep the least harmful one. Do not turn
+   on "remain anonymous" for yourself there.
+3. Send one message in the group.
+4. Read the group's chat id from the newest `[INBOX?]` line marked
+   `sender allowlisted: yes` (a group upgraded to a supergroup gets a new id,
+   logged as `moved to chat <id>`; the newest id is the one):
+   ```bash
+   TZ=Asia/Jerusalem journalctl -u telegram-agent --since today --no-pager | grep -F '[INBOX?]' | grep -F 'allowlisted: yes' | tail -3
+   ```
+5. Set it (this replaces any earlier value) and restart only the service (not
+   `deploy.sh`, which would also bring in whatever `main` holds by then):
+   ```bash
+   cd ~/claude-bot
+   sed -i '/^INBOX_CHAT_ID=/d' ~/.claude/channels/telegram/.env && printf '\nINBOX_CHAT_ID=%s\n' '<the id>' >> ~/.claude/channels/telegram/.env
+   before=$(systemctl show telegram-agent -p ActiveEnterTimestampMonotonic --value)
+   sudo systemctl restart telegram-agent
+   after=$(systemctl show telegram-agent -p ActiveEnterTimestampMonotonic --value)
+   [ "$before" != "$after" ] && echo "restarted"
+   TZ=Asia/Jerusalem journalctl -u telegram-agent -n 30 --no-pager | grep -F '[INBOX]'
+   # expect: [INBOX] on for chat <the id>
+   ```
+6. Send a message in the group: it gets 👍, and `inbox.ts status` shows `"waiting":1`.
+   (An album shows one 👍, on its first picture: Telegram puts every reaction on
+   an album there.)
+   No 👍: remove the bot from the group and add it back from the group's admin
+   screen as an admin (whether promoting an existing member behaves the same is
+   not documented by Telegram).
+
+If the journal later says `[INBOX] the inbox group moved to chat <id>` (or, after
+a restart, `following the moved group <id>`), set the new value with step 5.
+
+To turn the inbox off: remove `INBOX_CHAT_ID` from the `.env` and restart. The
+poller then answers nothing in the group and sends nothing there, but still
+deletes what is left (warned items after their week, everything after ten days);
+`~/.bun/bin/bun run inbox.ts purge` runs the same deletions by hand.
+
+The PC's half (the pull and the walk-through) lives outside this repo.
+
+---
+
 ## Updating the bot later (local → server)
 
 ```powershell
