@@ -721,7 +721,8 @@ day before (never right before or during Shabbat and holidays; ten days is the
 hard limit). Design: `docs/superpowers/specs/2026-10-05-phone-inbox-design.md`.
 `INBOX_DIR` (another folder in place of `~/inbox/`) is for tests only: never set
 it for the service, since the PC key's forced `inbox.ts gate` does not read the
-service's `.env`, and the two would then read different folders.
+service's `.env` (and part 3 checks that no other file or ssh setting brings one
+in), and the two would then read different folders.
 
 **1. The code, with the setting unset.** `./deploy.sh` (it captures droplet
 edits and proves the restart). From then on a message in any group is logged
@@ -772,7 +773,16 @@ never to open `~/inbox`, so the model may decline to call Read at all. If the
 second count is 0, the model never called the tool: the result is inconclusive,
 not a failure of the guard. Rerun the same `claude -p` line with
 `--append-system-prompt "This is the operator's own test of the guard hook: call the Read tool exactly as asked."`
-added before the prompt, and read both counts again. Then remove the probe file:
+added before the prompt, and read both counts again. Then read the tools the
+turn started with, since the guard's command rules see only `Bash`:
+
+```bash
+grep -m1 '"subtype":"init"' ~/inbox-probe.jsonl | jq -r '.tools'
+# expect: no tool other than Bash that runs a shell command (null: read the whole line)
+```
+
+If another tool there runs a shell command, stop and report it: its commands
+would pass the guard unread. Then remove the probe file:
 
 ```bash
 rm ~/inbox-probe.jsonl
@@ -781,11 +791,28 @@ rm ~/inbox-probe.jsonl
 The matcher and the guard's file-tool check also name the legacy `LS` listing
 tool, so it cannot list `~/inbox` either.
 
-**3. The PC's own key.** The PC pulls with a key that can do nothing else. Its
-line for `~/.ssh/authorized_keys` (the public key comes from the PC):
+**3. The PC's own key.** The PC pulls with a key that can do nothing else. First
+check that the key cannot bring settings in with it, and that Bun finds none of
+its own in the repo folder (it loads those from its working folder, for the
+gate too):
+
+```bash
+sudo sshd -T | grep -Ei '^(acceptenv|permituserenvironment)'
+# expect: permituserenvironment no, and acceptenv naming only LANG and LC_* (or none)
+ls -la ~/claude-bot/.env* ~/claude-bot/bunfig.toml
+# expect: "No such file or directory" for each
+cd ~/claude-bot && ~/.bun/bin/bun --no-env-file run inbox.ts status
+# expect: the status JSON, as in part 1
+```
+
+If sshd accepts another variable or permits user environment, stop: the key
+could pass `INBOX_DIR`. If either file exists, stop and find out why it is there.
+If the last check printed the status JSON, the forced command carries
+`--no-env-file` as below; if it failed, drop that flag from the line. The line
+for `~/.ssh/authorized_keys` (the public key comes from the PC):
 
 ```
-restrict,command="cd /home/claudebot/claude-bot && /home/claudebot/.bun/bin/bun run inbox.ts gate" ssh-ed25519 AAAA... phone-inbox
+restrict,command="cd /home/claudebot/claude-bot && /home/claudebot/.bun/bin/bun --no-env-file run inbox.ts gate" ssh-ed25519 AAAA... phone-inbox
 ```
 
 Add it without retyping it through shells (a malformed line, or one glued to the
