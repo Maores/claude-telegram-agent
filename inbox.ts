@@ -555,16 +555,21 @@ export async function runInboxTick(d: {
 }): Promise<void> {
   const nowMs = d.nowS * 1000;
   const quiet = d.quietAt(nowMs);
-  // Deletions first, so a warning never counts an item deleted in the same tick.
-  const n = removeExpired(d.dir, d.nowS, quiet, d.log);
-  if (n) d.log(`[INBOX] deleted ${n} item(s) after their week`);
-  let held = quiet || d.send === null;
-  for (let h = 1; h <= 24 && !held; h++) held = d.quietAt(nowMs + h * 3600_000);
   const logOnce = (line: string) => {
     if (d.nowS - d.errClock.at < 3600) return;
     d.errClock.at = d.nowS;
     d.log(line);
   };
+  // Deletions first, so a warning never counts an item deleted in the same tick. A store that
+  // cannot be written must not stop the warning step or the sweep, nor reject the tick.
+  try {
+    const n = removeExpired(d.dir, d.nowS, quiet, d.log);
+    if (n) d.log(`[INBOX] deleted ${n} item(s) after their week`);
+  } catch (e: any) {
+    logOnce(`[INBOX] could not delete the items due: ${redact(String(e?.message ?? e))}`);
+  }
+  let held = quiet || d.send === null;
+  for (let h = 1; h <= 24 && !held; h++) held = d.quietAt(nowMs + h * 3600_000);
   if (!held && d.send) {
     let marked: string[] = [];
     let waiting = 0;
@@ -594,7 +599,11 @@ export async function runInboxTick(d: {
       }
     }
   }
-  sweepLeftovers(d.dir, nowMs, d.log);
+  try {
+    sweepLeftovers(d.dir, nowMs, d.log);
+  } catch (e: any) {
+    logOnce(`[INBOX] could not sweep leftover files: ${redact(String(e?.message ?? e))}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

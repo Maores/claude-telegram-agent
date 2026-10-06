@@ -200,6 +200,25 @@ test("a store that cannot be written sends no warning at all, instead of one eve
   expect(sends).toBe(0);
 });
 
+test("a store that cannot be written while an item is due never makes the tick reject; the failure is logged once and the sweep still runs", async () => {
+  seed([item("261002-aaaa", HARD_CAP_S + 1), item("261006-bbbb", WARN_AFTER_S + 60)]);
+  writeFileSync(join(dir, "files", "261011-dead.jpg"), "x"); // a leftover no item names
+  ago(join(dir, "files", "261011-dead.jpg"), 2 * 3600);
+  mkdirSync(join(dir, "items.json.tmp")); // the store can be read but not written
+  let sends = 0;
+  const logs: string[] = [];
+  const clock = { at: -Infinity };
+  for (const at of [nowS, nowS + 30]) {
+    await runInboxTick({ dir, nowS: at, quietAt: () => false, send: async () => void sends++, log: (l) => void logs.push(l), errClock: clock });
+  }
+  expect(loadInbox(dir).items.map((i) => i.id)).toEqual(["261002-aaaa", "261006-bbbb"]); // could not be deleted
+  const failures = logs.filter((l) => l.includes("could not"));
+  expect(failures).toHaveLength(1);
+  expect(failures[0]).toContain("could not delete the items due");
+  expect(sends).toBe(0); // the warning's marks could not be written, so nothing was sent
+  expect(existsSync(join(dir, "files", "261011-dead.jpg"))).toBe(false); // the store is readable: the sweep ran
+});
+
 test("a burst sent together gets one warning, counting every warned item", async () => {
   seed([item("261006-aaaa", WARN_AFTER_S + 60), item("261006-bbbb", WARN_AFTER_S - 3600), item("261011-cccc", 3600)]);
   const sent: string[] = [];
