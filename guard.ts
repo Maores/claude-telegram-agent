@@ -56,11 +56,16 @@ const RCHANNEL_STORE = /\brchannel\/store\.json\b/i;
 // gate`, never through this hook) lists, acks and fetches them. A turn may run `bun run inbox.ts
 // status` and nothing else: the store holds forwarded content, so reading it would also be a road
 // for injected text. This refuses the obvious routes; the PC trusts nothing it receives either way.
-// The store and files by name; the folder from home (~, $HOME, /home/x); the folder relative to a
-// turn's working folder (../inbox, ./inbox) and a bare `inbox/` path.
+// The store and files by name; the folder from home (~, $HOME, /home/x, also "$HOME"/inbox); the
+// folder relative to a turn's working folder (../inbox, ./inbox); a bare `inbox/` path; and a cd or
+// pushd straight into a bare `inbox`.
+// Left open on purpose: a recursive tool aimed at the bare folder after a cd (`cd .. && grep -r x
+// inbox`, `tar ... inbox`), and a cd made in one Bash call followed by a bare path in the next (the
+// tool keeps its folder between calls). This is a fence, not a wall; the PC distrusts everything.
 const INBOX_PATH =
-  /(?:\binbox\/+(?:items\.json|files)\b|(?:~|\$\{?HOME\}?|\/home\/[\w.-]+)\/+["']?inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])(?:\.{1,2}\/+)+inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])inbox\/)/i;
-const INBOX_PULL = /\bbun\b[^;&|\n]*\binbox\.ts["']?\s+["']?(?:list|ack|get|purge|gate)\b/i;
+  /(?:\binbox\/+(?:items\.json|files)\b|(?:~|\$\{?HOME\}?|\/home\/[\w.-]+)["']?\/+["']?inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])(?:\.{1,2}\/+)+inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])inbox\/|(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+["']?inbox["']?(?=$|[\s;&|)\/]))/i;
+// Bun strips a `--` before the script's own arguments, so `inbox.ts -- list` is still `list`.
+const INBOX_PULL = /\bbun\b[^;&|\n]*\binbox\.ts["']?\s+(?:--\s+)?["']?(?:list|ack|get|purge|gate)\b/i;
 const INBOX_EVAL = /\b(?:bun|node|deno)\b[^;&|\n]*\s(?:-e|--eval|-p|--print)\b[^;&|\n]*\binbox\b/i;
 
 interface Rule {
@@ -284,7 +289,8 @@ export function checkInboxAccess(
       const head = g.replace(/\\/g, "/").split(/[*?[{]/)[0];
       const prefix = head.slice(0, head.lastIndexOf("/") + 1);
       if (!prefix) continue;
-      const p = prefix.startsWith("/") || !root ? resolve(prefix) : posix.resolve(root, prefix);
+      // An absolute or home prefix (/, ~, $HOME) is not relative to the search root.
+      const p = /^[\/~$]/.test(prefix) || !root ? resolve(prefix) : posix.resolve(root, prefix);
       if (ABOVE_INBOX.test(p) || /(?:^|\/)inbox(?:\/|$)/i.test(p)) return refuse;
     }
   }

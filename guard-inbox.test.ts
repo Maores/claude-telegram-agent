@@ -23,6 +23,12 @@ test("a turn cannot read or write the inbox's store, files or folder", () => {
     "cp -r ../inbox /tmp/x",
     "cd; cat inbox/*.json",
     "cat ~/\"inbox\"/items.json",
+    // plain cd routes into the folder, and a quoted $HOME before the slash
+    "cd .. && cd inbox && cat items.json",
+    "cd; cd inbox; cat items.json",
+    "pushd ~ && cd inbox && ls",
+    "cd \"$HOME\"/inbox && cat items.json",
+    "ls \"$HOME\"/inbox",
   ]) {
     expect(checkCommand(cmd)).toEqual({ verdict: "block", reason: STORE });
   }
@@ -37,6 +43,9 @@ test("a turn never runs list, ack, get, purge or gate, however it is spelled", (
     "bun inbox.ts 'purge'",
     "bun run inbox.ts get 261005-a1b2",
     "SSH_ORIGINAL_COMMAND=list bun run inbox.ts gate",
+    // Bun strips a `--` before the script's arguments
+    "bun run inbox.ts -- list",
+    "bun inbox.ts -- ack 261005-a1b2",
   ]) {
     expect(checkCommand(cmd)).toEqual({ verdict: "block", reason: PULL });
   }
@@ -53,6 +62,9 @@ test("status, the code, the tests and unrelated commands stay open", () => {
     "git add inbox.ts inbox-cli.test.ts",
     "git diff inbox.ts",
     "node -p \"1\" && cat notes-about-inbox.txt",
+    "grep -n inbox CLAUDE.md",
+    "cd docs && ls",
+    "echo inbox",
   ]) {
     expect(checkCommand(cmd).verdict).toBe("allow");
   }
@@ -99,6 +111,7 @@ test("relative paths are judged from the turn's working folder", () => {
     ["Grep", { pattern: "x", glob: "../**/*.json" }],
     ["Glob", { pattern: "../inb*/items.json" }],
     ["Glob", { pattern: "/home/someone/inb*/files/*" }],
+    ["Glob", { pattern: "~/**/*.json" }], // a home prefix is not relative to the working folder
   ] as const) {
     expect(checkInboxAccess(tool, input, cwd).verdict).toBe("block");
   }
