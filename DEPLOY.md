@@ -794,19 +794,19 @@ tool, so it cannot list `~/inbox` either.
 **3. The PC's own key.** The PC pulls with a key that can do nothing else. First
 check that the key cannot bring settings in with it, and that Bun finds none of
 its own in the repo folder (it loads those from its working folder, for the
-gate too):
+gate too) nor in its global config places:
 
 ```bash
 sudo sshd -T | grep -Ei '^(acceptenv|permituserenvironment)'
 # expect: permituserenvironment no, and acceptenv naming only LANG and LC_* (or none)
-ls -la ~/claude-bot/.env* ~/claude-bot/bunfig.toml
+ls -la ~/claude-bot/.env* ~/claude-bot/bunfig.toml ~/.bunfig.toml "${XDG_CONFIG_HOME:-$HOME/.config}/.bunfig.toml"
 # expect: "No such file or directory" for each
 cd ~/claude-bot && ~/.bun/bin/bun --no-env-file run inbox.ts status
 # expect: the status JSON, as in part 1
 ```
 
 If sshd accepts another variable or permits user environment, stop: the key
-could pass `INBOX_DIR`. If either file exists, stop and find out why it is there.
+could pass `INBOX_DIR`. If any of those files exists, stop and find out why it is there.
 A `bunfig.toml` created later would run its preload on every pull, so the health
 sweep should re-check that it is still absent.
 If the last check printed the status JSON, the forced command carries
