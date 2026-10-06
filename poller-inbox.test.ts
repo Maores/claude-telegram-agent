@@ -44,6 +44,14 @@ test("an inbox message reaches only the inbox handler: no turn, no history, no d
   for (const banned of ["handleMessage(", "debouncer", "Bun.spawn", "streamClaude", "insertMessage", "transcribe"]) expect(h).not.toContain(banned);
 });
 
+test("every inbox filing goes on one queue, so a group move never runs two filings at once", () => {
+  expect(SRC).toMatch(/^const INBOX_QUEUE = 0;/m);
+  const branch = LOOP.slice(at(INBOX_IF), at(FOREIGN_IF));
+  expect(branch).toContain("chatQueues.enqueue(INBOX_QUEUE, () => handleInboxMessage(m));");
+  expect(branch).not.toContain("chatQueues.enqueue(m.chat.id");
+  expect(branch).toContain("if (serialMode) await handleInboxMessage(m)"); // rollback mode unchanged
+});
+
 test("a move of the inbox group is followed inside the loop and remembered", () => {
   expect(LOOP.slice(at(INBOX_IF), at(FOREIGN_IF))).toContain("followInbox(m.migrate_to_chat_id)");
   expect(LOOP.slice(at(FOREIGN_IF), at(ROLLBACK))).toContain("migrate_from_chat_id");
@@ -59,6 +67,8 @@ test("the lifetime tick runs every 30 seconds, stops with the process, and the d
   const tick = body("function checkInbox(");
   expect(tick).toContain("if (stopping) return Promise.resolve();");
   expect(tick).toContain("send: chatId === null ? null"); // unset: no sends, deletions still run
-  expect(tick).toContain("if (chatId === null && !existsSync(");
+  // unset: the tick is skipped only when the folder itself is gone, so leftovers beside a missing
+  // items.json are still swept
+  expect(tick).toContain("if (chatId === null && !existsSync(inboxDir())) return Promise.resolve();");
   expect(tick).not.toMatch(/inboxChatId === null \|\|/); // no early return that skips the deletions
 });

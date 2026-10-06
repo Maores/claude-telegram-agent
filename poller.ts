@@ -304,6 +304,7 @@ function stopChild(chatId: number): boolean {
  *  the one serialized callback chain. POLL_SERIAL=1 bypasses both. */
 const chatQueues = new ChatQueues();
 const cbChain = new SerialChain();
+const INBOX_QUEUE = 0; // one FIFO for every inbox filing, across a group move (no Telegram chat has id 0)
 
 // Debounce: rapid bursts buffer per chat and flush as one batch turn after
 // DEBOUNCE_MS of quiet. Timer bookkeeping lives in dispatch.ts (unit-tested);
@@ -2517,8 +2518,9 @@ function checkInbox(): Promise<void> {
   if (stopping) return Promise.resolve();
   if (inboxInFlight) return inboxInFlight;
   const chatId = inboxChatId;
-  // Unset: nothing is sent, but items left from before still go (the hard cap and warned items).
-  if (chatId === null && !existsSync(join(inboxDir(), "items.json"))) return Promise.resolve();
+  // Unset: nothing is sent, but items left from before still go (the hard cap and warned items),
+  // and so do leftover files and set-aside stores, even with no items.json beside them.
+  if (chatId === null && !existsSync(inboxDir())) return Promise.resolve();
   inboxInFlight = runInboxTick({
     dir: inboxDir(),
     nowS: Math.floor(Date.now() / 1000),
@@ -3239,9 +3241,10 @@ async function main() {
         const m = u.message!;
         // Follow a move at once, so the next messages in this batch are already inbox messages.
         if (m.migrate_to_chat_id) followInbox(m.migrate_to_chat_id);
-        // Its own per-chat FIFO keeps items in the order he sent them; the drain waits for it.
+        // One FIFO for the inbox, whatever its chat id, keeps items in the order he sent them,
+        // also across a move; the drain waits for it.
         if (serialMode) await handleInboxMessage(m).catch((e: any) => console.error(`[ERR] inbox: ${e?.message ?? e}`));
-        else chatQueues.enqueue(m.chat.id, () => handleInboxMessage(m));
+        else chatQueues.enqueue(INBOX_QUEUE, () => handleInboxMessage(m));
         continue;
       }
       if (kind === "foreign-group") {

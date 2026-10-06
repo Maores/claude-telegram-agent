@@ -141,6 +141,22 @@ test("status counts what waits, the files and their bytes, and the oldest item's
   expect((await run(["status"])).json).toEqual({ v: 1, waiting: 0, files: 0, bytes: 0, oldestAgeS: null });
 });
 
+test("every printed answer is awaited before the CLI returns, so exit never cuts it short", async () => {
+  seed([item("261012-aaaa", 10)]);
+  for (const argv of [["list"], ["ack", "261012-ffff"], ["purge"], ["status"]]) {
+    let landed = false;
+    const code = await runInboxCli(argv, {
+      out: () => new Promise<void>((res) => setTimeout(() => ((landed = true), res()), 5)),
+      outBytes: () => {},
+      err: () => {},
+      env: { INBOX_DIR: dir },
+      now: () => NOW,
+    });
+    expect(code).toBe(0);
+    expect(landed).toBe(true);
+  }
+});
+
 test("an unknown command prints the usage", async () => {
   const r = await run(["delete"]);
   expect(r.code).toBe(1);

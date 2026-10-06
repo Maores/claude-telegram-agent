@@ -251,8 +251,9 @@ export function loadInbox(dir: string): InboxStore {
 }
 
 /** Load, change and save under the store's lock (the poller and the CLI both write it), via a
- *  temporary file renamed into place. Nothing is written when fn changed nothing. An unreadable
- *  file is kept aside as items.json.corrupt-<ms> and a fresh store starts. */
+ *  temporary file renamed into place. Nothing is written when fn changed nothing, unless an
+ *  unreadable file was just kept aside (as items.json.corrupt-<ms>): then the fresh store is
+ *  written either way, so a valid items.json exists again. */
 export function mutateInbox<T>(dir: string, fn: (s: InboxStore) => T, log: (line: string) => void = console.error): T {
   const path = itemsFile(dir);
   mkdirSync(dir, { recursive: true });
@@ -262,10 +263,12 @@ export function mutateInbox<T>(dir: string, fn: (s: InboxStore) => T, log: (line
       raw = readFileSync(path, "utf8");
     } catch {}
     let store = raw === null ? null : parseInbox(raw);
+    let setAside = false;
     if (raw !== null && !store) {
       const aside = `${path}.corrupt-${Date.now()}`;
       try {
         renameSync(path, aside);
+        setAside = true;
         log(`[INBOX] the store was unreadable; kept aside as ${aside}`);
       } catch (e: any) {
         log(`[INBOX] the store is unreadable and could not be set aside: ${e?.message ?? e}`);
@@ -274,7 +277,7 @@ export function mutateInbox<T>(dir: string, fn: (s: InboxStore) => T, log: (line
     store ??= emptyInbox();
     const before = JSON.stringify(store);
     const out = fn(store);
-    if (JSON.stringify(store) !== before) {
+    if (setAside || JSON.stringify(store) !== before) {
       const tmp = `${path}.tmp`;
       writeFileSync(tmp, JSON.stringify(store, null, 2));
       renameSync(tmp, path);
@@ -612,7 +615,7 @@ export async function runInboxTick(d: {
 // ---------------------------------------------------------------------------
 
 export interface InboxCliIo {
-  out: (s: string) => void;
+  out: (s: string) => Promise<void> | void; // awaited, so exit never cuts a long list short
   outBytes: (b: Uint8Array) => Promise<void> | void;
   err: (s: string) => void;
   env: Record<string, string | undefined>;
@@ -644,7 +647,7 @@ export async function runInboxCli(argv: string[], io: InboxCliIo): Promise<numbe
   if (cmd === "list") {
     // Only reads: deleting here could destroy the very items a pull came to fetch.
     const items = [...loadInbox(dir).items].sort((a, b) => a.receivedAt - b.receivedAt || a.messageId - b.messageId || a.id.localeCompare(b.id));
-    io.out(JSON.stringify({ v: 1, items }) + "\n");
+    await io.out(JSON.stringify({ v: 1, items }) + "\n");
     return 0;
   }
   if (cmd === "ack") {
@@ -655,7 +658,7 @@ export async function runInboxCli(argv: string[], io: InboxCliIo): Promise<numbe
     const wanted = new Set(rest);
     const gone = removeWhere(dir, (s) => s.items.filter((i) => wanted.has(i.id)), io.err);
     const acked = gone.map((i) => i.id);
-    io.out(JSON.stringify({ v: 1, acked, unknown: rest.filter((id) => !acked.includes(id)) }) + "\n");
+    await io.out(JSON.stringify({ v: 1, acked, unknown: rest.filter((id) => !acked.includes(id)) }) + "\n");
     return 0;
   }
   if (cmd === "get") {
@@ -686,7 +689,7 @@ export async function runInboxCli(argv: string[], io: InboxCliIo): Promise<numbe
   if (cmd === "purge") {
     const n = removeExpired(dir, nowS, false, io.err);
     sweepLeftovers(dir, io.now().getTime(), io.err);
-    io.out(JSON.stringify({ v: 1, purged: n }) + "\n");
+    await io.out(JSON.stringify({ v: 1, purged: n }) + "\n");
     return 0;
   }
   if (cmd === "status") {
@@ -700,7 +703,7 @@ export async function runInboxCli(argv: string[], io: InboxCliIo): Promise<numbe
       }
     } catch {}
     const oldest = items.reduce<number | null>((m, i) => (m === null || i.receivedAt < m ? i.receivedAt : m), null);
-    io.out(JSON.stringify({ v: 1, waiting: items.length, files, bytes, oldestAgeS: oldest === null ? null : nowS - oldest }) + "\n");
+    await io.out(JSON.stringify({ v: 1, waiting: items.length, files, bytes, oldestAgeS: oldest === null ? null : nowS - oldest }) + "\n");
     return 0;
   }
   io.err(INBOX_USAGE);
@@ -729,7 +732,7 @@ export function resolveInboxChatId(envId: number | null, dir: string): number | 
 
 if (import.meta.main) {
   const code = await runInboxCli(process.argv.slice(2), {
-    out: (s) => process.stdout.write(s),
+    out: async (s) => void (await Bun.write(Bun.stdout, s)), // awaited, so exit never cuts a list short
     outBytes: async (b) => void (await Bun.write(Bun.stdout, b)), // awaited, so exit never cuts a file short
     err: (s) => console.error(s),
     env: process.env,

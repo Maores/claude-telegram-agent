@@ -146,6 +146,16 @@ test("the store starts empty, saves only on a change, and sets an unreadable fil
   expect(JSON.parse(readFileSync(join(dir, "items.json"), "utf8")).v).toBe(1);
 });
 
+test("an unreadable store set aside is replaced by a valid one even when nothing else changed", () => {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "items.json"), "{not json");
+  mutateInbox(dir, () => {}, () => {});
+  expect(readdirSync(dir).some((n) => n.startsWith("items.json.corrupt-"))).toBe(true);
+  expect(existsSync(join(dir, "items.json"))).toBe(true);
+  expect(JSON.parse(readFileSync(join(dir, "items.json"), "utf8"))).toMatchObject({ v: 1, items: [] });
+  expect(readdirSync(dir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+});
+
 function fakeDeps(over: Partial<InboxDeps> = {}) {
   const calls = { reacts: [] as string[], replies: [] as string[], logs: [] as string[], fetched: [] as string[] };
   const d: InboxDeps = {
