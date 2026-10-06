@@ -43,15 +43,21 @@ const hasDangerousRoot = (c: string): boolean =>
 
 // Write-intent verbs/operators, used only together with a sensitive-path match. A `>&1`, `>&2` or
 // `>&-` copies or closes an output stream and writes no file, so `2>&1` alone is not write intent.
+// Only when the word after `>&` is exactly digits or `-` and ends there: bash writes `>&2/../x`
+// (with a folder named 2) to the file x, so that still counts.
 const WRITE_INTENT =
-  /(?:>>?(?!&[\d-])|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b|\btruncate\b|\binstall\b|\bdd\b|\bchmod\b|\bchown\b|\bln\b)/i;
+  /(?:>>?(?!&(?:\d+|-)(?=$|[\s;&|)<>]))|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b|\btruncate\b|\binstall\b|\bdd\b|\bchmod\b|\bchown\b|\bln\b)/i;
 
 // Sensitive paths.
 const SSH_PATH = /(?:~|\$\{?HOME\}?|\/home\/[\w.-]+|\/root)\/\.ssh\b/i;
 const ENV_PATH = /\.claude\/channels\/telegram\/\.env\b/i;
 // inbox.ts is here too: it is the PC key's forced command (`inbox.ts gate`), so changing it would
-// change what that key can do.
-const SELF_PATH = /(?:^|[\s'"=/])(?:guard\.ts|inbox\.ts|hooks\/pretooluse-guard\.ts|hooks\/[\w.-]+\.ts)\b/i;
+// change what that key can do. A name right after a redirect (`>guard.ts`, `>|guard.ts`,
+// `&>guard.ts`, `>&guard.ts`) counts as well.
+// Known limits: the forced command also runs inbox.ts's imports (redact.ts, reminders.ts), which
+// stay editable; and this fence does not stop a pull spelled through shell splitting (variables,
+// quotes inside the word). The PC trusts nothing it receives either way.
+const SELF_PATH = /(?:^|[\s'"=/>|&])(?:guard\.ts|inbox\.ts|hooks\/pretooluse-guard\.ts|hooks\/[\w.-]+\.ts)\b/i;
 // The routine channel's store: only the poller and the PC's sync (over ssh, never through this
 // hook) write it; an answer written into it by a turn would be carried out on the PC.
 const RCHANNEL_STORE = /\brchannel\/store\.json\b/i;

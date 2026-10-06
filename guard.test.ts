@@ -153,6 +153,59 @@ describe("checkCommand edge cases", () => {
   });
 });
 
+// In bash, `>&WORD` writes to the file WORD unless WORD is exactly digits or `-`, so `>&2/../x`
+// (with a folder named 2) writes x. Only a bare `>&1`, `>&2` or `>&-` duplicates or closes a stream.
+const SELF = "refused: editing guard.ts, inbox.ts or the hook files would disable the safety policy";
+const ENV = "refused: writing to the telegram .env could steal or wreck the bot token";
+
+describe("checkCommand redirect spellings", () => {
+  test("a >& followed by a path is a write to that path", () => {
+    for (const [cmd, reason] of [
+      ["mkdir -p 2 && echo EVIL >&2/../guard.ts", SELF],
+      ["mkdir -p 2 && echo EVIL >&2/../hooks/pretooluse-guard.ts", SELF],
+      ["mkdir -p 22 && echo EVIL >&22/../guard.ts", SELF],
+      ["mkdir -p 2 && echo k >&2/../../.claude/channels/telegram/.env", ENV],
+    ]) {
+      expect(checkCommand(cmd)).toEqual({ verdict: "block", reason });
+    }
+  });
+
+  test("a protected file name right after a redirect operator is caught", () => {
+    for (const cmd of ["echo x >guard.ts", "echo x >>guard.ts", "echo x &>guard.ts", "echo x >|guard.ts", "echo x >&guard.ts"]) {
+      expect(checkCommand(cmd)).toEqual({ verdict: "block", reason: SELF });
+    }
+  });
+
+  test("duplicating or closing a stream is not a write", () => {
+    for (const cmd of [
+      "grep -n x guard.ts 2>&1 | head",
+      "echo hi >&2",
+      "cmd 1>&2",
+      "cmd 2>&-",
+      "cmd 3>&1 1>&2 2>&3",
+      "echo x >&2;",
+      "cmd 2>&1|head",
+      "(cmd 2>&1)",
+      // the same, next to a protected file name
+      "grep -c x guard.ts >&2",
+      "cat guard.ts 1>&2",
+      "cat guard.ts 2>&-",
+      "cat guard.ts 3>&1 1>&2 2>&3",
+      "grep x guard.ts >&2;",
+      "cat guard.ts 2>&1|head",
+      "(cat guard.ts 2>&1)",
+      "cat ~/.claude/channels/telegram/.env 2>&1 | wc -l",
+      // a pipe or a read before the name is not a write
+      "grep -n x guard.ts",
+      "git diff guard.ts",
+      "bun test guard.test.ts",
+      "cat a|grep guard.ts",
+    ]) {
+      expect(checkCommand(cmd).verdict).toBe("allow");
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // checkAutoSession — extra least-privilege denials for [AUTO] sessions
 // ---------------------------------------------------------------------------

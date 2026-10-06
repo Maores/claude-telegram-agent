@@ -13,6 +13,8 @@ test("a turn cannot write the routine channel's store, and can still read it", (
     "sed -i 's/a/b/' ~/rchannel/store.json",
     "tee ~/rchannel/store.json < /tmp/x",
     "rm ~/rchannel/store.json",
+    // `>&WORD` writes to WORD unless WORD is exactly digits or `-`
+    "mkdir -p 2 && echo '{}' >&2/../rchannel/store.json",
   ]) {
     expect(checkCommand(cmd)).toEqual({ verdict: "block", reason: "refused: the routine channel's store is written only by the poller and the PC's sync" });
   }
