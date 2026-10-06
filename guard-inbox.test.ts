@@ -29,6 +29,10 @@ test("a turn cannot read or write the inbox's store, files or folder", () => {
     "pushd ~ && cd inbox && ls",
     "cd \"$HOME\"/inbox && cat items.json",
     "ls \"$HOME\"/inbox",
+    // cd with its flags before the folder
+    "cd; cd -P inbox && cat items.json",
+    "cd -- inbox && cat items.json",
+    "pushd -n inbox; ls",
   ]) {
     expect(checkCommand(cmd)).toEqual({ verdict: "block", reason: STORE });
   }
@@ -46,6 +50,15 @@ test("a turn never runs list, ack, get, purge or gate, however it is spelled", (
     // Bun strips a `--` before the script's arguments
     "bun run inbox.ts -- list",
     "bun inbox.ts -- ack 261005-a1b2",
+    // only `status` is allowed, so a subcommand the guard cannot read is refused too
+    "bun run inbox.ts '--' list",
+    "bun run inbox.ts \"--\" ack 261005-a1b2",
+    "bun run inbox.ts $(echo list)",
+    "x=list; bun run inbox.ts $x",
+    "echo list | xargs bun run inbox.ts",
+    "bun run inbox.ts status; bun run inbox.ts list",
+    "bun run inbox.ts statuslist",
+    "bun run inbox.ts",
   ]) {
     expect(checkCommand(cmd)).toEqual({ verdict: "block", reason: PULL });
   }
@@ -55,6 +68,10 @@ test("a turn never runs list, ack, get, purge or gate, however it is spelled", (
 test("status, the code, the tests and unrelated commands stay open", () => {
   for (const cmd of [
     "bun run inbox.ts status",
+    "bun run inbox.ts status 2>&1 | jq .",
+    "bun run inbox.ts status && echo ok",
+    "bun run inbox.ts \"status\"",
+    "git add bun.lock inbox.ts",
     "grep -n purge inbox.ts",
     "grep -n \"inbox.ts list\" CLAUDE.md",
     "bun test inbox.test.ts",
@@ -85,6 +102,7 @@ test("the file tools cannot touch anything under an inbox folder, nor search fro
     ["Write", { file_path: "~/inbox//items.json.tmp" }],
     ["Edit", { file_path: "C:\\x\\inbox\\items.json" }],
     ["NotebookEdit", { notebook_path: "/home/someone/inbox/x.ipynb" }],
+    ["LS", { path: "/home/someone/inbox" }], // a legacy listing tool
   ] as const) {
     expect(checkInboxAccess(tool, input).verdict).toBe("block");
   }
@@ -94,6 +112,7 @@ test("the file tools cannot touch anything under an inbox folder, nor search fro
     ["Grep", { pattern: "inbox", path: "/home/someone/claude-bot" }],
     ["Grep", { pattern: "inbox" }],
     ["Glob", { pattern: "*.ts", path: "/home/someone/claude-bot" }],
+    ["LS", { path: "/home/someone/claude-bot" }],
     ["Bash", { file_path: "/home/someone/inbox/items.json" }], // not a file tool: checkCommand's job
   ] as const) {
     expect(checkInboxAccess(tool, input).verdict).toBe("allow");

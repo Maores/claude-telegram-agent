@@ -77,7 +77,7 @@ which a deploy would autosave and reset:
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|create_draft",
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|create_draft",
         "hooks": [
           {
             "type": "command",
@@ -93,10 +93,10 @@ which a deploy would autosave and reset:
 Notes:
 
 - **`matcher`** is a regex against the tool name.
-  `Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|create_draft` fires the hook
+  `Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|create_draft` fires the hook
   for every `Bash` command (the hardline floor + the `[AUTO]` reminder block), for the
   file-editing tools (the protected-file block), for Gmail's `create_draft` (the
-  `[AUTO]` draft block), and for nothing else. The reading tools (`Read|Grep|Glob`)
+  `[AUTO]` draft block), and for nothing else. The reading tools (`Read|Grep|Glob|LS`)
   are matched only for the phone inbox's refusal (`checkInboxAccess`). The
   `Edit|Write|MultiEdit` part is REQUIRED for the protected-file layer
   (`checkFileWrite`) to fire; with just `"Bash"` the bot could still edit `guard.ts`

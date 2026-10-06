@@ -719,6 +719,9 @@ session pulls the items with a key of its own when you ask; the server deletes
 what landed, and after a week what was never pulled, warning in the group the
 day before (never right before or during Shabbat and holidays; ten days is the
 hard limit). Design: `docs/superpowers/specs/2026-10-05-phone-inbox-design.md`.
+`INBOX_DIR` (another folder in place of `~/inbox/`) is for tests only: never set
+it for the service, since the PC key's forced `inbox.ts gate` does not read the
+service's `.env`, and the two would then read different folders.
 
 **1. The code, with the setting unset.** `./deploy.sh` (it captures droplet
 edits and proves the restart). From then on a message in any group is logged
@@ -737,7 +740,7 @@ TZ=Asia/Jerusalem journalctl -u telegram-agent --since today --no-pager | grep -
 **2. The guard hook gains the reading tools.** The live wiring is the untracked
 `~/claude-bot/.claude/settings.local.json` (never the tracked `.claude/settings.json`,
 which `deploy.sh` would autosave and reset). Back it up, change only the matcher
-to `Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|create_draft`, and check:
+to `Bash|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|create_draft`, and check:
 
 ```bash
 cp ~/claude-bot/.claude/settings.local.json ~/claude-bot/.claude/settings.local.json.bak-$(date +%Y%m%d-%H%M)
@@ -775,10 +778,8 @@ added before the prompt, and read both counts again. Then remove the probe file:
 rm ~/inbox-probe.jsonl
 ```
 
-The matcher covers Read, Grep and Glob, but not a legacy `LS` tool, which the
-guard's file-tool check does not name either: if the `"tools"` list in the
-`"subtype":"init"` line of a `claude -p --output-format stream-json --verbose`
-run still holds `LS`, that tool can list `~/inbox` and is not covered.
+The matcher and the guard's file-tool check also name the legacy `LS` listing
+tool, so it cannot list `~/inbox` either.
 
 **3. The PC's own key.** The PC pulls with a key that can do nothing else. Its
 line for `~/.ssh/authorized_keys` (the public key comes from the PC):

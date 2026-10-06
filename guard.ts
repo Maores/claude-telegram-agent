@@ -58,14 +58,16 @@ const RCHANNEL_STORE = /\brchannel\/store\.json\b/i;
 // for injected text. This refuses the obvious routes; the PC trusts nothing it receives either way.
 // The store and files by name; the folder from home (~, $HOME, /home/x, also "$HOME"/inbox); the
 // folder relative to a turn's working folder (../inbox, ./inbox); a bare `inbox/` path; and a cd or
-// pushd straight into a bare `inbox`.
+// pushd straight into a bare `inbox` (flags such as `-P` or `--` before it included).
 // Left open on purpose: a recursive tool aimed at the bare folder after a cd (`cd .. && grep -r x
 // inbox`, `tar ... inbox`), and a cd made in one Bash call followed by a bare path in the next (the
 // tool keeps its folder between calls). This is a fence, not a wall; the PC distrusts everything.
 const INBOX_PATH =
-  /(?:\binbox\/+(?:items\.json|files)\b|(?:~|\$\{?HOME\}?|\/home\/[\w.-]+)["']?\/+["']?inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])(?:\.{1,2}\/+)+inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])inbox\/|(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+["']?inbox["']?(?=$|[\s;&|)\/]))/i;
-// Bun strips a `--` before the script's own arguments, so `inbox.ts -- list` is still `list`.
-const INBOX_PULL = /\bbun\b[^;&|\n]*\binbox\.ts["']?\s+(?:--\s+)?["']?(?:list|ack|get|purge|gate)\b/i;
+  /(?:\binbox\/+(?:items\.json|files)\b|(?:~|\$\{?HOME\}?|\/home\/[\w.-]+)["']?\/+["']?inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])(?:\.{1,2}\/+)+inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])inbox\/|(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+(?:-\S*\s+)*["']?inbox["']?(?=$|[\s;&|)\/]))/i;
+// An allowlist: a bun command in one segment that names inbox.ts is refused unless the next word is
+// exactly `status`. So a subcommand the guard cannot read (`$x`, `$(...)`, xargs, a quoted `--`)
+// is refused too. `bun.lock` and a `.bun/` folder are not the bun command.
+const INBOX_PULL = /\bbun\b(?![./-])[^;&|\n]*\binbox\.ts\b(?!["']?\s+["']?status["']?(?=$|[\s;&|)]))/i;
 const INBOX_EVAL = /\b(?:bun|node|deno)\b[^;&|\n]*\s(?:-e|--eval|-p|--print)\b[^;&|\n]*\binbox\b/i;
 
 interface Rule {
@@ -247,7 +249,7 @@ export function checkFileWrite(toolName: string, filePath: string | undefined): 
 }
 
 // The file tools that can read or write a path. Tolerate a namespaced prefix.
-const FILE_TOOL = /(?:^|__)(?:Read|Grep|Glob|Edit|Write|MultiEdit|NotebookEdit)$/i;
+const FILE_TOOL = /(?:^|__)(?:Read|Grep|Glob|LS|Edit|Write|MultiEdit|NotebookEdit)$/i;
 const SEARCH_TOOL = /(?:^|__)(?:Grep|Glob)$/i;
 // A search rooted here would walk into ~/inbox.
 const ABOVE_INBOX = /^(?:\/|\/home\/?|\/home\/[^/]+\/?|\/root\/?|~\/?|\$\{?HOME\}?\/?)$/i;
