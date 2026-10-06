@@ -807,6 +807,8 @@ cd ~/claude-bot && ~/.bun/bin/bun --no-env-file run inbox.ts status
 
 If sshd accepts another variable or permits user environment, stop: the key
 could pass `INBOX_DIR`. If either file exists, stop and find out why it is there.
+A `bunfig.toml` created later would run its preload on every pull, so the health
+sweep should re-check that it is still absent.
 If the last check printed the status JSON, the forced command carries
 `--no-env-file` as below; if it failed, drop that flag from the line. The line
 for `~/.ssh/authorized_keys` (the public key comes from the PC):
