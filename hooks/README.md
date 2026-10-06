@@ -40,9 +40,10 @@ It enforces four layers:
    (`Read`/`Grep`/`Glob` as well as the editors) in every session and refuses any
    path under an `inbox/` folder, and any search rooted at or above the home
    folder. The `inbox-store` and `inbox-pull` rules in layer 1 refuse the same
-   folder to `Bash`, and `inbox.ts list`/`ack`/`get`/`purge`/`gate` (also spelled
-   `inbox` or `inbox.js`, which Bun runs as `inbox.ts`). A turn may run
-   `bun run inbox.ts status`; the code itself (`inbox.ts`) stays readable, and
+   folder to `Bash`, and every `inbox.ts` command but `status` (also spelled
+   `inbox` or `inbox.js`, which Bun runs as `inbox.ts`). A turn may run only
+   `bun run inbox.ts status`, and runs the inbox tests by their full file names
+   (`bun test inbox.test.ts`); the code itself (`inbox.ts`) stays readable, and
    layer 3 refuses edits to it.
 
 **Fail-closed:** if a guard rule throws on a real tool call, the hook denies

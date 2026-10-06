@@ -68,13 +68,14 @@ const RCHANNEL_STORE = /\brchannel\/store\.json\b/i;
 // status` and nothing else: the store holds forwarded content, so reading it would also be a road
 // for injected text. This refuses the obvious routes; the PC trusts nothing it receives either way.
 // The store and files by name; the folder from home (~, $HOME, /home/x, also "$HOME"/inbox); the
-// folder relative to a turn's working folder (../inbox, ./inbox); a bare `inbox/` path; and a cd or
+// folder relative to a turn's working folder or through a dot segment (../inbox, ./inbox,
+// ~/x/../inbox); a bare `inbox/` path; and a cd or
 // pushd straight into a bare `inbox` (flags such as `-P` or `--` before it included).
 // Left open on purpose: a recursive tool aimed at the bare folder after a cd (`cd .. && grep -r x
 // inbox`, `tar ... inbox`), and a cd made in one Bash call followed by a bare path in the next (the
 // tool keeps its folder between calls). This is a fence, not a wall; the PC distrusts everything.
 const INBOX_PATH =
-  /(?:\binbox\/+(?:items\.json|files)\b|(?:~|\$\{?HOME\}?|\/home\/[\w.-]+)["']?\/+["']?inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])(?:\.{1,2}\/+)+inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])inbox\/|(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+(?:-\S*\s+)*["']?inbox["']?(?=$|[\s;&|)\/]))/i;
+  /(?:\binbox\/+(?:items\.json|files)\b|(?:~|\$\{?HOME\}?|\/home\/[\w.-]+)["']?\/+["']?inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:\/])(?:\.{1,2}\/+)+inbox(?:\/|(?![\w.-]))|(?:^|[\s'"=(:])inbox\/|(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+(?:-\S*\s+)*["']?inbox["']?(?=$|[\s;&|)\/]))/i;
 // An allowlist: a bun command in one segment that names inbox.ts is refused unless the next word is
 // exactly `status`. So a subcommand the guard cannot read (`$x`, `$(...)`, xargs, a quoted `--`)
 // is refused too. `bun.lock` and a `.bun/` folder are not the bun command. Bun also runs `inbox`
@@ -155,7 +156,7 @@ const RULES: Rule[] = [
   },
   {
     name: "inbox-pull",
-    reason: "refused: inbox.ts list, ack, get, purge and gate are the PC's or the poller's; a turn never runs them",
+    reason: "refused: a turn may run only `bun run inbox.ts status`; run the inbox tests by their full file names (e.g. `bun test inbox.test.ts`)",
     test: (c) => INBOX_PULL.test(c) || INBOX_EVAL.test(c),
   },
   {

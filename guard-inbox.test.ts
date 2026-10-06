@@ -4,7 +4,7 @@ import { checkCommand, checkFileWrite, checkInboxAccess } from "./guard";
 // The phone inbox is read and written only by the poller and by the PC's own key (which never
 // passes through this hook). A turn may run `bun run inbox.ts status`, and nothing else.
 const STORE = "refused: the phone inbox is read and written only by the poller and the PC's pull; a turn may run `bun run inbox.ts status`";
-const PULL = "refused: inbox.ts list, ack, get, purge and gate are the PC's or the poller's; a turn never runs them";
+const PULL = "refused: a turn may run only `bun run inbox.ts status`; run the inbox tests by their full file names (e.g. `bun test inbox.test.ts`)";
 
 test("a turn cannot read or write the inbox's store, files or folder", () => {
   for (const cmd of [
@@ -33,6 +33,12 @@ test("a turn cannot read or write the inbox's store, files or folder", () => {
     "cd; cd -P inbox && cat items.json",
     "cd -- inbox && cat items.json",
     "pushd -n inbox; ls",
+    // a dot segment after a slash still lands in the folder
+    "ls ~/claude-bot/../inbox",
+    "cat ~/claude-bot/../inbox/item*.json",
+    "cat /home/claudebot/./inbox/item*.json",
+    "ls $HOME/./inbox",
+    "ln -s ~/claude-bot/../inbox x",
   ]) {
     expect(checkCommand(cmd)).toEqual({ verdict: "block", reason: STORE });
   }
@@ -87,6 +93,9 @@ test("status, the code, the tests and unrelated commands stay open", () => {
     "grep -n \"inbox.ts list\" CLAUDE.md",
     "bun test inbox.test.ts",
     "bun test ./inbox-cli.test.ts",
+    "bun test ./inbox.test.ts",
+    "cat docs/../inbox.ts",
+    "ls ./phone-inbox/",
     "git add inbox.ts inbox-cli.test.ts",
     "git diff inbox.ts",
     "node -p \"1\" && cat notes-about-inbox.txt",
