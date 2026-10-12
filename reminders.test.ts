@@ -331,6 +331,29 @@ test("follow-up ids are never reused, even after prune", () => {
   expect(b.id).not.toBe(a.id);
 });
 
+test("follow-up ids are never reused within one millisecond, even after prune (clock held still)", () => {
+  // The droplet showed the test above failing at random: the id was "f" + Date.now(), and the
+  // same-ms bump only looked at ids still in the store, so an id freed by prune came back.
+  freshFollowupFile();
+  const realNow = Date.now;
+  const frozen = realNow();
+  Date.now = () => frozen;
+  try {
+    const a = addFollowup(1, "x", 1, T0 - 8 * 86_400);
+    resolveFollowup(a.id, "done");
+    expect(pruneFollowups(T0)).toBe(1);
+    const b = addFollowup(1, "y", 2, T0);
+    const c = addFollowup(1, "z", 3, T0);
+    expect(new Set([a.id, b.id, c.id]).size).toBe(3);
+    for (const id of [a.id, b.id, c.id]) {
+      expect(id).toMatch(/^f[\w-]+$/); // still fits fu:<action>:<id> and fuu:<id>:<rid>
+      expect(Buffer.byteLength(`fuu:${id}:r99999`)).toBeLessThanOrEqual(64); // Telegram's callback_data cap
+    }
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 // --- withFileLock: cross-process mutation lock (poller vs remind.ts CLI) ------
 
 import { withFileLock } from "./reminders.ts";
