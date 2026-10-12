@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, existsSync, writeFileSync, readdirSync, rmSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "./db";
-import { createSkill, parseSkillMd, rejectNonReusable, SkillError, type SkillRow, viewSkill, searchSkills, listSkills, patchSkill, archiveSkill, restoreSkill, activateSkill, skillsIndexBlock, curateSkills, pinSkill, absorbSkill } from "./skills";
+import { createSkill, parseSkillMd, rejectNonReusable, SkillError, type SkillRow, viewSkill, searchSkills, listSkills, patchSkill, archiveSkill, restoreSkill, activateSkill, skillsIndexBlock, curateSkills, pinSkill, absorbSkill, skillBodyPath } from "./skills";
 
 const NOW = 1_781_000_000;
 
@@ -415,6 +415,35 @@ describe("skillsIndexBlock", () => {
     expect(skillsIndexBlock(db, "zzznotpresentquery", 5)).toBe("");
     db.close();
   });
+
+  test("an allow filter runs before the cap: allowed skills show even when others rank higher", () => {
+    const db = freshDb();
+    const dir = tmp();
+    // the unallowed ones mention "flight" more often, so they rank above the allowed one (three of
+    // them: the allowed one is fourth, inside the 4 * n candidates fetched for n = 1)
+    for (let i = 0; i < 3; i++) {
+      createSkill(db, dir, { name: `loud-${i}`, description: `Use when flight flight flight case ${i}`, tags: "flight", source: "maor", body: GOOD_BODY, now: NOW });
+    }
+    createSkill(db, dir, { name: "quiet-one", description: "Use when a long trip includes a flight somewhere along the way", source: "maor", body: GOOD_BODY, now: NOW });
+    expect(skillsIndexBlock(db, "flight", 1)).not.toContain("quiet-one"); // unfiltered, it loses the top spot
+    const block = skillsIndexBlock(db, "flight", 1, (r) => r.name === "quiet-one");
+    expect(block).toContain("- quiet-one — ");
+    expect(block).not.toContain("loud-");
+    expect(skillsIndexBlock(db, "flight", 3, () => false)).toBe("");
+    db.close();
+  });
+});
+
+describe("viewSkill with an allow gate", () => {
+  test("a refused skill throws the approval message and is not counted as used", () => {
+    const db = freshDb();
+    const dir = tmp();
+    createSkill(db, dir, { name: "gated-skill", description: "Use when gating", source: "maor", body: GOOD_BODY, now: NOW });
+    expect(() => viewSkill(db, dir, "gated-skill", NOW + 1, () => false)).toThrow(`skill "gated-skill" is waiting for Maor's approval`);
+    expect(getRow(db, "gated-skill").use_count).toBe(0);
+    expect(viewSkill(db, dir, "gated-skill", NOW + 1, () => true).body).toContain("Confirm the uid");
+    db.close();
+  });
 });
 
 describe("rejectNonReusable — false-positive guard (final-review fix)", () => {
@@ -709,6 +738,74 @@ describe("schema migration", () => {
     const db = freshDb();
     const cols = db.query("PRAGMA table_info(skills)").all() as { name: string }[];
     expect(cols.map((c) => c.name)).toContain("absorbed_into");
+    db.close();
+  });
+});
+
+describe("skill bodies by name (the path column is never opened)", () => {
+  const BODY_A = "## Steps\n1. Run the alpha procedure with its own unique alpha marker.";
+  const BODY_B = "## Steps\n1. Run the beta procedure with its own unique beta marker.";
+
+  test("a row whose path names another skill's file or another folder still views, patches and archives through <dir>/<name>.md", () => {
+    const db = freshDb();
+    const dir = tmp();
+    const elsewhere = tmp();
+    createSkill(db, dir, { name: "alpha", description: "Use when doing alpha", source: "maor", body: BODY_A, now: NOW });
+    createSkill(db, dir, { name: "beta", description: "Use when doing beta", source: "maor", body: BODY_B, now: NOW });
+    const betaFile = join(dir, "beta.md");
+    const betaBefore = readFileSync(betaFile, "utf8");
+    // Point alpha's path at beta's file: view and patch must still use alpha.md.
+    db.query("UPDATE skills SET path = ? WHERE name = 'alpha'").run(betaFile);
+    expect(viewSkill(db, dir, "alpha", NOW).body).toContain("alpha marker");
+    patchSkill(db, dir, "alpha", { old: "alpha marker", new: "patched alpha marker", now: NOW + 1 });
+    expect(readFileSync(join(dir, "alpha.md"), "utf8")).toContain("patched alpha marker");
+    expect(readFileSync(betaFile, "utf8")).toBe(betaBefore);
+    expect(readdirSync(dir).filter((f) => f.startsWith("beta.md.bak."))).toEqual([]);
+    // Point alpha's path at a file in another folder: archive moves alpha.md, not that file.
+    const decoy = join(elsewhere, "alpha.md");
+    writeFileSync(decoy, "decoy");
+    db.query("UPDATE skills SET path = ? WHERE name = 'alpha'").run(decoy);
+    const row = archiveSkill(db, dir, "alpha", NOW + 2);
+    expect(row.status).toBe("archived");
+    expect(existsSync(join(dir, "alpha.md"))).toBe(false);
+    expect(readFileSync(join(dir, ".archive", "alpha.md"), "utf8")).toContain("patched alpha marker");
+    expect(readFileSync(decoy, "utf8")).toBe("decoy");
+    expect(readFileSync(betaFile, "utf8")).toBe(betaBefore);
+    db.close();
+  });
+
+  test("an archived row resolves under .archive (and restore reads it from there whatever the path column says)", () => {
+    const dir = "/home/someone/skills";
+    expect(skillBodyPath(dir, { name: "old-skill", status: "archived" })).toBe(join(dir, ".archive", "old-skill.md"));
+    expect(skillBodyPath(dir, { name: "old-skill", status: "active" })).toBe(join(dir, "old-skill.md"));
+    expect(skillBodyPath(dir, { name: "old-skill", status: "stale" })).toBe(join(dir, "old-skill.md"));
+    expect(skillBodyPath(dir, { name: "old-skill", status: "quarantined" })).toBe(join(dir, "old-skill.md"));
+    const db = freshDb();
+    const d = tmp();
+    createSkill(db, d, { name: "gamma", description: "Use when doing gamma", source: "maor", body: GOOD_BODY, now: NOW });
+    archiveSkill(db, d, "gamma", NOW + 1);
+    db.query("UPDATE skills SET path = ? WHERE name = 'gamma'").run(join(d, "nowhere.md"));
+    const row = restoreSkill(db, d, "gamma", NOW + 2);
+    expect(row.status).toBe("active");
+    expect(existsSync(join(d, "gamma.md"))).toBe(true);
+    expect(existsSync(join(d, ".archive", "gamma.md"))).toBe(false);
+    db.close();
+  });
+
+  test("a row whose name fails the slug regex is refused", () => {
+    const dir = "/home/someone/skills";
+    for (const name of ["../escape", "a/b", "Bad_Name", "", "x.md", "-lead"]) {
+      expect(() => skillBodyPath(dir, { name, status: "active" })).toThrow(SkillError);
+    }
+    const db = freshDb();
+    const d = tmp();
+    db.query(
+      `INSERT INTO skills (name, description, tags, path, provenance, status, created_by, created_ts, updated_ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run("../planted", "Use when x", "", join(d, "x.md"), "maor", "active", "maor", NOW, NOW);
+    expect(() => viewSkill(db, d, "../planted", NOW)).toThrow(SkillError);
+    expect(() => patchSkill(db, d, "../planted", { old: "a", new: "b", now: NOW })).toThrow(SkillError);
+    expect(() => archiveSkill(db, d, "../planted", NOW)).toThrow(SkillError);
     db.close();
   });
 });

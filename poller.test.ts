@@ -42,11 +42,27 @@ import {
   digestSpawnOpts,
   digestParts,
   claudeTurnArgv,
+  monitorSpawnOpts,
+  killTurnProc,
+  sweepOrphans,
+  checkTurnEnv,
+  stateMissing,
+  probeTurnEnv,
+  setTurnEnvBroken,
+  streamClaude,
+  TurnsUnavailable,
+  TURNS_UNAVAILABLE_REPLY,
+  turnFailureReply,
+  sendAllowed,
+  serverModeBlock,
+  checkApprovals,
+  scusChat,
 } from "./poller.ts";
 import { stripIsolates } from "./bidi.ts";
 import { ALWAYS_DISALLOWED_TOOLS } from "./guard.ts";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 test("short text stays one chunk", () => {
   expect(chunkText("hello")).toEqual(["hello"]);
@@ -987,7 +1003,154 @@ test("streamClaude builds its argv only through claudeTurnArgv (source pin)", ()
   const src = readFileSync(join(import.meta.dir, "poller.ts"), "utf8");
   // the claude binary appears at the head of an argv array in exactly one place: claudeTurnArgv
   expect(src.match(/\[\s*CLAUDE_BIN\s*,/g)?.length).toBe(1);
-  expect(src).toMatch(/Bun\.spawn\(\s*claudeTurnArgv\(/);
+  expect(src).toMatch(/turnSpawn\(claudeTurnArgv\(/);
+});
+
+test("turn argv gains --setting-sources and one --strict-mcp-config only under a turn user", () => {
+  expect(claudeTurnArgv("sonnet", [], {})).not.toContain("--setting-sources");
+  const a = claudeTurnArgv("sonnet", ["--disallowedTools", "X"], { TURN_USER: "agentturn" });
+  expect(a[a.indexOf("--setting-sources") + 1]).toBe("project,local");
+  expect(a.filter((x) => x === "--strict-mcp-config").length).toBe(1);
+  expect(a.indexOf("--strict-mcp-config")).toBeLessThan(a.indexOf("--disallowedTools"));
+});
+
+test("monitor summaries run with no tools, and fireMonitor uses them", () => {
+  const o = monitorSpawnOpts();
+  const i = o.extraArgs!.indexOf("--tools");
+  expect(o.extraArgs![i + 1]).toBe("");
+  expect(o.extraArgs).toContain("--strict-mcp-config");
+  const src = readFileSync(join(import.meta.dir, "poller.ts"), "utf8");
+  const body = src.slice(src.indexOf("async function fireMonitor("), src.indexOf("async function checkCalendarNudges("));
+  expect(body).toContain("monitorSpawnOpts()");
+  expect(body).not.toContain("autoSessionSpawn()");
+});
+
+test("killTurnProc: proc.kill when unset; TERM to the turn's agentturn descendants as agentturn when set", async () => {
+  let killed = 0;
+  await killTurnProc({ pid: 200, exited: new Promise(() => {}), kill: () => killed++ } as any, async () => ({ code: 0, out: "" }), {});
+  expect(killed).toBe(1);
+  const calls: string[][] = [];
+  let end!: () => void;
+  const out = ["200 900 root", "201 200 agentturn", "202 201 agentturn", "300 1 agentturn"].join("\n");
+  const p = killTurnProc({ pid: 200, exited: new Promise<void>((r) => (end = r)), kill: () => killed++ } as any, async (a) => { calls.push(a); return a[0] === "/usr/bin/ps" ? { code: 0, out } : { code: 0, out: "" }; }, { TURN_USER: "agentturn" });
+  await Bun.sleep(0); await Bun.sleep(0);
+  expect(calls[1]).toEqual(["/usr/bin/sudo", "-n", "-u", "agentturn", "--", "/usr/bin/kill", "-TERM", "201", "202"]);
+  end(); await p;
+  expect(calls.length).toBe(2);
+});
+
+test("sweepOrphans kills only orphans, spares a probe, removes stale turn folders, logs a failed listing", async () => {
+  const logs: string[] = [];
+  const calls: string[][] = [];
+  const out = ["1 0 root", "200 900 root", "201 200 agentturn", "300 1 agentturn", "400 1 claudebot", "500 400 root", "501 500 agentturn"].join("\n");
+  const n = await sweepOrphans(async (a) => { calls.push(a); return a[0] === "/usr/bin/ps" ? { code: 0, out } : { code: 0, out: "" }; }, "agentturn", (s) => logs.push(s));
+  expect(n).toBe(1);
+  expect(calls[1]).toEqual(["/usr/bin/sudo", "-n", "-u", "agentturn", "--", "/usr/bin/kill", "-KILL", "300"]);
+  expect(calls[2][5]).toBe("/usr/bin/find");
+  expect(logs).toEqual(["[TURN] swept 1 leftover process(es) of agentturn"]);
+  logs.length = 0;
+  expect(await sweepOrphans(async () => ({ code: 1, out: "" }), "agentturn", (s) => logs.push(s))).toBe(0);
+  expect(logs[0]).toStartWith("[ERR] process list failed");
+  // A listing that succeeds but parses to nothing (a changed ps format) must not be a silent no-op.
+  logs.length = 0;
+  const kills: string[][] = [];
+  expect(await sweepOrphans(async (a) => { kills.push(a); return { code: 0, out: a[0] === "/usr/bin/ps" ? "PID PPID USER\n" : "" }; }, "agentturn", (s) => logs.push(s))).toBe(0);
+  expect(logs).toEqual(["[ERR] process list parsed to zero rows"]);
+  expect(kills.some((a) => a.includes("/usr/bin/kill"))).toBe(false);
+});
+
+test("checkTurnEnv: the three cross, the bot-only two do not", async () => {
+  const ok = "CLAUDE_CODE_OAUTH_TOKEN=probe-1\nICLOUD_USER=probe-2\nICLOUD_APP_PASSWORD=probe-3\n";
+  expect(await checkTurnEnv(async () => ({ code: 0, out: ok }), "agentturn", [])).toBeNull();
+  expect(await checkTurnEnv(async () => ({ code: 0, out: "CLAUDE_CODE_OAUTH_TOKEN=probe-1\n" }), "agentturn", [])).toContain("ICLOUD_USER");
+  expect(await checkTurnEnv(async () => ({ code: 0, out: ok + "TELEGRAM_BOT_TOKEN=probe-4\n" }), "agentturn", [])).toContain("TELEGRAM_BOT_TOKEN");
+});
+
+test("killTurnProc logs a failed listing, a failed kill and a thrown error instead of swallowing them", async () => {
+  const gone = Promise.resolve();
+  const env = { TURN_USER: "agentturn" };
+  const rows = ["200 900 root", "201 200 agentturn"].join("\n");
+  let logs: string[] = [];
+  await killTurnProc({ pid: 200, exited: gone, kill: () => {} } as any, async () => ({ code: 1, out: "" }), env, (s) => logs.push(s));
+  expect(logs).toEqual(["[ERR] stop: process list failed: exit 1"]);
+  logs = [];
+  await killTurnProc({ pid: 200, exited: gone, kill: () => {} } as any, async (a) => (a[0] === "/usr/bin/ps" ? { code: 0, out: rows } : { code: 1, out: "" }), env, (s) => logs.push(s));
+  expect(logs).toEqual(["[ERR] stop: kill exit 1"]);
+  logs = [];
+  await killTurnProc({ pid: 200, exited: gone, kill: () => {} } as any, async () => { throw new Error("spawn failed"); }, env, (s) => logs.push(s));
+  expect(logs).toEqual(["[ERR] stop: spawn failed"]);
+  logs = [];
+  await killTurnProc({ pid: 200, exited: gone, kill: () => {} } as any, async (a) => (a[0] === "/usr/bin/ps" ? { code: 0, out: rows } : { code: 0, out: "" }), env, (s) => logs.push(s));
+  expect(logs).toEqual([]); // a clean stop logs nothing
+});
+
+test("sweepOrphans: a refused kill is logged and never reported as swept; a failed folder cleanup is logged", async () => {
+  const out = ["1 0 root", "300 1 agentturn"].join("\n");
+  let logs: string[] = [];
+  const refused = await sweepOrphans(async (a) => (a[0] === "/usr/bin/ps" ? { code: 0, out } : a.includes("/usr/bin/kill") ? { code: 1, out: "" } : { code: 0, out: "" }), "agentturn", (s) => logs.push(s));
+  expect(refused).toBe(0);
+  expect(logs).toEqual(["[ERR] sweep: kill exit 1"]);
+  logs = [];
+  const n = await sweepOrphans(async (a) => (a[0] === "/usr/bin/ps" ? { code: 0, out } : a.includes("/usr/bin/find") ? { code: 1, out: "" } : { code: 0, out: "" }), "agentturn", (s) => logs.push(s));
+  expect(n).toBe(1);
+  expect(logs).toEqual(["[ERR] sweep: stale folder cleanup exit 1", "[TURN] swept 1 leftover process(es) of agentturn"]);
+});
+
+test("checkTurnEnv reports a refused sudo probe by exit code, never by its output", async () => {
+  const r = await checkTurnEnv(async () => ({ code: 1, out: "CLAUDE_CODE_OAUTH_TOKEN=probe-1\nsecret-looking-output" }), "agentturn", []);
+  expect(r).toBe("sudo probe failed: exit 1");
+});
+
+test("probeTurnEnv: a thrown probe or a refusal breaks turns instead of crashing the poller", async () => {
+  const ok = "CLAUDE_CODE_OAUTH_TOKEN=probe-1\nICLOUD_USER=probe-2\nICLOUD_APP_PASSWORD=probe-3\n";
+  expect(await probeTurnEnv(async () => ({ code: 0, out: ok }), "agentturn")).toBeNull();
+  expect(await probeTurnEnv(async () => { throw new Error("no such file /usr/bin/sudo"); }, "agentturn")).toBe("turns cannot start: sudo probe failed: no such file /usr/bin/sudo");
+  expect(await probeTurnEnv(async () => ({ code: 1, out: "" }), "agentturn")).toBe("turns cannot start: sudo probe failed: exit 1");
+  expect(await probeTurnEnv(async () => ({ code: 0, out: "" }), "agentturn")).toStartWith("turns cannot start: missing: CLAUDE_CODE_OAUTH_TOKEN");
+  expect(await probeTurnEnv(async () => ({ code: 0, out: "" }), "agentturn")).toEndWith("(sudoers env_keep out of date)");
+});
+
+test("streamClaude refuses with TurnsUnavailable while turns are broken, and the reply is the fixed Hebrew line", async () => {
+  setTurnEnvBroken("turns cannot start: missing: ICLOUD_USER");
+  try {
+    let caught: unknown;
+    try { await streamClaude("hi", 1, null, "sonnet"); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(TurnsUnavailable);
+    expect(turnFailureReply(caught, "fallback")).toBe("לא ניתן להפעיל שיחה כרגע: הגדרות השרת לא תקינות. מאור צריך לבדוק מהמחשב.");
+    expect(TURNS_UNAVAILABLE_REPLY).not.toContain("נסות"); // no retry suggestion
+  } finally { setTurnEnvBroken(null); }
+  expect(turnFailureReply(new Error("boom"), "fallback")).toBe("fallback");
+  // every handler that answers a failed turn with the generic line maps it through turnFailureReply
+  const src = readFileSync(join(import.meta.dir, "poller.ts"), "utf8");
+  expect(src).not.toMatch(/^\s*limitMsg \?\? "/m); // the bare generic line is gone from every handler
+  expect(src.match(/turnFailureReply\(e,/g)?.length).toBe(4);
+});
+
+test("stateMissing reads its own env", () => {
+  const s = mkdtempSync(join(tmpdir(), "sm-"));
+  try {
+    expect(stateMissing({ STATE_DIR: s })).toBe(true);
+    expect(stateMissing({ STATE_DIR: s, STATE_INIT: "1" })).toBe(false);
+    mkdirSync(join(s, "shared", "memory"), { recursive: true });
+    writeFileSync(join(s, "shared", "memory", "bot.db"), "");
+    expect(stateMissing({ STATE_DIR: s })).toBe(false);
+  } finally { rmSync(s, { recursive: true, force: true }); }
+});
+
+test("every Bun.spawn in poller.ts and review.ts is a named allowed site or goes through turnSpawn", () => {
+  const allowedSites = new Set([
+    "const p = Bun.spawn(argv, { stdout: \"pipe\", stderr: \"pipe\", ...(env ? { env } : {}) });",
+    // The nightly integrity check: the poller's own read-only CLI, run as the poller's user.
+    "const p = Bun.spawn([process.execPath, \"run\", \"integrity.ts\", \"--json\"], { cwd: PROJECT_DIR, stdin: \"ignore\", stdout: \"pipe\", stderr: \"inherit\" });",
+  ]);
+  for (const f of ["poller.ts", "review.ts"]) {
+    const lines = readFileSync(join(import.meta.dir, f), "utf8").split("\n");
+    lines.forEach((l, i) => {
+      if (!/Bun\.spawn\(/.test(l)) return;
+      const ok = allowedSites.has(l.trim()) || /Bun\.spawn\(ts\.argv,/.test(l) && /turnSpawn\(/.test(lines.slice(Math.max(0, i - 2), i + 1).join("\n"));
+      expect([f, i + 1, ok]).toEqual([f, i + 1, true]);
+    });
+  }
 });
 
 test("digestParts keeps every part small enough that its bidi isolates still fit", () => {
@@ -1002,4 +1165,216 @@ test("digestParts keeps every part small enough that its bidi isolates still fit
     const sent = sanitizeOutgoing("sendMessage", { chat_id: 1, text: part }).text as string;
     expect(sent).toContain(String.fromCharCode(0x2068)); // isolated, not sent raw
   }
+});
+
+// --- Task 9: the send rule, the approval gates, the <server-mode> block --------------------------
+
+const POLLER_SRC = () => readFileSync(join(import.meta.dir, "poller.ts"), "utf8");
+const between = (src: string, a: string, b: string) => {
+  const i = src.indexOf(a);
+  const j = src.indexOf(b, i + 1);
+  expect(i).toBeGreaterThanOrEqual(0);
+  expect(j).toBeGreaterThan(i);
+  return src.slice(i, j);
+};
+
+test("send rule: a store-sourced send goes only to an allowlisted chat; a drop is logged", () => {
+  const logs: string[] = [];
+  const allowed = (c: number) => c === 100;
+  expect(sendAllowed("reminder", "r3", 100, allowed, (l) => logs.push(l))).toBe(true);
+  expect(sendAllowed("reminder", "r4", 666, allowed, (l) => logs.push(l))).toBe(false);
+  expect(sendAllowed("monitor", 9, 666, allowed, (l) => logs.push(l))).toBe(false);
+  expect(sendAllowed("reminder", "r5\n[OK] forged", 666, allowed, (l) => logs.push(l))).toBe(false);
+  expect(logs).toEqual([
+    "[DROP] reminder r4: chat not allowlisted",
+    "[DROP] monitor 9: chat not allowlisted",
+    '[DROP] reminder "r5\\n[OK] forged": chat not allowlisted', // a planted id never starts a log line of its own
+  ]);
+});
+
+test("send rule: every store-sourced send checks the chat before its first send (source pin)", () => {
+  const src = POLLER_SRC();
+  const rem = between(src, "async function checkReminders(", "async function checkMonitors(");
+  const firstSend = (s: string) => s.indexOf('tg("sendMessage"');
+  const due = rem.slice(rem.indexOf("for (const r of due)"), rem.indexOf("for (const f of dueNudges("));
+  expect(due).toContain('sendAllowed(isAutoJob(r) ? "auto" : "reminder", r.id, r.chatId)');
+  expect(due.indexOf("sendAllowed(")).toBeLessThan(firstSend(due));
+  const nudge = rem.slice(rem.indexOf("for (const f of dueNudges("), rem.indexOf("for (const a of dueMorningNudges("));
+  expect(nudge).toContain('sendAllowed("nudge", f.id, f.chatId)');
+  expect(nudge.indexOf("sendAllowed(")).toBeLessThan(firstSend(nudge));
+  const pa = rem.slice(rem.indexOf("for (const a of dueMorningNudges("), rem.indexOf("pruneFollowups(nowS)"));
+  expect(pa).toContain('sendAllowed("pa-nudge", a.id, a.chatId)');
+  expect(pa.indexOf("sendAllowed(")).toBeLessThan(firstSend(pa));
+  const fire = between(src, "async function fireMonitor(", "async function checkCalendarNudges(");
+  expect(fire).toContain('sendAllowed("monitor", m.id, m.chat_id)');
+  expect(fire.indexOf("sendAllowed(")).toBeLessThan(firstSend(fire));
+  const run = between(src, "async function runMonitor(", "async function fireMonitor(");
+  expect(run).toContain('sendAllowed("monitor", m.id, m.chat_id)');
+  expect(run.indexOf("sendAllowed(")).toBeLessThan(firstSend(run));
+});
+
+test("the [AUTO] hold and the one-time approval are wired into checkReminders (source pin)", () => {
+  const rem = between(POLLER_SRC(), "async function checkReminders(", "async function checkMonitors(");
+  expect(rem).toContain('process.env.AUTO_APPROVAL === "1"');
+  expect(rem).toMatch(/popDue\(undefined, hold\)/);
+  expect(rem).toContain("approvalHold(APPROVALS_FILE,"); // one approved one-time key passes once per pop
+  expect(rem).toContain("consumeOnceApproval(APPROVALS_FILE, r)");
+  // every popped one-time approval is used up right after the pop, before the first await, and not
+  // again inside the send loop (an overlapping run must find it gone)
+  const afterPop = rem.slice(rem.indexOf("popDue(undefined, hold)"));
+  const consume = afterPop.indexOf("consumeOnceApproval(APPROVALS_FILE, r)");
+  expect(consume).toBeGreaterThan(0);
+  expect(consume).toBeLessThan(afterPop.indexOf("await "));
+  expect(afterPop.match(/consumeOnceApproval\(/g)?.length).toBe(1);
+  const sendLoop = afterPop.slice(afterPop.indexOf("for (const r of due)", consume));
+  expect(sendLoop.indexOf("consumeOnceApproval(")).toBe(-1);
+  expect(rem).toContain('"duplicate of an approved job"'); // a held copy is not "waiting for approval"
+});
+
+test("the card round runs through sendCardRound to the owner's chat (source pin)", () => {
+  const body = between(POLLER_SRC(), "async function sendApprovalCards(", "// Reminder scheduler");
+  expect(body).toContain("sendCardRound({");
+  expect(body).toContain("isAllowedChat(target)");
+  expect(body).not.toMatch(/chat_id: r\.chatId|chat_id: m\.chat_id/);
+});
+
+test("fu:scus: the snooze question goes only to the tap's own chat; another chat is stale", () => {
+  expect(scusChat({ chatId: 100 }, 100)).toBe(100);
+  expect(scusChat({ chatId: 666 }, 100)).toBeNull();
+  const cb = between(POLLER_SRC(), '} else if (parsed.action === "scus") {', "  } else {\n    const f = resolveFollowup(");
+  expect(cb).toContain("scusChat(f, chatId)");
+  expect(cb).toContain("[DROP] scus ");
+  expect(cb).not.toContain("f.chatId");
+});
+
+test("every skills index block in poller.ts passes the prompt skill gate (source pin)", () => {
+  const calls = POLLER_SRC().split("\n").filter((l) => l.includes("skillsIndexBlock(") && !l.includes("import "));
+  expect(calls.length).toBe(5);
+  for (const l of calls) expect(l).toContain("promptSkillGate())");
+});
+
+test("approval taps are dispatched, and the 30 s tick starts the card run (source pin)", () => {
+  const src = POLLER_SRC();
+  const cb = between(src, "async function handleCallback(", "async function handleFuuCallback(");
+  expect(cb).toContain("parseAjCallback(");
+  expect(cb).toContain("parseAsCallback(");
+  expect(cb).toContain("await handleAjCallback(");
+  expect(cb).toContain("await handleAsCallback(");
+  expect(cb).toContain("`aj:${aj.token}:${aj.act}`");
+  expect(cb).toContain("`as:${as.token}:${as.act}`");
+  const tick = between(src, "setInterval(() => {\n    void checkReminders();", "}, 30_000);");
+  expect(tick).toContain("void checkApprovals();");
+});
+
+test("checkApprovals returns at once when both gates are unset", async () => {
+  const saved = [process.env.AUTO_APPROVAL, process.env.SKILL_APPROVAL];
+  delete process.env.AUTO_APPROVAL;
+  delete process.env.SKILL_APPROVAL;
+  try {
+    await checkApprovals(); // no Telegram, no files: it must not try either
+  } finally {
+    if (saved[0] !== undefined) process.env.AUTO_APPROVAL = saved[0];
+    if (saved[1] !== undefined) process.env.SKILL_APPROVAL = saved[1];
+  }
+});
+
+test("serverModeBlock: empty with every switch unset; each switch adds its own lines", () => {
+  expect(serverModeBlock({})).toBe("");
+  expect(serverModeBlock({ AUTO_APPROVAL: "0", SKILL_APPROVAL: "" })).toBe("");
+  const dev = serverModeBlock({ TURN_USER: "agentturn" });
+  expect(dev.startsWith("<server-mode>\n")).toBe(true);
+  expect(dev.endsWith("\n</server-mode>")).toBe(true);
+  expect(dev).toContain("~/dev/claude-telegram-agent");
+  // a fresh clone every time, so nothing a turn left in ~/dev is reused, and git never runs a
+  // hook or an fsmonitor command a turn could have configured there
+  expect(dev).toContain("rm -rf ~/dev/claude-telegram-agent && git clone https://github.com/Maores/claude-telegram-agent.git ~/dev/claude-telegram-agent");
+  expect(dev).toContain("git -c core.fsmonitor= -c core.hooksPath=/dev/null <command>");
+  expect(dev).toContain("git -c core.fsmonitor= -c core.hooksPath=/dev/null bundle create ~/outbox/<branch>-<YYYYMMDD-HHMM>.bundle main..<branch>");
+  expect(dev).toMatch(/never push/i);
+  expect(dev).not.toContain("card");
+  const auto = serverModeBlock({ AUTO_APPROVAL: "1" });
+  expect(auto).toContain("A new [AUTO] job waits for Maor's ✓ on a card before its first run; tell him to expect the card.");
+  expect(auto).not.toContain("bundle create");
+  const skill = serverModeBlock({ SKILL_APPROVAL: "1" });
+  expect(skill).toContain("A new or changed skill is offered only after Maor's ✓ on a card; tell him a card is coming.");
+  expect(skill).not.toContain("[AUTO]");
+  const all = serverModeBlock({ TURN_USER: "agentturn", AUTO_APPROVAL: "1", SKILL_APPROVAL: "1" });
+  for (const part of ["bundle create", "[AUTO] job", "changed skill"]) expect(all).toContain(part);
+  expect(all.match(/<server-mode>/g)?.length).toBe(1);
+});
+
+test("buildPrompt carries the <server-mode> block only when a switch is set", () => {
+  const saved = process.env.AUTO_APPROVAL;
+  try {
+    delete process.env.AUTO_APPROVAL;
+    expect(buildPrompt([], "Maor", "hi")).not.toContain("<server-mode>");
+    process.env.AUTO_APPROVAL = "1";
+    const p = buildPrompt([], "Maor", "hi");
+    expect(p).toContain("<server-mode>");
+    expect(p).toContain("New message from Maor:\nhi");
+  } finally {
+    if (saved === undefined) delete process.env.AUTO_APPROVAL;
+    else process.env.AUTO_APPROVAL = saved;
+  }
+});
+
+test("the dev-intent directive defers to the <server-mode> block for how a build is done", () => {
+  expect(DEV_INTENT_DIRECTIVE).toContain("build it the way the <server-mode> block says, if there is one; otherwise as before");
+});
+
+// --- Task 11: the nightly integrity run ----------------------------------------------------------
+
+test("the nightly integrity run: switched by INTEGRITY_NIGHTLY, in the 30-second tick, killed at 300 s, sent only to the allowlisted owner chat", () => {
+  const src = POLLER_SRC();
+  const check = between(src, "function checkIntegrity(", "\n}\n");
+  expect(check).toContain('process.env.INTEGRITY_NIGHTLY !== "1"');
+  expect(check).toContain("if (integrityInFlight) return integrityInFlight;");
+  expect(check).toContain("quiet: (d) => quietNow(d)");
+  const spawn = between(src, "async function runIntegrityCheck(", "\n}\n");
+  expect(spawn).toContain("300_000");
+  expect(spawn).toContain('p.kill("SIGKILL")');
+  const send = between(src, "async function sendIntegrity(", "\n}\n");
+  expect(send).toContain("const target = digestTargetChat();");
+  expect(send).toContain("if (target === null || !isAllowedChat(target))");
+  expect(between(src, "  setInterval(() => {\n    void checkReminders();", "}, 30_000);")).toContain("void checkIntegrity();");
+  // Seeded once at startup from integrity-last.json, so a restart after 04:15 does not run twice;
+  // a missing file gets { since } so health measures from the switch-on, not from nothing.
+  const start = between(src, "async function main()", "setInterval(() => {\n    void checkReminders();");
+  expect(start).toContain('if (process.env.INTEGRITY_NIGHTLY === "1") {');
+  expect(start).toContain("integrityState.attempted = seedIntegrityLast(INTEGRITY_LAST_FILE, Math.floor(Date.now() / 1000));");
+});
+
+// --- Final fix wave ------------------------------------------------------------------------------
+
+test("an [AUTO] run or a monitor summary refused by TurnsUnavailable edits its ⏳ placeholder to the fixed line (source pin)", () => {
+  const src = POLLER_SRC();
+  const rem = between(src, "async function checkReminders(", "async function checkMonitors(");
+  expect(rem).toContain("if (e instanceof TurnsUnavailable) await sendReply(r.chatId, ph.message_id, TURNS_UNAVAILABLE_REPLY).catch(() => {});");
+  const fire = between(src, "async function fireMonitor(", "async function checkCalendarNudges(");
+  expect(fire).toContain("if (e instanceof TurnsUnavailable) await sendReply(m.chat_id, ph.message_id, TURNS_UNAVAILABLE_REPLY).catch(() => {});");
+  // the placeholder edit comes before the rethrow, inside the catch around the stream
+  for (const body of [rem, fire]) {
+    const c = body.indexOf("if (e instanceof TurnsUnavailable)");
+    expect(body.indexOf("throw e;", c)).toBeGreaterThan(c);
+  }
+});
+
+test("the hold gets the lifetime repeat map, duplicates log once an hour, and a store not read cleanly prunes nothing (source pin)", () => {
+  const src = POLLER_SRC();
+  expect(src).toContain("const repeatPassedAt = new Map<string, number>();");
+  const rem = between(src, "async function checkReminders(", "async function checkMonitors(");
+  expect(rem).toContain("}, repeatPassedAt)");
+  expect(rem).toContain('if (at !== undefined && (why === "waiting" || nowS - at < 3600)) return;');
+  const cards = between(src, "async function sendApprovalCards(", "// Reminder scheduler");
+  expect(cards).toContain("const store = jobs ? loadStoreChecked() : null;");
+  expect(cards).toContain("jobsClean: store ? store.ok : true,");
+  expect(serverModeBlock({ TURN_USER: "agentturn" })).toContain("a fresh clone at the start of each new development task");
+});
+
+test("the card round keeps its held-item state across ticks, and startup reports schema drift (source pin)", () => {
+  const src = POLLER_SRC();
+  expect(between(src, "async function sendApprovalCards(", "// Reminder scheduler")).toContain("state: approvalCardState,");
+  expect(src).toContain("const approvalCardState = newCardState();");
+  const start = between(src, "async function main()", "setInterval(() => {\n    void checkReminders();");
+  expect(start).toContain("await reportSchemaDrift(getDb(), sendIntegrity,");
 });

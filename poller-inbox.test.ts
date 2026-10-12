@@ -72,3 +72,19 @@ test("the lifetime tick runs every 30 seconds, stops with the process, and the d
   expect(tick).toContain("if (chatId === null && !existsSync(inboxDir())) return Promise.resolve();");
   expect(tick).not.toMatch(/inboxChatId === null \|\|/); // no early return that skips the deletions
 });
+
+test("the inbox summary a turn reads is refreshed on the 30-second tick, only when the state is outside the repo", () => {
+  expect(MAIN).toContain("void refreshInboxStatus();");
+  const f = body("function refreshInboxStatus(");
+  expect(f).toContain("if (stateDir() === REPO_DIR) return;"); // the PC and the rollback state: no file at all
+  expect(f).toContain('writeInboxStatus(statePath("inbox-status.json"), inboxDir(), ');
+  // a failure never throws out of the tick, and is logged at most once an hour
+  expect(f).toContain("catch (e: any)");
+  expect(f).toContain(">= 3600");
+  // its own clock: a persistent status-write failure never mutes the tick's lines, nor the reverse
+  expect(SRC).toMatch(/^const inboxStatusErr = \{ at: -Infinity \};/m);
+  expect(f).toContain("inboxStatusErr.at");
+  expect(f).not.toContain("inboxWarnErr");
+  // logged through redact(), as the tick's errors are
+  expect(f).toContain("redact(");
+});

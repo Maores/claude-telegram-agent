@@ -174,7 +174,23 @@ const RULES: Rule[] = [
       /(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:bash|sh|zsh|dash|ksh|fish)\b/i.test(c) ||
       /\b(?:bash|sh|zsh|dash|ksh)\s+-c\s+["']?\$\((?:curl|wget)\b/i.test(c),
   },
+  // Last on purpose: `sudo shutdown now` keeps the specific reason above. The real wall is that a
+  // turn's user has no sudo rights; this is a fence and, through the hook, a journal line. It reaches
+  // what the command-position prefix reaches for every rule (separators, blanks, a path such as
+  // /usr/bin/sudo); a wrapper (env, exec, nice, bash -c), an assignment, quotes, a backslash or
+  // backticks before the word are not command position to this guard.
+  {
+    name: "sudo",
+    reason: "refused: a turn has no admin rights on this server; ask Maor to do it from his PC",
+    test: (c) => cmdRe("sudo").test(c),
+  },
 ];
+
+/** The argv that writes one guard refusal to the system journal (tag `agent-guard`). `--` ends
+ *  logger's options, so a reason starting with `-` stays text; the line is capped at 500 chars. */
+export function refusalLogArgv(reason: string): string[] {
+  return ["/usr/bin/logger", "-t", "agent-guard", "--", reason.slice(0, 500)];
+}
 
 /**
  * The shell command a tool call will run, whatever the tool is called: Bash, Monitor (which runs

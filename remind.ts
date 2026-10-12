@@ -6,9 +6,10 @@
  *   bun run remind.ts list       <chatId>
  *   bun run remind.ts edit       <chatId> <id> [--at <epoch>] [--time HH:MM] [--days <csv>] [--text "..."]
  *   bun run remind.ts cancel     <chatId> <id>          (ids look like r7, not 7)
+ *   bun run remind.ts followups                          (open follow-ups: fired, not yet done or snoozed)
  */
 
-import { addOnce, addRepeat, listFor, cancel, editReminder, fmt, type ReminderEdit, snoozeFollowup } from "./reminders.ts";
+import { addOnce, addRepeat, listFor, cancel, editReminder, fmt, type ReminderEdit, snoozeFollowup, loadFollowups } from "./reminders.ts";
 
 function die(msg: string): never {
   console.error(msg);
@@ -18,11 +19,11 @@ function die(msg: string): never {
 const [cmd, chatIdRaw, ...rest] = process.argv.slice(2);
 const chatId = Number(chatIdRaw);
 
-if (!cmd) die("usage: remind.ts <add-once|add-repeat|list|cancel|edit|snooze-followup> ...");
+if (!cmd) die("usage: remind.ts <add-once|add-repeat|list|cancel|edit|snooze-followup|followups> ...");
 // snooze-followup addresses a follow-up by its own id and carries no chatId —
-// the chat comes from the stored follow-up. Every other subcommand still
-// requires one in the same position as before.
-const NEEDS_CHAT_ID = cmd !== "snooze-followup";
+// the chat comes from the stored follow-up — and followups lists every open one.
+// Every other subcommand still requires one in the same position as before.
+const NEEDS_CHAT_ID = cmd !== "snooze-followup" && cmd !== "followups";
 if (NEEDS_CHAT_ID && !Number.isFinite(chatId)) die(`invalid chatId: ${chatIdRaw}`);
 
 const nowSec = Math.floor(Date.now() / 1000);
@@ -81,6 +82,19 @@ switch (cmd) {
     const r = snoozeFollowup(id, at);
     if (!r) die(`no open follow-up with id ${id} (already done, snoozed, or expired)`);
     console.log(`OK snoozed «${r.followup.text}» to ${fmt(at)} (${r.reminder.id})`);
+    break;
+  }
+  // The read a turn uses for "what is still open?", so it never needs to know
+  // where followups.json lives (the state folder moves it on the server).
+  case "followups": {
+    const open = loadFollowups().filter((f) => f.status === "pending");
+    if (!open.length) {
+      console.log("(no open follow-ups)");
+      break;
+    }
+    for (const f of open) {
+      console.log(`${f.id}  fired ${fmt(f.firedAt)}${f.nudged ? "  (nudged)" : ""}  ${f.text}`);
+    }
     break;
   }
   case "cancel": {

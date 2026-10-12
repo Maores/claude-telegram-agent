@@ -6,7 +6,8 @@
  * send window, seen-tracking with per-type reset, Hebrew UI formatting around
  * English question content, qz: inline-callback encoding, and the evaluation
  * directive that rides Maor's next normal message. All I/O beyond the two JSON
- * files (questions + state) lives in poller.ts.
+ * files (questions + state) lives in poller.ts, apart from the small pause CLI
+ * at the bottom of this file.
  *
  * Design deviation from the guide: no separate "is this an answer?" Claude call
  * and no unrelated-counter. This bot is a general assistant, so most messages
@@ -15,8 +16,9 @@
  * EVAL_WINDOW_S. One model call per message either way.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { statePath as pathsStatePath, sharedPath, writeAtomic } from "./paths.ts";
 
 // ---------------------------------------------------------------------------
 // Types (schema per the guide)
@@ -69,7 +71,7 @@ export function questionsPath(): string {
 }
 
 function statePath(): string {
-  return process.env.QUIZ_STATE_FILE ?? join(import.meta.dir, "data", "quiz-state.json");
+  return process.env.QUIZ_STATE_FILE ?? pathsStatePath("data", "quiz-state.json");
 }
 
 /** Read the question bank, dropping anything that doesn't match the schema —
@@ -495,4 +497,28 @@ export function mergeQuestionBanks(existing: Question[], incoming: Question[]): 
     keptOurs: keep.length,
     keptOursOverIncoming: losers.size,
   };
+}
+
+// ---------------------------------------------------------------------------
+// CLI: pause or resume the daily send (manual /quiz keeps working either way)
+//
+//   bun run quiz.ts pause | resume | status
+//
+// A turn uses this instead of touching quiz-paused.flag by path, since the
+// state folder moves that file on the server. The flag is the same one the
+// poller's checkQuiz looks at (sharedPath("quiz-paused.flag")).
+// ---------------------------------------------------------------------------
+
+if (import.meta.main) {
+  const flag = sharedPath("quiz-paused.flag");
+  const verb = process.argv[2];
+  if (verb === "pause") {
+    writeAtomic(flag, "");
+  } else if (verb === "resume") {
+    rmSync(flag, { force: true });
+  } else if (verb !== "status") {
+    console.error("usage: quiz.ts pause|resume|status");
+    process.exit(1);
+  }
+  console.log(existsSync(flag) ? "paused" : "active");
 }

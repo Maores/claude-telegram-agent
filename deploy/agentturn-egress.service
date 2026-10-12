@@ -1,0 +1,15 @@
+[Unit]
+Description=Refuse the cloud metadata address to the agent's turn user
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# First in OUTPUT, so no earlier ACCEPT can make it dead: any copy elsewhere is removed, then the
+# rule is inserted at position 1 (integrity check 13 verifies it is the first rule).
+ExecStart=/bin/sh -c 'while /usr/sbin/iptables -D OUTPUT -m owner --uid-owner agentturn -d 169.254.169.254 -j REJECT 2>/dev/null; do :; done; /usr/sbin/iptables -I OUTPUT 1 -m owner --uid-owner agentturn -d 169.254.169.254 -j REJECT'
+ExecStop=/bin/sh -c '/usr/sbin/iptables -D OUTPUT -m owner --uid-owner agentturn -d 169.254.169.254 -j REJECT || true'
+
+[Install]
+WantedBy=multi-user.target

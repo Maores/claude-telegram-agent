@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   HARD_CAP_S, KEEP_S, MAX_GET_BYTES, WARN_AFTER_S, WARN_STANDS_S,
-  inboxWarningText, loadInbox, mutateInbox, runInboxCli, runInboxTick, sweepLeftovers, type InboxItem,
+  inboxStatus, inboxWarningText, loadInbox, mutateInbox, runInboxCli, runInboxTick, sweepLeftovers, writeInboxStatus, type InboxItem,
 } from "./inbox.ts";
 
 // All fixtures are synthetic.
@@ -139,6 +139,97 @@ test("status counts what waits, the files and their bytes, and the oldest item's
   expect((await run(["status"])).json).toEqual({ v: 1, waiting: 2, files: 1, bytes: 1, oldestAgeS: 300 });
   rmSync(dir, { recursive: true, force: true });
   expect((await run(["status"])).json).toEqual({ v: 1, waiting: 0, files: 0, bytes: 0, oldestAgeS: null });
+});
+
+const NO_SUMMARY = "no inbox summary yet (the poller writes it on its next tick)";
+
+test("with INBOX_STATUS_FILE set, status prints the poller's summary and never opens the store", async () => {
+  const file = join(root, "inbox-status.json");
+  writeFileSync(file, JSON.stringify({ v: 1, waiting: 3, files: 2, bytes: 40, oldestReceivedAt: nowS - 500, asOf: nowS - 20 }));
+  // no store at all: the numbers can only have come from the summary
+  const r = await run(["status"], { INBOX_STATUS_FILE: file });
+  expect(r.code).toBe(0);
+  expect(r.json).toEqual({ v: 1, waiting: 3, files: 2, bytes: 40, oldestAgeS: 500, asOf: nowS - 20 });
+  writeFileSync(file, JSON.stringify({ v: 1, waiting: 0, files: 0, bytes: 0, oldestReceivedAt: null, asOf: nowS - 5 }));
+  expect((await run(["status"], { INBOX_STATUS_FILE: file })).json).toEqual({ v: 1, waiting: 0, files: 0, bytes: 0, oldestAgeS: null, asOf: nowS - 5 });
+});
+
+test("with INBOX_STATUS_FILE set but no summary there, status says so and exits 1, even beside a store", async () => {
+  seed([item("261012-aaaa", 300)]);
+  const r = await run(["status"], { INBOX_STATUS_FILE: join(root, "inbox-status.json") });
+  expect(r.code).toBe(1);
+  expect(r.err).toBe(NO_SUMMARY);
+  expect(r.json).toBeNull();
+});
+
+test("a summary that is not a plain counts file is refused, and only the counts are ever printed", async () => {
+  const file = join(root, "inbox-status.json");
+  const good = { v: 1, waiting: 1, files: 0, bytes: 0, oldestReceivedAt: nowS - 9, asOf: nowS };
+  for (const bad of ["{not json", "[]", JSON.stringify({ ...good, v: 2 }), JSON.stringify({ ...good, waiting: -1 }), JSON.stringify({ ...good, bytes: "40" }), JSON.stringify({ ...good, oldestReceivedAt: 1.5 }), JSON.stringify({ ...good, asOf: undefined })]) {
+    writeFileSync(file, bad);
+    const r = await run(["status"], { INBOX_STATUS_FILE: file });
+    expect(r.code).toBe(1);
+    expect(r.err).toBe(NO_SUMMARY);
+  }
+  writeFileSync(file, JSON.stringify({ ...good, items: [{ id: "261012-aaaa", text: "x" }] }) + " ".repeat(64 * 1024)); // over the cap
+  expect((await run(["status"], { INBOX_STATUS_FILE: file })).code).toBe(1);
+  writeFileSync(file, JSON.stringify({ ...good, items: [{ id: "261012-aaaa", text: "x" }] })); // extra fields are never echoed
+  expect((await run(["status"], { INBOX_STATUS_FILE: file })).json).toEqual({ v: 1, waiting: 1, files: 0, bytes: 0, oldestAgeS: 9, asOf: nowS });
+  rmSync(file);
+  mkdirSync(file); // a folder where the summary goes
+  expect((await run(["status"], { INBOX_STATUS_FILE: file })).code).toBe(1);
+});
+
+test.skipIf(process.platform === "win32")("a link or a FIFO at the summary's path is refused, and the FIFO never blocks", async () => {
+  const real = join(outside, "real.json");
+  writeFileSync(real, JSON.stringify({ v: 1, waiting: 7, files: 0, bytes: 0, oldestReceivedAt: null, asOf: nowS }));
+  const link = join(root, "inbox-status.json");
+  symlinkSync(real, link);
+  const viaLink = await run(["status"], { INBOX_STATUS_FILE: link });
+  expect(viaLink.code).toBe(1);
+  expect(viaLink.err).toBe(NO_SUMMARY);
+  const fifo = join(root, "fifo.json");
+  expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+  const viaFifo = await run(["status"], { INBOX_STATUS_FILE: fifo });
+  expect(viaFifo.code).toBe(1);
+  expect(viaFifo.err).toBe(NO_SUMMARY);
+});
+
+test("inboxStatus of a missing folder is all zeros", () => {
+  expect(inboxStatus(join(root, "nowhere"), nowS)).toEqual({ v: 1, waiting: 0, files: 0, bytes: 0, oldestReceivedAt: null });
+});
+
+test("writeInboxStatus writes counts only, equal to what status counts from the store, and leaves no temp file", async () => {
+  seed([item("261012-aaaa", 300, { kind: "photo", file: "files/261012-aaaa.jpg", fileName: "named.jpg" }), item("261012-bbbb", 100)]);
+  const state = join(root, "state");
+  mkdirSync(state);
+  const file = join(state, "inbox-status.json");
+  writeInboxStatus(file, dir, nowS);
+  const raw = readFileSync(file, "utf8");
+  expect(JSON.parse(raw)).toEqual({ v: 1, waiting: 2, files: 1, bytes: 1, oldestReceivedAt: nowS - 300, asOf: nowS });
+  for (const secret of ["261012-aaaa", "261012-bbbb", "named.jpg", "files/", "text"]) expect(raw).not.toContain(secret);
+  expect(readdirSync(state)).toEqual(["inbox-status.json"]);
+  const fromStore = await run(["status"]);
+  const fromSummary = await run(["status"], { INBOX_STATUS_FILE: file });
+  expect(fromSummary.json).toEqual({ ...fromStore.json, asOf: nowS });
+  // a second write replaces the first in place
+  writeInboxStatus(file, dir, nowS + 30);
+  expect(JSON.parse(readFileSync(file, "utf8")).asOf).toBe(nowS + 30);
+  expect(readdirSync(state)).toEqual(["inbox-status.json"]);
+});
+
+test.skipIf(process.platform === "win32")("writeInboxStatus sets mode 0640 and replaces a planted link instead of writing through it", () => {
+  const state = join(root, "state");
+  mkdirSync(state);
+  const victim = join(outside, "victim.txt");
+  writeFileSync(victim, "keep");
+  const file = join(state, "inbox-status.json");
+  symlinkSync(victim, file);
+  writeInboxStatus(file, dir, nowS);
+  expect(readFileSync(victim, "utf8")).toBe("keep");
+  expect(lstatSync(file).isFile()).toBe(true); // the link itself was replaced
+  expect(lstatSync(file).mode & 0o777).toBe(0o640);
+  expect(JSON.parse(readFileSync(file, "utf8")).asOf).toBe(nowS);
 });
 
 test("every printed answer is awaited before the CLI returns, so exit never cuts it short", async () => {

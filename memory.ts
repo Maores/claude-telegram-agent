@@ -13,8 +13,9 @@
  */
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { writeAtomic, readNoFollow } from "./paths";
 import { sanitizeFtsQuery } from "./db";
 import { scanThreats } from "./threats";
 
@@ -492,15 +493,23 @@ export function exportMirror(db: Database, dir: string, now: number): { written:
     const path = join(dir, name);
     const metaKey = `mirror_sha_${name}`;
     const lastSha = (db.query("SELECT value FROM meta WHERE key = ?").get(metaKey) as { value: string } | null)?.value;
-    if (existsSync(path) && lastSha && sha(readFileSync(path, "utf8")) !== lastSha) {
-      const bak = `${path}.bak.${now}`;
-      copyFileSync(path, bak);
-      baks.push(bak);
+    if (existsSync(path) && lastSha) {
+      // A link, a FIFO or any non-regular file at the mirror path is logged and treated as empty:
+      // nothing is snapshotted from it, and the rename below replaces it rather than writing through.
+      let current: string | null = null;
+      try {
+        current = readNoFollow(path);
+      } catch (e: any) {
+        console.error(`[MEM] mirror ${path} unreadable, replacing it: ${e?.message ?? e}`);
+      }
+      if (current !== null && sha(current) !== lastSha) {
+        const bak = `${path}.bak.${now}`;
+        writeAtomic(bak, current);
+        baks.push(bak);
+      }
     }
     const content = renderMirror(db, kind, title);
-    const tmp = path + ".tmp";
-    writeFileSync(tmp, content);
-    renameSync(tmp, path); // atomic replace
+    writeAtomic(path, content); // atomic replace
     db.query("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").run(metaKey, sha(content));
     written.push(path);
   }

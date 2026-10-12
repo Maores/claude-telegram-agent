@@ -79,6 +79,15 @@ test("every turn path takes the other directive and sends the turn's routine pro
   expect(single.indexOf("needsConfirmation(voiceText, voiceConfidence)")).toBeLessThan(single.indexOf("takeRcOtherDirective(chatId)"));
 });
 
+test("on the server the turn's spool is ingested before its ✓/✗ go out, and a refusal notice goes only to an allowlisted chat", () => {
+  const b = body("sendRcProposalsAfter");
+  const ingest = b.indexOf('if (stateDir() !== REPO_DIR) await ingestSpool(join(stateDir(), "shared", "rchannel-proposals"), rchannelDir(),');
+  expect(ingest).toBeGreaterThan(0);
+  expect(ingest).toBeLessThan(b.indexOf("await sendRcProposals("));
+  expect(b).toContain("isAllowedChat, turnId);"); // the ended turn's entries are read first
+  expect(body("isAllowedChat")).toContain("return loadAllowList().has(String(chatId));");
+});
+
 test("the tick runs every 30 seconds, rc: buttons are routed, and a restart's drain waits for a tick", () => {
   const main = body("main");
   expect(main).toMatch(/setInterval\(\(\) => \{[^}]*void checkRchannel\(\);[^}]*\}, 30_000\)/);

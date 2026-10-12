@@ -15,7 +15,7 @@ const F = join(DIR, "followups.json");
 process.env.REMINDERS_FILE = R;
 process.env.FOLLOWUPS_FILE = F;
 
-import { addFollowup } from "./reminders.ts";
+import { addFollowup, markNudged, resolveFollowup } from "./reminders.ts";
 
 beforeEach(() => {
   for (const p of [R, F, R + ".lock", F + ".lock"]) rmSync(p, { force: true });
@@ -24,7 +24,7 @@ afterAll(() => rmSync(DIR, { recursive: true, force: true }));
 
 const cli = (...args: string[]) =>
   Bun.spawnSync({
-    cmd: ["bun", "run", join(import.meta.dir, "remind.ts"), ...args],
+    cmd: [process.execPath, "run", join(import.meta.dir, "remind.ts"), ...args],
     env: { ...process.env, REMINDERS_FILE: R, FOLLOWUPS_FILE: F },
     cwd: import.meta.dir,
   });
@@ -54,4 +54,43 @@ test("every other subcommand still demands its chatId in the same position", () 
   expect(out(cli("cancel", "notanumber", "r1"))).toContain("invalid chatId");
   expect(cli("add-once", "2824", String(soon()), "בדיקה").exitCode).toBe(0);
   expect(out(cli("list", "2824"))).toContain("בדיקה");
+});
+
+// A turn answers "what is still open?" through this verb instead of reading
+// followups.json by path (after the rollout the file lives in the state folder).
+test("followups prints the open follow-ups only, with no chatId argument", () => {
+  const open = addFollowup(2824, "open-errand", 9, 1000).id;
+  const closed = addFollowup(2824, "closed-errand", 10, 1000).id;
+  expect(cli("snooze-followup", "--id", closed, "--at", String(soon())).exitCode).toBe(0);
+  const r = cli("followups");
+  expect(out(r)).not.toContain("invalid chatId");
+  expect(r.exitCode).toBe(0);
+  const text = r.stdout.toString();
+  expect(text).toContain(open);
+  expect(text).toContain("open-errand");
+  expect(text).not.toContain("closed-errand");
+});
+
+test("followups leaves out a done follow-up and marks a nudged one", () => {
+  const done = addFollowup(2824, "done-errand", 11, 1000).id;
+  const nudged = addFollowup(2824, "nudged-errand", 12, 1000).id;
+  const plain = addFollowup(2824, "plain-errand", 13, 1000).id;
+  expect(resolveFollowup(done, "done")?.status).toBe("done");
+  markNudged(nudged);
+  const r = cli("followups");
+  expect(r.exitCode).toBe(0);
+  const lines = r.stdout.toString().trim().split("\n");
+  expect(lines).toHaveLength(2);
+  expect(r.stdout.toString()).not.toContain("done-errand");
+  const nudgedLine = lines.find((l) => l.startsWith(nudged))!;
+  expect(nudgedLine).toContain("  (nudged)  nudged-errand");
+  const plainLine = lines.find((l) => l.startsWith(plain))!;
+  expect(plainLine).toContain("plain-errand");
+  expect(plainLine).not.toContain("(nudged)");
+});
+
+test("followups says so when nothing is open", () => {
+  const r = cli("followups");
+  expect(r.exitCode).toBe(0);
+  expect(r.stdout.toString().trim()).toBe("(no open follow-ups)");
 });

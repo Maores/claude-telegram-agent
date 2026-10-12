@@ -6,7 +6,7 @@
 import { createDAVClient } from "tsdav";
 import ical from "node-ical";
 import { readFileSync, writeFileSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { statePath } from "./paths.ts";
 
 const SERVER = "https://caldav.icloud.com";
 
@@ -139,7 +139,7 @@ export function fmtEvent(e: CalEvent): string {
 // Proactive nudges (phase 2)
 // ---------------------------------------------------------------------------
 
-const NOTIFIED_FILE = process.env.CAL_NOTIFIED_FILE ?? join(import.meta.dir, "cal_notified.json");
+const NOTIFIED_FILE = process.env.CAL_NOTIFIED_FILE ?? statePath("cal_notified.json");
 
 /** Unique key per event occurrence (so we nudge each instance once). */
 export function nudgeKey(e: CalEvent): string {

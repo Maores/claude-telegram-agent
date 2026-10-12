@@ -12,10 +12,14 @@
  *   bun run rchannel.ts sync      read a sync payload on stdin, print the reply (the PC's task)
  *   bun run rchannel.ts propose --request <short> --card <n> <<'EOF'   (the text on stdin)
  *                                 inside an "אחר" turn: register a new description for ✓/✗
+ *                                 (with RCHANNEL_SPOOL set, the turn cannot write the store: it
+ *                                 leaves one entry in the spool and the poller registers it)
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readNoFollow, writeAtomic } from "./paths.ts";
 import { addDays, localParts } from "./ccjournal.ts";
 import { hebrewDate, sacredDay, type HebrewDate } from "./ccdigest.ts";
 import { withFileLock } from "./reminders.ts";
@@ -1003,6 +1007,199 @@ export async function sendRcProposals(d: Pick<TickDeps, "dir" | "send" | "log">,
 }
 
 // ---------------------------------------------------------------------------
+// The propose spool: on the server a turn cannot write ~/rchannel. Its propose leaves one entry
+// in STATE_DIR/shared/rchannel-proposals, and the poller registers it here, after the turn and
+// before it sends that turn's ✓/✗. Everything in the spool was written by the turn, so nothing in
+// it is trusted: no link is followed, no FIFO read, every field checked again.
+// ---------------------------------------------------------------------------
+
+export interface SpoolEntry {
+  v: 1;
+  short: string;
+  card: number;
+  text: string;
+  chatId: number;
+  turnId: string;
+  at: number;
+}
+
+const SPOOL_KEYS = ["at", "card", "chatId", "short", "text", "turnId", "v"].join(",");
+const SHORT_RE = /^q\d{1,9}$/;
+/** Turn ids are `t<digits>` (pending.ts newTurnId); the id becomes part of a file name. */
+const TURN_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export const SPOOL_ENTRY_MAX_BYTES = 8 * 1024;
+/** At most this many refusal notices per ingest, so a flood of entries cannot flood the chat. */
+const SPOOL_NOTICES_MAX = 5;
+/** At most this many entries are read per ingest (each may cost a store write, and the ingest is
+ *  synchronous); the rest are deleted unread, so a flood cannot freeze the poller. */
+export const SPOOL_MAX_PER_INGEST = 20;
+
+/** An entry exactly as propose writes it, or why it is not one. */
+export function parseSpoolEntry(raw: unknown): { ok: true; value: SpoolEntry } | { ok: false; reason: string } {
+  const bad = (reason: string) => ({ ok: false as const, reason });
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return bad("not an object");
+  const o = raw as Record<string, unknown>;
+  if (Object.keys(o).sort().join(",") !== SPOOL_KEYS) return bad("unexpected fields");
+  if (o.v !== 1) return bad("v must be 1");
+  if (typeof o.short !== "string" || !SHORT_RE.test(o.short)) return bad("short is not a request id");
+  if (typeof o.card !== "number" || !Number.isInteger(o.card) || o.card < 1 || o.card > LIMITS.cards) return bad("card is out of range");
+  if (typeof o.text !== "string") return bad("text is not a string");
+  if (typeof o.chatId !== "number" || !Number.isSafeInteger(o.chatId) || o.chatId === 0) return bad("chatId is not a chat id");
+  if (typeof o.turnId !== "string" || !TURN_ID_RE.test(o.turnId)) return bad("turnId is not a turn id");
+  if (typeof o.at !== "number" || !Number.isSafeInteger(o.at) || o.at < 0) return bad("at is not a time");
+  const e = checkCorrectionText(o.text.replace(/\s+/g, " ").trim());
+  if (e) return bad(e);
+  return { ok: true, value: o as unknown as SpoolEntry };
+}
+
+/** Delete one spool entry; null when it is gone, else the code of the failure that kept it. */
+function removeSpoolEntry(path: string): string | null {
+  try {
+    unlinkSync(path); // a link or a FIFO goes, never what it points at
+    return null;
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return null;
+    try {
+      rmdirSync(path); // swapped for a folder since the listing: removed only when empty
+      return null;
+    } catch (e2: any) {
+      if (e2?.code === "ENOENT") return null;
+      return e2?.code === "ENOTDIR" ? (e?.code ?? "unknown error") : (e2?.code ?? "unknown error");
+    }
+  }
+}
+
+/** A folder named like an entry (a turn can make one): removed only when empty, never entered. */
+function removeSpoolFolder(path: string): string | null {
+  try {
+    rmdirSync(path);
+    return null;
+  } catch (e: any) {
+    return e?.code === "ENOENT" ? null : (e?.code ?? "unknown error");
+  }
+}
+
+/** Why an entry could not be read, as a fixed word: an error message can carry the entry's
+ *  path, and the turn chose its name. */
+function readFailure(e: any): string {
+  if (e instanceof SyntaxError) return "not JSON";
+  if (typeof e?.code === "string") return e.code;
+  const m = String(e?.message ?? "");
+  if (m.startsWith("not a regular file")) return "not a regular file";
+  if (m.startsWith("file over cap")) return "file over cap";
+  return "unreadable";
+}
+
+/** Register the spool's entries, at most SPOOL_MAX_PER_INGEST of them (`preferTurnId`'s first,
+ *  then the rest in name order), deleting each one it looked at whatever the outcome and the
+ *  rest unread. Folders never take a slot. A refusal is told to the entry's chat only when
+ *  `allowed` says so. Returns the count registered. */
+export async function ingestSpool(
+  spool: string,
+  dir: string,
+  nowS: number,
+  log: (line: string) => void,
+  notify: (chatId: number, text: string) => Promise<void>,
+  allowed: (chatId: number) => boolean,
+  preferTurnId?: string,
+): Promise<number> {
+  let why: string | null = null;
+  try {
+    const st = lstatSync(spool);
+    const uid = process.getuid?.();
+    if (st.isSymbolicLink()) why = "a link";
+    else if (!st.isDirectory()) why = "not a folder";
+    else if (process.platform !== "win32" && (uid === undefined || st.uid !== uid)) why = "not owned by the poller";
+  } catch (e: any) {
+    why = e?.code ?? "unreadable";
+  }
+  let names: string[] = [];
+  let folders: string[] = [];
+  if (!why) {
+    try {
+      // Dirent types come from the entry itself (lstat), never from what a link points at.
+      const listed = readdirSync(spool, { withFileTypes: true }).filter((d) => d.name.endsWith(".json"));
+      folders = listed.filter((d) => d.isDirectory()).map((d) => d.name);
+      names = listed.filter((d) => !d.isDirectory()).map((d) => d.name).sort();
+    } catch (e: any) {
+      why = e?.code ?? "unreadable";
+    }
+  }
+  if (why) {
+    log(`[RC] spool folder unsafe: ${why}`);
+    return 0;
+  }
+  if (preferTurnId && TURN_ID_RE.test(preferTurnId)) {
+    const mine = names.filter((n) => n.startsWith(`${preferTurnId}-`));
+    names = [...mine, ...names.filter((n) => !n.startsWith(`${preferTurnId}-`))];
+  }
+  const stuck: string[] = []; // failure codes of entries that could not be removed
+  const remove = (code: string | null) => void (code && stuck.push(code));
+  for (const name of folders) remove(removeSpoolFolder(join(spool, name)));
+  const extra = names.slice(SPOOL_MAX_PER_INGEST);
+  for (const name of extra) remove(removeSpoolEntry(join(spool, name)));
+  if (extra.length) log(`[RC] spool: ${extra.length} extra entries dropped unread`);
+  let registered = 0;
+  let notices = 0;
+  for (const name of names.slice(0, SPOOL_MAX_PER_INGEST)) {
+    const path = join(spool, name);
+    let entry: SpoolEntry | null = null;
+    let reason = "";
+    try {
+      const v = parseSpoolEntry(JSON.parse(readNoFollow(path, SPOOL_ENTRY_MAX_BYTES)));
+      if (v.ok) entry = v.value;
+      else reason = v.reason;
+    } catch (e: any) {
+      if (e?.code === "ENOENT") continue; // another ingest took it first
+      reason = readFailure(e);
+    }
+    remove(removeSpoolEntry(path));
+    if (!entry) {
+      log(`[RC] spool entry ${JSON.stringify(name)} refused: ${reason}`);
+      continue;
+    }
+    const a = entry;
+    let refusal: string | null;
+    try {
+      refusal = mutateStore(
+        dir,
+        (s) => {
+          try {
+            const p = registerProposal(s, { short: a.short, card: a.card, text: a.text, chatId: a.chatId, turnId: a.turnId }, nowS);
+            log(`[RC] spool registered ${p.id} for turn ${a.turnId}`);
+            return null;
+          } catch (e: any) {
+            return String(e?.message ?? e);
+          }
+        },
+        log,
+      );
+    } catch (e: any) {
+      log(`[RC] spool entry ${JSON.stringify(name)}: the store could not be written: ${e?.message ?? e}`);
+      refusal = "the routine store could not be written";
+    }
+    if (refusal === null) {
+      registered++;
+      continue;
+    }
+    log(`[RC] spool proposal for ${a.short} card ${a.card} refused: ${refusal}`);
+    if (!allowed(a.chatId)) {
+      log(`[DROP] rc spool notice: chat not allowlisted`);
+      continue;
+    }
+    if (notices >= SPOOL_NOTICES_MAX) continue;
+    notices++;
+    try {
+      await notify(a.chatId, "לא הצלחתי לרשום את התיקון לכרטיס:\n" + refusal);
+    } catch (e: any) {
+      log(`[RC] spool notice was not sent: ${e?.message ?? e}`);
+    }
+  }
+  if (stuck.length) log(`[RC] spool: ${stuck.length} entries could not be removed (${[...new Set(stuck)].sort().join(", ")})`);
+  return registered;
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -1111,6 +1308,8 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
         return 1;
       }
     }
+    const spool = io.env.RCHANNEL_SPOOL;
+    if (spool) return proposeToSpool(spool, { v: 1, short, card, text: text.replace(/\s+/g, " ").trim(), chatId, turnId, at: nowS }, io);
     try {
       mutateStore(dir, (s) => registerProposal(s, { short, card, text, chatId, turnId }, nowS), io.err);
     } catch (e: any) {
@@ -1122,6 +1321,30 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
   }
   io.err(`usage: rchannel.ts sync | ${PROPOSE_USAGE.replace("usage: rchannel.ts ", "")}`);
   return 1;
+}
+
+/** propose inside a turn on the server: refuse here what can be checked without the store, then
+ *  leave one entry for the poller (an exclusive random temp, then a rename; no folder is made). */
+function proposeToSpool(spool: string, entry: SpoolEntry, io: CliIo): number {
+  const refuse = (why: string) => {
+    io.err(`refused: ${why}`);
+    return 1;
+  };
+  if (!TURN_ID_RE.test(entry.turnId)) return refuse("TELEGRAM_TURN_ID is not a turn id the poller made");
+  if (!Number.isSafeInteger(entry.chatId)) return refuse("TELEGRAM_CHAT_ID and TELEGRAM_TURN_ID must be set (the poller sets both)");
+  if (!SHORT_RE.test(entry.short)) return refuse(`no routine request ${entry.short} in this chat`);
+  if (entry.card > LIMITS.cards) return refuse(`request ${entry.short} has no card ${entry.card}`);
+  const e = checkCorrectionText(entry.text);
+  if (e) return refuse(e);
+  const v = parseSpoolEntry(entry);
+  if (!v.ok) return refuse(v.reason);
+  try {
+    writeAtomic(join(spool, `${entry.turnId}-${randomBytes(6).toString("hex")}.json`), JSON.stringify(entry));
+  } catch (err: any) {
+    return refuse(`the new description could not be submitted (${err?.code ?? err?.message ?? err})`);
+  }
+  io.out(`submitted: if card ${entry.card} of ${entry.short} is still open, Maor gets the ✓/✗ for the new text right after your reply. Record it no other way.\n`);
+  return 0;
 }
 
 const PROPOSE_TEXT_MAX_BYTES = 4096;

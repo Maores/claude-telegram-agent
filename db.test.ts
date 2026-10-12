@@ -1,6 +1,6 @@
 import { test, expect, describe, afterAll } from "bun:test";
-import { openDb, initSchema, insertMessage, recentMessages, sanitizeFtsQuery, searchMessages, renderRecall, importHistoryJson, searchHistory, contextAround } from "./db";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { openDb, initSchema, insertMessage, recentMessages, sanitizeFtsQuery, searchMessages, renderRecall, importHistoryJson, searchHistory, contextAround, expectedSchema, schemaDrift, schemaDriftNotice, reportSchemaDrift } from "./db";
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 
@@ -133,6 +133,17 @@ const tmp = (prefix: string) => {
 };
 afterAll(() => {
   for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
+
+test("openDb creates the missing folders of a file path; :memory: still works", () => {
+  const dir = tmp("db-nested-");
+  const p = pathJoin(dir, "a", "b", "bot.db");
+  const db = openDb(p);
+  expect(existsSync(p)).toBe(true);
+  db.close();
+  const mem = openDb(":memory:");
+  expect(mem.query("SELECT COUNT(*) AS n FROM messages").get()).toEqual({ n: 0 });
+  mem.close();
 });
 
 test("importHistoryJson imports once, skips corrupt files, is idempotent", () => {
@@ -314,6 +325,103 @@ test("contextAround returns the surrounding rows of the SAME chat in order", () 
   expect(ctx.map((r) => r.id)).toEqual([...ctx.map((r) => r.id)].sort((a, b) => a - b)); // chronological
   expect(ctx.every((r) => r.content.startsWith("c1"))).toBe(true); // never leaks other chats
   expect(ctx.some((r) => r.id === target.id)).toBe(true);
+});
+
+describe("a database a turn can write", () => {
+  const dirs: string[] = [];
+  afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
+  const fileDb = () => {
+    const d = mkdtempSync(pathJoin(tmpdir(), "dbschema-"));
+    dirs.push(d);
+    return openDb(pathJoin(d, "bot.db"));
+  };
+  const pragma = (db: any, p: string) => Object.values(db.query(`PRAGMA ${p}`).get() ?? { v: null })[0];
+
+  test("every openDb sets trusted_schema off, cell_size_check on and mmap_size 0", () => {
+    for (const db of [openDb(":memory:"), fileDb()]) {
+      try {
+        expect(pragma(db, "trusted_schema")).toBe(0);
+        expect(pragma(db, "cell_size_check")).toBe(1);
+        // An in-memory database has no pager to map (the pragma returns no row); a file one says 0.
+        if (db.filename !== ":memory:") expect(pragma(db, "mmap_size")).toBe(0);
+        // The sync triggers into the FTS5 tables still work with an untrusted schema.
+        const id = insertMessage(db, { chatId: 1, role: "user", content: "zebra crossing", ts: 1 });
+        expect(searchMessages(db, 1, "zebra", 5, id + 1).length).toBe(1);
+      } finally {
+        db.close();
+      }
+    }
+  });
+
+  test("the mmap_size reading is live (this build can map, so the 0 above is openDb's doing)", () => {
+    const db = fileDb();
+    db.exec("PRAGMA mmap_size = 4096");
+    expect(pragma(db, "mmap_size")).toBe(4096);
+    db.close();
+  });
+
+  test("a fresh database has no drift, and expectedSchema names db.ts's own objects", () => {
+    const db = fileDb();
+    expect(schemaDrift(db)).toEqual([]);
+    const names = expectedSchema().map((o) => `${o.type} ${o.name}`);
+    for (const n of ["table messages", "table messages_fts", "trigger messages_ai", "trigger skills_ad", "index idx_xp_events_ref", "table xp_events"]) expect(names).toContain(n);
+    expect(names.some((n) => /_fts_(data|idx|content|docsize|config)$/.test(n))).toBe(false);
+    db.close();
+  });
+
+  test("a planted trigger is reported as added", () => {
+    const db = fileDb();
+    db.exec("CREATE TRIGGER evil AFTER INSERT ON messages BEGIN DELETE FROM meta; END;");
+    expect(schemaDrift(db)).toEqual(['added trigger "evil"']);
+    db.close();
+  });
+
+  test("a trigger dropped and redefined with the same name and other SQL is reported as changed", () => {
+    const db = fileDb();
+    db.exec("DROP TRIGGER messages_ai; CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN INSERT INTO meta(key, value) VALUES ('x', new.content); END;");
+    expect(schemaDrift(db)).toEqual(['changed trigger "messages_ai"']);
+    db.close();
+  });
+
+  test("a planted view is reported as added; a dropped trigger as missing", () => {
+    const db = fileDb();
+    db.exec("CREATE VIEW v1 AS SELECT * FROM messages; DROP TRIGGER memory_au;");
+    expect(schemaDrift(db).sort()).toEqual(['added view "v1"', 'missing trigger "memory_au"']);
+    db.close();
+  });
+
+  test("a planted name is quoted with its control characters escaped", () => {
+    const db = fileDb();
+    db.exec(`CREATE TABLE "x\ny" (a)`);
+    expect(schemaDrift(db)).toEqual(['added table "x\\ny"']);
+    db.close();
+  });
+
+  test("reportSchemaDrift logs the names and sends the owner one count line; silent when clean", async () => {
+    const db = fileDb();
+    const sent: string[] = [];
+    const logs: string[] = [];
+    expect(await reportSchemaDrift(db, async (t) => { sent.push(t); }, (l) => logs.push(l))).toEqual([]);
+    expect(sent).toEqual([]);
+    expect(logs).toEqual([]);
+    db.exec("CREATE VIEW planted AS SELECT 1;");
+    await reportSchemaDrift(db, async (t) => { sent.push(t); }, (l) => logs.push(l));
+    expect(logs).toEqual(['[ERR] database schema drift: added view "planted"']);
+    expect(sent).toEqual(["במסד הנתונים נמצאו 1 שינויי מבנה לא צפויים"]);
+    // A failing send is logged, never thrown.
+    await reportSchemaDrift(db, async () => { throw new Error("down"); }, (l) => logs.push(l));
+    expect(logs.at(-1)).toBe("[ERR] database schema drift notice failed: down");
+    db.close();
+  });
+
+  test("the FTS5 shadow tables are not reported, and the owner's notice carries only a count", () => {
+    const db = fileDb();
+    const shadows = db.query("SELECT name FROM sqlite_master WHERE name LIKE '%_fts_%'").all() as { name: string }[];
+    expect(shadows.length).toBeGreaterThan(5);
+    expect(schemaDrift(db)).toEqual([]);
+    expect(schemaDriftNotice(3)).toBe("במסד הנתונים נמצאו 3 שינויי מבנה לא צפויים");
+    db.close();
+  });
 });
 
 test("contextAround of an unknown id returns []", () => {

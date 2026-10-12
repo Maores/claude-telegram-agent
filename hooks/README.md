@@ -50,8 +50,8 @@ It enforces four layers:
    layer 3 refuses edits to it.
 
 **Fail-closed:** if a guard rule throws on a real tool call, the hook denies
-rather than allows. A payload it can't parse at all is passed through (exit 0)
-so a malformed hook event can never brick the bot.
+rather than allows, and a payload it can't parse at all is refused too (exit 2):
+a call the guard cannot read is a call it cannot clear.
 
 ## How this pairs with the poller's `--disallowedTools`
 
@@ -69,16 +69,37 @@ the health probe) is also started without the `Monitor` tool
 (`guard.ALWAYS_DISALLOWED_TOOLS`, added by `guard.withAlwaysDisallowed`). An
 `[AUTO]` turn gets it inside its own `--disallowedTools` list, so there is one flag.
 
-## Wiring it on the droplet — NOT applied automatically
+## Wiring it on the droplet — managed settings, failing closed
 
-> **This PR does not register the hook.** Adding it changes how every `claude -p`
-> spawn behaves, so it is left for a deliberate deploy step. Nothing here edits
-> `settings.json`.
+After the hardening rollout (`DEPLOY.md` step 17, part R5) the hook is wired in
+`/etc/claude-code/managed-settings.json`, root-owned, so no turn can change or
+remove it. The tracked copy is `deploy/managed-settings.json`; the nightly
+integrity check (`managed-settings-match`) compares the installed file with it.
 
-Merge the following into the bot's Claude Code settings. On the server the
-wiring lives in the untracked `~/claude-bot/.claude/settings.local.json` (the
-nightly `backup.ts` copies it), never in the tracked `.claude/settings.json`,
-which a deploy would autosave and reset:
+- `allowManagedHooksOnly: true` blocks user, project, local and plugin hooks, so
+  a turn cannot add a hook of its own beside the guard.
+- The command is sealed: it runs from the repo folder with an emptied
+  environment (only `PATH`, a `HOME` the turn cannot write, and
+  `CLAUDE_AUTO_SESSION`), under `timeout -k 5 30`, with Bun's
+  `--no-env-file` and the empty config `deploy/empty-bunfig.toml`.
+- It **fails closed**: exit 0 allows and exit 2 refuses, as before; any other
+  exit (Bun missing, the timeout, a crash before the guard decides) prints
+  `[guard] hook failed to run (rc=<n>), failing closed` and becomes exit 2. Part
+  R5's proof 3 shows it with a missing config file.
+- The matcher is the same as in the local wiring below (see its notes).
+
+`settings.local.json` keeps the old wiring (below) until part R8 as the way
+back; R8 moves the file aside, so from then on it no longer carries the hook,
+and the integrity check `no-settings-overrides` reports a settings file that
+holds hooks, env or mode overrides if one comes back.
+
+### Before the rollout: the local settings file
+
+Before the rollout, or after its way back, the hook is wired by merging the
+following into the bot's Claude Code settings. On the server that wiring lives
+in the untracked `~/claude-bot/.claude/settings.local.json` (the nightly
+`backup.ts` copies it), never in the tracked `.claude/settings.json`, which a
+deploy would autosave and reset:
 
 ```json
 {

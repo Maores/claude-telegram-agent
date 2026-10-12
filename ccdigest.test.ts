@@ -1,5 +1,5 @@
 import { test, expect, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, rmSync, symlinkSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Entry, Journal, JournalDay } from "./ccjournal";
@@ -20,6 +20,17 @@ import {
   isPaused,
   parseJournal,
   loadJournal,
+  digestDir,
+  digestControlDir,
+  digestViewDir,
+  runDigest,
+  statusReport,
+  resumeDigest,
+  lastDigest,
+  writeStatusSnapshot,
+  readStatusSnapshot,
+  takeResumeRequest,
+  type DigestDeps,
   type DigestState,
 } from "./ccdigest";
 
@@ -341,6 +352,26 @@ test("isPaused follows the paused file", () => {
   expect(isPaused(dir)).toBe(true);
 });
 
+test.skipIf(process.platform === "win32")("a link named paused counts by its own presence; its target is never consulted", () => {
+  const dir = tmp();
+  symlinkSync(join(dir, "nowhere"), join(dir, "paused")); // dangling
+  expect(isPaused(dir)).toBe(true);
+  const dir2 = tmp();
+  const closed = join(dir2, "closed");
+  mkdirSync(closed);
+  writeFileSync(join(closed, "secret"), "x");
+  symlinkSync(join(closed, "missing"), join(dir2, "paused")); // a missing target
+  expect(isPaused(dir2)).toBe(true);
+  const dir3 = tmp();
+  symlinkSync(join(closed, "secret"), join(dir3, "paused"));
+  chmodSync(closed, 0o000); // stat'ing through the link would fail for anyone but root
+  try {
+    expect(isPaused(dir3)).toBe(true);
+  } finally {
+    chmodSync(closed, 0o700);
+  }
+});
+
 test("parseJournal validates the shape, keeps notes, stats and the copy, and drops malformed parts", () => {
   expect(parseJournal(null)).toBeNull();
   expect(parseJournal({ v: 1, pushedAt: 1, days: [] })).toBeNull(); // no sanitizer version
@@ -377,4 +408,140 @@ test("loadJournal reports a missing, unreadable or wrongly shaped file", () => {
   expect(loadJournal(dir).error).toContain("unexpected shape");
   writeFileSync(join(dir, "journal.json"), JSON.stringify(J([])));
   expect(loadJournal(dir)).toEqual({ journal: J([]), error: null });
+});
+
+// --- control and view folders (server hardening: the journal folder is closed to turns) ---------
+
+test("the control and view folders are the journal folder in the repo layout, and fixed folders under STATE_DIR", () => {
+  expect(digestControlDir({})).toBe(digestDir());
+  expect(digestViewDir({})).toBe(digestDir());
+  const env = { STATE_DIR: "/home/someone/state" };
+  expect(digestControlDir(env)).toBe(join("/home/someone/state", "shared", "cc-digest"));
+  expect(digestViewDir(env)).toBe(join("/home/someone/state", "cc-digest"));
+});
+
+const THU_2131 = "2026-09-24T18:31:00Z";
+const DIGEST_TEXT = "סיכום העבודה עם Claude Code ליום חמישי 24/09\n\nפרויקטים:\n• x";
+
+/** A runDigest set-up whose journal, control and view folders are three different places;
+ *  the view folder does not exist yet (a sending run may create it). */
+function split(over: Partial<DigestDeps> = {}) {
+  const dir = tmp();
+  const controlDir = tmp();
+  const viewDir = join(tmp(), "view");
+  const journal = J([{ date: "2026-09-24", entries: [E("10:00", "ExampleApp: release 1.2 merged.")] }], Math.floor(Date.parse(THU_2131) / 1000));
+  writeFileSync(join(dir, "journal.json"), JSON.stringify(journal));
+  const sent: string[] = [];
+  const deps: DigestDeps = {
+    now: () => at(THU_2131),
+    dir,
+    controlDir,
+    viewDir,
+    pid: 4242,
+    stopping: () => false,
+    targetChat: () => 42,
+    makePrompt: (ask) => ask,
+    generate: async () => ({ answer: DIGEST_TEXT, outcome: { timedOut: false, gotResult: true, isError: false, exitCode: 0 } }),
+    send: async (_chat, text) => {
+      sent.push(text);
+    },
+    persist: () => {},
+    sleep: async () => {},
+    log: () => {},
+    err: () => {},
+    ...over,
+  };
+  return { dir, controlDir, viewDir, deps, sent };
+}
+
+test("a run with `paused` in the control folder records paused; a `paused` beside the journal no longer counts", async () => {
+  const a = split();
+  writeFileSync(join(a.controlDir, "paused"), "x");
+  await runDigest(a.deps);
+  expect(a.sent).toEqual([]);
+  expect(loadDigestState(a.dir).state?.lastOutcome?.kind).toBe("paused");
+
+  const b = split();
+  writeFileSync(join(b.dir, "paused"), "x");
+  await runDigest(b.deps);
+  expect(b.sent).toEqual([DIGEST_TEXT]);
+});
+
+test("a sending run keeps the text for `last` in the view folder only", async () => {
+  const s = split();
+  await runDigest(s.deps);
+  expect(s.sent).toEqual([DIGEST_TEXT]);
+  expect(readFileSync(join(s.viewDir, "last-digest.txt"), "utf8")).toBe(DIGEST_TEXT);
+  expect(lastDigest(s.viewDir)).toBe(DIGEST_TEXT);
+  expect(existsSync(join(s.dir, "last-digest.txt"))).toBe(false);
+  expect(existsSync(join(s.controlDir, "last-digest.txt"))).toBe(false);
+  expect(readdirSync(s.viewDir)).toEqual(["last-digest.txt"]); // no temp file left behind
+});
+
+test("statusReport and resumeDigest use the control folder for the pause", async () => {
+  const s = split();
+  writeFileSync(join(s.controlDir, "paused"), "x");
+  await runDigest(s.deps);
+  const now = at(THU_2131);
+  expect(statusReport(now, s.dir, s.controlDir)).toContain("paused: yes");
+  expect(statusReport(now, s.dir)).toContain("paused: no"); // the journal folder alone knows of no pause
+  expect(resumeDigest(s.dir, now, s.controlDir)).toBe("resumed: tonight's digest runs on the next tick");
+  expect(existsSync(join(s.controlDir, "paused"))).toBe(false);
+  await runDigest(s.deps);
+  expect(s.sent).toEqual([DIGEST_TEXT]);
+});
+
+test("writeStatusSnapshot writes status.txt when the text changed or the snapshot is a minute old, and says when it was taken", () => {
+  const view = tmp();
+  const t0 = at("2026-09-24T12:00:00Z");
+  const later = (s: number) => new Date(t0.getTime() + s * 1000);
+  expect(readStatusSnapshot(view)).toBe("no status snapshot yet");
+  expect(writeStatusSnapshot(view, "paused: no", t0)).toBe(true);
+  expect(readFileSync(join(view, "status.txt"), "utf8")).toBe("paused: no\nsnapshot: 2026-09-24T12:00:00.000Z");
+  expect(writeStatusSnapshot(view, "paused: no", later(30))).toBe(false); // the next 30 s tick: unchanged
+  expect(readStatusSnapshot(view)).toBe("paused: no\nsnapshot: 2026-09-24T12:00:00.000Z");
+  expect(writeStatusSnapshot(view, "paused: no", later(60))).toBe(true); // a minute on: the time is refreshed
+  expect(readStatusSnapshot(view)).toBe("paused: no\nsnapshot: 2026-09-24T12:01:00.000Z");
+  expect(writeStatusSnapshot(view, "paused: yes", later(70))).toBe(true); // a change goes out at once
+  expect(readStatusSnapshot(view)).toBe("paused: yes\nsnapshot: 2026-09-24T12:01:10.000Z");
+  expect(readdirSync(view)).toEqual(["status.txt"]);
+});
+
+test("takeResumeRequest consumes a request exactly once", () => {
+  const ctl = tmp();
+  expect(takeResumeRequest(ctl)).toBe(false);
+  writeFileSync(join(ctl, "resume-requested"), "x");
+  expect(takeResumeRequest(ctl)).toBe(true);
+  expect(existsSync(join(ctl, "resume-requested"))).toBe(false);
+  expect(takeResumeRequest(ctl)).toBe(false);
+});
+
+test("the CLI in snapshot mode: pause and resume are control files, status and last read the view folder", () => {
+  const state = tmp();
+  const journalDir = tmp();
+  const ctl = join(state, "shared", "cc-digest");
+  const view = join(state, "cc-digest");
+  mkdirSync(ctl, { recursive: true }); // the rollout makes both folders; snapshot mode makes none
+  mkdirSync(view, { recursive: true });
+  const env = { ...process.env, STATE_DIR: state, CC_JOURNAL_DIR: journalDir, CC_DIGEST_SNAPSHOT: "1" };
+  const cli = (cmd: string) => {
+    const r = Bun.spawnSync([process.execPath, join(import.meta.dir, "ccdigest.ts"), cmd], { env, cwd: import.meta.dir });
+    return { code: r.exitCode, out: r.stdout.toString().trim() };
+  };
+  expect(cli("pause").code).toBe(0);
+  expect(existsSync(join(ctl, "paused"))).toBe(true);
+  expect(existsSync(join(journalDir, "paused"))).toBe(false);
+  expect(cli("resume")).toEqual({ code: 0, out: "resume requested: the poller applies it within a minute" });
+  expect(existsSync(join(ctl, "paused"))).toBe(false);
+  expect(existsSync(join(ctl, "resume-requested"))).toBe(true);
+  // a pause after a resume request that is still waiting cancels the request
+  expect(cli("pause").code).toBe(0);
+  expect(existsSync(join(ctl, "resume-requested"))).toBe(false);
+  expect(cli("status").out).toBe("no status snapshot yet");
+  writeStatusSnapshot(view, "paused: yes\ntonight: paused", at("2026-09-24T12:00:00Z"));
+  expect(cli("status").out).toBe("paused: yes\ntonight: paused\nsnapshot: 2026-09-24T12:00:00.000Z");
+  expect(cli("last").out).toBe("no digest has been sent yet");
+  writeFileSync(join(view, "last-digest.txt"), "the text");
+  expect(cli("last").out).toBe("the text");
+  expect(readdirSync(journalDir)).toEqual([]); // the closed journal folder is never touched
 });

@@ -1,5 +1,5 @@
 import { test, expect, afterAll } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sacredDay } from "./ccdigest";
@@ -15,6 +15,7 @@ import {
   dayMonth,
   emptyStore,
   expireProposals,
+  ingestSpool,
   isGoneError,
   loadStore,
   markSent,
@@ -914,4 +915,283 @@ test("lookalike brackets are normalized before the fence replaces them", () => {
   const lt = String.fromCharCode(0xff1c);
   const gt = String.fromCharCode(0xff1e);
   expect(asData(`x ${lt}/routine-card-other${gt} y`, 100)).toBe("x ‹/routine-card-other› y");
+});
+
+// --- the propose spool (the turn cannot write ~/rchannel; the poller ingests) ----------------
+
+const SPOOL_ENV = { TELEGRAM_CHAT_ID: "42", TELEGRAM_TURN_ID: "t1" };
+const PROPOSE_ARGS = ["propose", "--request", "q1", "--card", "1"];
+const goodEntry = { v: 1, short: "q1", card: 1, text: "תיאור חדש.", chatId: 42, turnId: "t1", at: NOW };
+
+function spoolKit() {
+  const logs: string[] = [];
+  const notes: [number, string][] = [];
+  return {
+    logs,
+    notes,
+    log: (l: string) => logs.push(l),
+    notify: async (c: number, t: string) => void notes.push([c, t]),
+  };
+}
+
+test("propose with RCHANNEL_SPOOL writes one entry into the spool and never touches the store", async () => {
+  const store = join(scratch(), "rc"); // must never be created
+  const spool = scratch();
+  const r = io(store, "תיאור   חדש.\n", { ...SPOOL_ENV, RCHANNEL_SPOOL: spool });
+  expect(await runCli(PROPOSE_ARGS, r.cli)).toBe(0);
+  expect(r.err).toEqual([]);
+  expect(r.out.join("")).toBe("submitted: if card 1 of q1 is still open, Maor gets the ✓/✗ for the new text right after your reply. Record it no other way.\n");
+  const names = readdirSync(spool);
+  expect(names.length).toBe(1);
+  expect(names[0]).toMatch(/^t1-[0-9a-f]{12}\.json$/);
+  expect(JSON.parse(readFileSync(join(spool, names[0]), "utf8"))).toEqual(goodEntry);
+  expect(existsSync(store)).toBe(false);
+});
+
+test("in spool mode the turn refuses what it can check without the store, and writes nothing", async () => {
+  const store = join(scratch(), "rc");
+  const spool = scratch();
+  const env = { ...SPOOL_ENV, RCHANNEL_SPOOL: spool };
+  const cases: [string, Record<string, string>, string[], string][] = [
+    ["עולה $5 בחודש.", env, PROPOSE_ARGS, "refused: the new description holds a link, a path, an address or a command"],
+    ["", env, PROPOSE_ARGS, "refused: the new description is empty"],
+    ["תיאור.", { ...env, TELEGRAM_TURN_ID: "../x" }, PROPOSE_ARGS, "refused: TELEGRAM_TURN_ID is not a turn id the poller made"],
+    ["תיאור.", env, ["propose", "--request", "../q1", "--card", "1"], "refused: no routine request ../q1 in this chat"],
+    ["תיאור.", env, ["propose", "--request", "q1", "--card", "31"], "refused: request q1 has no card 31"],
+  ];
+  for (const [input, e, args, why] of cases) {
+    const r = io(store, input, e);
+    expect(await runCli(args, r.cli)).toBe(1);
+    expect(r.err.join("")).toBe(why);
+    expect(r.out).toEqual([]);
+  }
+  const missing = join(scratch(), "no-such-spool");
+  const r = io(store, "תיאור.", { ...env, RCHANNEL_SPOOL: missing });
+  expect(await runCli(PROPOSE_ARGS, r.cli)).toBe(1);
+  expect(r.err.join("")).toContain("refused: the new description could not be submitted");
+  expect(existsSync(missing)).toBe(false); // no mkdir
+  expect(readdirSync(spool)).toEqual([]);
+  expect(existsSync(store)).toBe(false);
+});
+
+test("ingestSpool registers a valid entry with the same store result as a direct propose", async () => {
+  const direct = scratch();
+  const viaSpool = scratch();
+  const spool = scratch();
+  for (const d of [direct, viaSpool]) mutateStore(d, (s) => sent(s, req("map-1")));
+  expect(await runCli(PROPOSE_ARGS, io(direct, "תיאור   חדש.", SPOOL_ENV).cli)).toBe(0);
+  expect(await runCli(PROPOSE_ARGS, io(viaSpool, "תיאור   חדש.", { ...SPOOL_ENV, RCHANNEL_SPOOL: spool }).cli)).toBe(0);
+  expect(loadStore(viaSpool).proposals).toEqual([]); // nothing until the poller ingests
+  const k = spoolKit();
+  expect(await ingestSpool(spool, viaSpool, NOW, k.log, k.notify, () => true)).toBe(1);
+  expect(loadStore(viaSpool).proposals).toEqual(loadStore(direct).proposals);
+  expect(loadStore(viaSpool).proposals.map((p) => [p.turnId, p.status, p.text])).toEqual([["t1", "pending", "תיאור חדש."]]);
+  expect(readdirSync(spool)).toEqual([]);
+  expect(k.notes).toEqual([]);
+  // the turn's ✓/✗ then goes out as it always did
+  const tg = fakeTelegram(viaSpool);
+  await sendRcProposals(tg.deps, 42, "t1");
+  expect(tg.sends.length).toBe(1);
+  expect(loadStore(viaSpool).proposals[0].status).toBe("sent");
+  expect(await ingestSpool(spool, viaSpool, NOW, k.log, k.notify, () => true)).toBe(0); // an empty spool
+});
+
+test("an entry for an answered card tells an allowlisted chat why and is deleted; another chat hears nothing", async () => {
+  const dir = scratch();
+  const spool = scratch();
+  mutateStore(dir, (s) => {
+    sent(s, req("map-1"));
+    tap(s, "rc:q1:1:a");
+  });
+  writeFileSync(join(spool, "t1-aaaaaaaaaaaa.json"), JSON.stringify(goodEntry));
+  const k = spoolKit();
+  expect(await ingestSpool(spool, dir, NOW, k.log, k.notify, (c) => c === 42)).toBe(0);
+  expect(k.notes).toEqual([[42, "לא הצלחתי לרשום את התיקון לכרטיס:\ncard 1 of q1 was already answered"]]);
+  expect(readdirSync(spool)).toEqual([]);
+  expect(loadStore(dir).proposals).toEqual([]);
+
+  writeFileSync(join(spool, "t1-bbbbbbbbbbbb.json"), JSON.stringify(goodEntry));
+  const k2 = spoolKit();
+  expect(await ingestSpool(spool, dir, NOW, k2.log, k2.notify, () => false)).toBe(0);
+  expect(k2.notes).toEqual([]);
+  expect(k2.logs.join("\n")).toContain("chat not allowlisted");
+  expect(readdirSync(spool)).toEqual([]);
+});
+
+test("invalid entries are deleted and refused without a notice; a writer's temp is left alone", async () => {
+  const dir = scratch();
+  const spool = scratch();
+  mutateStore(dir, (s) => sent(s, req("map-1")));
+  const bad: Record<string, string> = {
+    "a.json": JSON.stringify({ ...goodEntry, card: "1" }),
+    "b.json": JSON.stringify({ ...goodEntry, chatId: "42" }),
+    "c.json": JSON.stringify({ ...goodEntry, extra: 1 }),
+    "d.json": JSON.stringify({ ...goodEntry, turnId: "../t1" }),
+    "e.json": JSON.stringify({ ...goodEntry, v: 2 }),
+    "f.json": JSON.stringify(goodEntry) + " ".repeat(9 * 1024), // valid JSON, over 8 KB
+    "g.json": "{not json",
+    "h.json": JSON.stringify({ ...goodEntry, text: "ראה https://example.com/x" }),
+  };
+  for (const [name, body] of Object.entries(bad)) writeFileSync(join(spool, name), body);
+  const tmp = "t1-cccccccccccc.json.123.abcdef.tmp";
+  writeFileSync(join(spool, tmp), JSON.stringify(goodEntry));
+  const k = spoolKit();
+  expect(await ingestSpool(spool, dir, NOW, k.log, k.notify, () => true)).toBe(0);
+  expect(readdirSync(spool)).toEqual([tmp]);
+  expect(k.notes).toEqual([]);
+  expect(k.logs.filter((l) => l.startsWith("[RC] spool entry")).length).toBe(Object.keys(bad).length);
+  expect(k.logs.join("\n")).toContain("file over cap");
+  expect(k.logs.join("\n")).not.toContain(spool); // a fixed reason, never the path holding the turn's name
+  expect(loadStore(dir).proposals).toEqual([]);
+});
+
+test("one ingest handles at most 20 entries, the first in name order; the rest are deleted unread", async () => {
+  const dir = scratch();
+  const spool = scratch();
+  mutateStore(dir, (s) => sent(s, req("map-1")));
+  const turn = (i: number) => `t${String(i).padStart(3, "0")}`;
+  for (let i = 0; i < 50; i++) writeFileSync(join(spool, `${turn(i)}-aaaaaaaaaaaa.json`), JSON.stringify({ ...goodEntry, turnId: turn(i) }));
+  writeFileSync(join(spool, "z-overcap.json"), "x".repeat(9 * 1024)); // among the extras: never read
+  const k = spoolKit();
+  expect(await ingestSpool(spool, dir, NOW, k.log, k.notify, () => true)).toBe(20);
+  expect(loadStore(dir).proposals.map((p) => p.turnId)).toEqual(Array.from({ length: 20 }, (_, i) => turn(i)));
+  expect(readdirSync(spool)).toEqual([]);
+  expect(k.logs.filter((l) => l.includes("dropped unread"))).toEqual(["[RC] spool: 31 extra entries dropped unread"]);
+  expect(k.logs.join("\n")).not.toContain("over cap");
+});
+
+test("planted folders never take the ingest's slots, and their noise is one line per ingest", async () => {
+  const dir = scratch();
+  const spool = scratch();
+  mutateStore(dir, (s) => sent(s, req("map-1")));
+  for (let i = 0; i < 22; i++) {
+    const f = join(spool, `${String(i).padStart(4, "0")}.json`); // sorts before every real entry
+    mkdirSync(f);
+    writeFileSync(join(f, "keep"), "x"); // not empty: the poller cannot remove it
+  }
+  writeFileSync(join(spool, "t1-aaaaaaaaaaaa.json"), JSON.stringify(goodEntry));
+  const k = spoolKit();
+  expect(await ingestSpool(spool, dir, NOW, k.log, k.notify, () => true)).toBe(1);
+  expect(loadStore(dir).proposals.map((p) => p.turnId)).toEqual(["t1"]);
+  expect(k.logs.filter((l) => !l.startsWith("[RC] spool registered"))).toEqual(["[RC] spool: 22 entries could not be removed (ENOTEMPTY)"]);
+  // and the next ingest still takes the next real entry
+  writeFileSync(join(spool, "t2-bbbbbbbbbbbb.json"), JSON.stringify({ ...goodEntry, card: 2, turnId: "t2" }));
+  const k2 = spoolKit();
+  expect(await ingestSpool(spool, dir, NOW, k2.log, k2.notify, () => true)).toBe(1);
+  expect(k2.logs.filter((l) => l.includes("could not be removed")).length).toBe(1);
+});
+
+test("the ended turn's entries are read first, so planted entries that sort first cannot starve it", async () => {
+  const setup = () => {
+    const dir = scratch();
+    const spool = scratch();
+    mutateStore(dir, (s) => sent(s, req("map-1")));
+    for (let i = 0; i < 25; i++) writeFileSync(join(spool, `${String(i).padStart(4, "0")}.json`), "{not json");
+    writeFileSync(join(spool, "t1-aaaaaaaaaaaa.json"), JSON.stringify(goodEntry));
+    return { dir, spool };
+  };
+  const plain = setup(); // without a preference the planted names take every slot
+  const k0 = spoolKit();
+  expect(await ingestSpool(plain.spool, plain.dir, NOW, k0.log, k0.notify, () => true)).toBe(0);
+  const a = setup();
+  const k = spoolKit();
+  expect(await ingestSpool(a.spool, a.dir, NOW, k.log, k.notify, () => true, "t1")).toBe(1);
+  expect(loadStore(a.dir).proposals.map((p) => p.turnId)).toEqual(["t1"]);
+  expect(k.logs.filter((l) => l.startsWith("[RC] spool entry")).length).toBe(19); // the same cap of 20
+  expect(k.logs).toContain("[RC] spool: 6 extra entries dropped unread");
+  expect(readdirSync(a.spool)).toEqual([]);
+});
+
+test("an entry another ingest already took is skipped without a log line", async () => {
+  const dir = scratch();
+  const spool = scratch();
+  mutateStore(dir, (s) => {
+    sent(s, req("map-1"));
+    tap(s, "rc:q1:1:a");
+  });
+  writeFileSync(join(spool, "t1-aaaaaaaaaaaa.json"), JSON.stringify(goodEntry)); // refused: card 1 answered
+  const later = join(spool, "t2-bbbbbbbbbbbb.json");
+  writeFileSync(later, JSON.stringify({ ...goodEntry, card: 2, turnId: "t2" }));
+  const k = spoolKit();
+  const notify = async (c: number, t: string) => {
+    rmSync(later); // a concurrent ingest takes the next entry while this one awaits Telegram
+    await k.notify(c, t);
+  };
+  expect(await ingestSpool(spool, dir, NOW, k.log, notify, () => true)).toBe(0);
+  expect(k.notes.length).toBe(1);
+  expect(k.logs.join("\n")).not.toContain("ENOENT");
+  expect(k.logs.filter((l) => l.startsWith("[RC] spool entry"))).toEqual([]);
+});
+
+test("a spool path that is missing or not a folder is unsafe and ingests nothing", async () => {
+  const dir = scratch();
+  const file = join(scratch(), "spool");
+  writeFileSync(file, JSON.stringify(goodEntry));
+  for (const p of [join(scratch(), "missing"), file]) {
+    const k = spoolKit();
+    expect(await ingestSpool(p, dir, NOW, k.log, k.notify, () => true)).toBe(0);
+    expect(k.logs.join("\n")).toContain("[RC] spool folder unsafe");
+  }
+  expect(readFileSync(file, "utf8")).toBe(JSON.stringify(goodEntry));
+});
+
+test.skipIf(process.platform === "win32")("a link entry and a FIFO entry are refused and deleted, their targets untouched", async () => {
+  const dir = scratch();
+  const spool = scratch();
+  mutateStore(dir, (s) => sent(s, req("map-1")));
+  const target = join(scratch(), "outside.json");
+  writeFileSync(target, JSON.stringify(goodEntry));
+  symlinkSync(target, join(spool, "t1-link00000000.json"));
+  const fifo = join(spool, "t1-fifo00000000.json");
+  expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+  // A blocking open would freeze this process's event loop, so a timer race here could never
+  // fire: the ingest runs in a child process that is killed if it does not finish in time.
+  const child = [
+    "const { ingestSpool } = await import(process.env.RC_MODULE);",
+    "const logs = [];",
+    "const n = await ingestSpool(process.env.RC_SPOOL, process.env.RC_DIR, Number(process.env.RC_NOW), (l) => logs.push(l), async () => logs.push('NOTIFIED'), () => true);",
+    "console.log(JSON.stringify({ n, logs }));",
+  ].join("\n");
+  const r = Bun.spawnSync([process.execPath, "-e", child], {
+    env: { ...process.env, RC_MODULE: join(import.meta.dir, "rchannel.ts"), RC_SPOOL: spool, RC_DIR: dir, RC_NOW: String(NOW) },
+    timeout: 5000,
+  });
+  expect(r.exitedDueToTimeout ?? false).toBe(false);
+  expect(r.exitCode).toBe(0);
+  const out = JSON.parse(r.stdout.toString()) as { n: number; logs: string[] };
+  expect(out.n).toBe(0);
+  expect(readdirSync(spool)).toEqual([]);
+  expect(readFileSync(target, "utf8")).toBe(JSON.stringify(goodEntry));
+  expect(loadStore(dir).proposals).toEqual([]);
+  expect(out.logs).not.toContain("NOTIFIED");
+  expect(out.logs.filter((l) => l.startsWith("[RC] spool entry")).length).toBe(2);
+});
+
+test.skipIf(process.platform === "win32")("an entry name with a newline never puts a raw newline in the log", async () => {
+  const dir = scratch();
+  const spool = scratch();
+  mutateStore(dir, (s) => sent(s, req("map-1")));
+  writeFileSync(join(spool, "a\n[ERR] forged.json"), "{not json");
+  writeFileSync(join(spool, "b\n[ERR] forged.json"), JSON.stringify(goodEntry) + " ".repeat(9 * 1024)); // over cap
+  mkdirSync(join(spool, "c\n[ERR] forged.json")); // a folder: never read, removed while empty
+  const k = spoolKit();
+  expect(await ingestSpool(spool, dir, NOW, k.log, k.notify, () => true)).toBe(0);
+  expect(k.logs.filter((l) => l.startsWith("[RC] spool entry")).length).toBe(2);
+  for (const l of k.logs) expect(l).not.toContain("\n");
+  expect(k.logs.join("|")).toContain(JSON.stringify("a\n[ERR] forged.json"));
+  expect(readdirSync(spool)).toEqual([]);
+});
+
+test.skipIf(process.platform === "win32")("a linked spool folder is unsafe: nothing in its target is read or deleted", async () => {
+  const dir = scratch();
+  mutateStore(dir, (s) => sent(s, req("map-1")));
+  const real = scratch();
+  writeFileSync(join(real, "t1-aaaaaaaaaaaa.json"), JSON.stringify(goodEntry));
+  const link = join(scratch(), "spool");
+  symlinkSync(real, link);
+  const k = spoolKit();
+  expect(await ingestSpool(link, dir, NOW, k.log, k.notify, () => true)).toBe(0);
+  expect(k.logs.join("\n")).toContain("[RC] spool folder unsafe");
+  expect(readdirSync(real)).toEqual(["t1-aaaaaaaaaaaa.json"]);
+  expect(loadStore(dir).proposals).toEqual([]);
 });

@@ -17,7 +17,7 @@
  *   bun run ccdigest.ts resync          mark every entry dated before today as sent
  *   bun run ccdigest.ts calendar        check the Hebrew calendar for the next 400 nights
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -33,6 +33,7 @@ import {
   type NoteStats,
 } from "./ccjournal.ts";
 import { detectUpstreamError } from "./usage.ts";
+import { REPO_DIR, stateDir, writeAtomic, readNoFollow } from "./paths.ts";
 
 /** 21:30 as minutes after local midnight. */
 export const DIGEST_MINUTE = 21 * 60 + 30;
@@ -276,7 +277,8 @@ export function selectPending(journal: Journal, state: DigestState): Selection {
 }
 
 // ---------------------------------------------------------------------------
-// Server files: ~/cc-journal/{journal.json, state.json, paused, last-digest.txt}
+// Server files: ~/cc-journal/{journal.json, state.json}; `paused` in the control folder and
+// `last-digest.txt` in the view folder (both ~/cc-journal unless STATE_DIR is set)
 // ---------------------------------------------------------------------------
 
 const SENT_KEEP_DAYS = 14;
@@ -284,6 +286,63 @@ const OUTCOME_KINDS: OutcomeKind[] = ["running", "sending", "sent", "quiet", "pa
 
 export function digestDir(): string {
   return process.env.CC_JOURNAL_DIR ?? join(homedir(), "cc-journal");
+}
+
+type Env = Record<string, string | undefined>;
+
+/** Where pause and resume requests live. Under STATE_DIR the journal folder is closed to turns,
+ *  so a turn writes `paused` and `resume-requested` in shared/cc-digest instead; the poller only
+ *  tests them for existence and removes them, never reads their content. */
+export function digestControlDir(env: Env = process.env): string {
+  return stateDir(env) === REPO_DIR ? digestDir() : join(stateDir(env), "shared", "cc-digest");
+}
+
+/** Where a turn reads `status.txt` and `last-digest.txt`: a poller-only folder under STATE_DIR. */
+export function digestViewDir(env: Env = process.env): string {
+  return stateDir(env) === REPO_DIR ? digestDir() : join(stateDir(env), "cc-digest");
+}
+
+const NO_SNAPSHOT = "no status snapshot yet";
+
+const SNAPSHOT_REFRESH_MS = 60_000;
+
+/** Replace `status.txt` in the view folder, ending with a `snapshot: <ISO time>` line so a turn can
+ *  tell a stale one (a digest in flight, the poller down). Written when the text changed or the
+ *  last snapshot is a minute old, so the 30 s tick rewrites it at most about once a minute; true
+ *  when it was written. */
+export function writeStatusSnapshot(viewDir: string, text: string, now: Date = new Date()): boolean {
+  const path = join(viewDir, "status.txt");
+  let current: string | null = null;
+  try {
+    current = readNoFollow(path);
+  } catch {}
+  const m = current === null ? null : /^([\s\S]*)\nsnapshot: (\S+)$/.exec(current);
+  const takenMs = m ? Date.parse(m[2]) : NaN;
+  if (m && m[1] === text && now.getTime() - takenMs < SNAPSHOT_REFRESH_MS) return false;
+  writeAtomic(path, `${text}\nsnapshot: ${now.toISOString()}`);
+  return true;
+}
+
+/** `status` inside a turn: the poller's snapshot, never followed through a link. */
+export function readStatusSnapshot(viewDir: string): string {
+  try {
+    return readNoFollow(join(viewDir, "status.txt"));
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return NO_SNAPSHOT;
+    throw e;
+  }
+}
+
+/** Remove a turn's resume request; true when there was one. Only an unlink, so a link or a FIFO
+ *  a turn planted there is never followed or read. */
+export function takeResumeRequest(controlDir: string): boolean {
+  try {
+    rmSync(join(controlDir, "resume-requested"));
+    return true;
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return false;
+    throw e;
+  }
 }
 
 export interface LoadedState {
@@ -350,8 +409,17 @@ export function markSent(state: DigestState, keys: string[], nowS: number, today
   return { ...state, sent };
 }
 
+/** Whether an entry named `paused` exists. lstat, not exists: a link a turn planted counts by its
+ *  own presence and its target is never consulted, so the pause can never tell a turn whether a
+ *  path it cannot open exists. A missing entry (or a control folder that is not a folder) is not
+ *  paused; any other error means an entry is there. */
 export function isPaused(dir: string = digestDir()): boolean {
-  return existsSync(join(dir, "paused"));
+  try {
+    lstatSync(join(dir, "paused"));
+    return true;
+  } catch (e: any) {
+    return e?.code !== "ENOENT" && e?.code !== "ENOTDIR";
+  }
 }
 
 const strings = (a: unknown, max: number): string[] =>
@@ -556,6 +624,8 @@ export function judgeAnswer(answer: string, o: GenOutcome, title: string): { ok:
 export interface DigestDeps {
   now: () => Date;
   dir: string;
+  controlDir?: string; // where `paused` is looked for (default: dir)
+  viewDir?: string; // where `last-digest.txt` is kept (default: dir)
   pid: number; // this process, stamped on the "running" and "sending" markers
   stopping: () => boolean; // the poller is draining for a restart
   targetChat: () => number | null;
@@ -675,7 +745,7 @@ export async function runDigest(deps: DigestDeps): Promise<void> {
       `[ERR] digest: the PC copy sanitizes with version ${journal.sanitizer}, this code with ${SANITIZER_VERSION}; rebuild the PC copy (DEPLOY.md step 14)`,
     );
   }
-  const d = decideDigest({ now, state, paused: isPaused(deps.dir), journal, journalError: error, quiet: deps.quiet });
+  const d = decideDigest({ now, state, paused: isPaused(deps.controlDir ?? deps.dir), journal, journalError: error, quiet: deps.quiet });
   if (d.kind === "stop") {
     if (d.outcome === "failed") deps.err(d.log);
     else deps.log(d.log);
@@ -741,7 +811,9 @@ export async function runDigest(deps: DigestDeps): Promise<void> {
   const first = d.pending[0].date;
   const last = d.pending[d.pending.length - 1].date;
   try {
-    writeFileSync(join(deps.dir, "last-digest.txt"), answer);
+    const viewDir = deps.viewDir ?? deps.dir;
+    mkdirSync(viewDir, { recursive: true }); // poller-only: the run may create it
+    writeAtomic(join(viewDir, "last-digest.txt"), answer);
   } catch (e: any) {
     deps.err(`[ERR] digest: could not keep the text for \`last\` (${e?.message ?? e})`);
   }
@@ -779,11 +851,11 @@ function fmtLocal(ms: number): string {
   return `${p.date} ${p.hhmm}`;
 }
 
-export function statusReport(now: Date, dir: string = digestDir()): string {
+export function statusReport(now: Date, dir: string = digestDir(), controlDir: string = dir): string {
   const today = localParts(now).date;
   const { state, error } = loadDigestState(dir);
   const { journal, error: journalError } = loadJournal(dir);
-  const paused = isPaused(dir);
+  const paused = isPaused(controlDir);
   const lines = [`paused: ${paused ? "yes" : "no"}`];
   if (error) lines.push(`state: ${error}`);
   lines.push(`counting entries from: ${state?.since ?? "(not initialized; the first run counts from its own day)"}`);
@@ -835,8 +907,8 @@ export function initDigest(dir: string, now: Date, force: boolean): string {
 }
 
 /** `resume`: lift the pause; a night paused earlier this evening then runs on the next tick. */
-export function resumeDigest(dir: string, now: Date): string {
-  rmSync(join(dir, "paused"), { force: true });
+export function resumeDigest(dir: string, now: Date, controlDir: string = dir): string {
+  rmSync(join(controlDir, "paused"), { force: true });
   const today = localParts(now).date;
   const { state } = loadDigestState(dir);
   if (state && state.lastRunDate === today && state.lastOutcome?.date === today && state.lastOutcome.kind === "paused") {
@@ -860,19 +932,28 @@ export function resyncDigest(dir: string, now: Date): string {
   return `resynced: ${keys.length} entries dated before ${today} marked sent (sanitizer ${journal.sanitizer})`;
 }
 
-export function lastDigest(dir: string): string {
-  const path = join(dir, "last-digest.txt");
-  return existsSync(path) ? readFileSync(path, "utf8") : "no digest has been sent yet";
+export function lastDigest(viewDir: string): string {
+  try {
+    return readNoFollow(join(viewDir, "last-digest.txt"));
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return "no digest has been sent yet";
+    throw e;
+  }
 }
 
 if (import.meta.main) {
   const cmd = process.argv[2] ?? "status";
   const dir = digestDir();
+  // A turn under a turn user (CC_DIGEST_SNAPSHOT=1) cannot open the journal folder: it reads the
+  // poller's view folder and leaves pause and resume as files in the control folder.
+  const ctl = digestControlDir();
+  const view = digestViewDir();
+  const snapshot = process.env.CC_DIGEST_SNAPSHOT === "1";
   const now = new Date();
   const today = localParts(now).date;
   switch (cmd) {
     case "status":
-      console.log(statusReport(now, dir));
+      console.log(snapshot ? readStatusSnapshot(view) : statusReport(now, dir, ctl));
       break;
     case "preview": {
       const { state } = loadDigestState(dir);
@@ -891,15 +972,22 @@ if (import.meta.main) {
       break;
     }
     case "last":
-      console.log(lastDigest(dir));
+      console.log(lastDigest(view));
       break;
     case "pause":
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, "paused"), now.toISOString());
+      if (!snapshot) mkdirSync(ctl, { recursive: true }); // in snapshot mode the rollout made it
+      rmSync(join(ctl, "resume-requested"), { force: true }); // a waiting resume must not undo this pause
+      writeAtomic(join(ctl, "paused"), now.toISOString());
       console.log("paused: no digest is sent until `bun run ccdigest.ts resume`");
       break;
     case "resume":
-      console.log(resumeDigest(dir, now));
+      if (snapshot) {
+        rmSync(join(ctl, "paused"), { force: true });
+        writeAtomic(join(ctl, "resume-requested"), now.toISOString());
+        console.log("resume requested: the poller applies it within a minute");
+      } else {
+        console.log(resumeDigest(dir, now, ctl));
+      }
       break;
     case "init":
       console.log(initDigest(dir, now, process.argv.includes("--force")));

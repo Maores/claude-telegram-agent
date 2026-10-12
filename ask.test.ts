@@ -20,7 +20,7 @@ afterAll(() => rmSync(DIR, { recursive: true, force: true }));
 
 const runAsk = (options: string[]) =>
   Bun.spawnSync({
-    cmd: ["bun", "run", `${import.meta.dir}/ask.ts`, "choice", "--question", "איך לפתוח את זה?",
+    cmd: [process.execPath, "run", `${import.meta.dir}/ask.ts`, "choice", "--question", "איך לפתוח את זה?",
           ...options.flatMap((o) => ["--option", o])],
     env,
     cwd: import.meta.dir,

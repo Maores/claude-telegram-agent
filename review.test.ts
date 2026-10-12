@@ -29,6 +29,17 @@ test("reviewSpawnArgs starts the review without the Monitor tool, after the whit
   expect(allowed).toEqual(REVIEW_ALLOWED_TOOLS);
 });
 
+test("reviewSpawnArgs seals settings and MCP only under a turn user, before the whitelist", () => {
+  const plain = reviewSpawnArgs("haiku", {});
+  expect(plain).not.toContain("--setting-sources");
+  expect(plain).not.toContain("--strict-mcp-config");
+  const a = reviewSpawnArgs("haiku", { TURN_USER: "agentturn" });
+  expect(a[a.indexOf("--setting-sources") + 1]).toBe("project,local");
+  expect(a.filter((x) => x === "--strict-mcp-config").length).toBe(1);
+  expect(a.indexOf("--setting-sources")).toBeLessThan(a.indexOf("--allowedTools"));
+  expect(a.indexOf("--strict-mcp-config")).toBeLessThan(a.indexOf("--allowedTools"));
+});
+
 test("shouldReview gates by per-chat cooldown", () => {
   const state = new Map<number, number>();
   expect(shouldReview(1, 1000, state)).toBe(true);

@@ -16,8 +16,10 @@
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
+import { statePath, sharedPath, writeAtomic, readNoFollow, stateDir, sharedPathIn, REPO_DIR } from "./paths.ts";
+import { turnSpawn, turnUser, envKeepProbeArgv, PROCESS_LIST_ARGV, parseProcessList, descendantsOf, orphansOf, killAsUserArgv, staleTurnDirsArgv, TURN_SECRETS, BOT_ONLY_SECRETS } from "./turnuser";
 import { homedir } from "node:os";
-import { popDue, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt, snoozeFollowup} from "./reminders.ts";
+import { popDue, loadStore, loadStoreChecked, type Reminder, addOnce, cancel, addFollowup, getFollowup, resolveFollowup, revertFollowup, rebindFollowup, markNudged, dueNudges, pruneFollowups, fmt, snoozeFollowup} from "./reminders.ts";
 import { loadQuestions, loadQuizState, saveQuizState, defaultQuizState, inSendWindow, todayStr, typeForDay, pickByType, pickDiagram, pickPattern, markSeen, splitHints, formatQuestion, splitForCaption, quizStartKeyboard, quizNextKeyboard, parseQzCallback, quizEvalDirective, parseQuizCommand, shouldAttachQuizDirective, isPlaceholderAnswer, type QzCallback, type QuizCommand, type QuizState } from "./quiz";
 import { takePending, consumeAction, validateArgv, pruneActions, dueMorningNudges, markActionNudged, bindActionMessage, newTurnId, type PendingAction } from "./pending.ts";
 import { takePendingChoices, consumeChoice, pruneChoices, type Choice } from "./choices.ts";
@@ -25,9 +27,10 @@ import { StreamParser, displayText } from "./stream.ts";
 import { addPending, consumePending, parseVcCallback, vcKeyboard, type PendingVoice } from "./voice-confirm.ts";
 import { pickModel, detectDevIntent } from "./model.ts";
 import { upcomingEvents, nudgeKey, loadNotified, saveNotified, pruneNotified } from "./calendar.ts";
-import { getDb, insertMessage, recentMessages, searchMessages, renderRecall, importHistoryJson, type RecallHit } from "./db";
+import { getDb, insertMessage, recentMessages, searchMessages, renderRecall, importHistoryJson, reportSchemaDrift, type RecallHit } from "./db";
 import { coreMemoryBlock, importMemoryMd } from "./memory";
-import { skillsIndexBlock } from "./skills";
+import { skillsIndexBlock, type SkillRow } from "./skills";
+import { approvalsPath, loadApprovals, mutateApprovals, isAutoJob, cardableJob, approvalHold, parseAjCallback, applyJobTap, consumeOnceApproval, skillGate, skillEntries, parseAsCallback, applySkillTap, sendCardRound, newCardState, type AjCallback, type AsCallback } from "./approvals.ts";
 import { dueMonitors, performCheck, recordCheck, FAILURE_LIMIT, type Monitor, type CheckOutcome } from "./monitors";
 import { recordUsage, windowSpendUsd, shouldWarn, limitHitReply, detectUpstreamError, upstreamErrorReply } from "./usage";
 import { scanThreats } from "./threats";
@@ -37,10 +40,11 @@ import { resolveBackend, transcribeVoice, shouldEchoTranscript, needsConfirmatio
 import { HEARTBEAT_FILE } from "./health.ts";
 import { shouldReview, runReview } from "./review";
 import { classifyUpdate, ChatQueues, SerialChain, Debouncer, isStopCommand } from "./dispatch";
-import { runDigest, digestDir, type GenOutcome } from "./ccdigest.ts";
-import { rchannelDir, mutateStore, applyTap, parseRcCallback, takeOther, performEdits, runRchannelTick, sendRcProposals, RcGone, isGoneError, quietNow, type RcTap, type View } from "./rchannel.ts";
-import { inboxDir, parseInboxChatId, resolveInboxChatId, writeMoved, fileInboxMessage, foreignGroupNote, runInboxTick, INBOX_MOVED } from "./inbox.ts";
+import { runDigest, digestDir, digestControlDir, digestViewDir, statusReport, resumeDigest, writeStatusSnapshot, takeResumeRequest, type GenOutcome } from "./ccdigest.ts";
+import { rchannelDir, mutateStore, applyTap, parseRcCallback, takeOther, performEdits, runRchannelTick, sendRcProposals, ingestSpool, RcGone, isGoneError, quietNow, type RcTap, type View } from "./rchannel.ts";
+import { inboxDir, parseInboxChatId, resolveInboxChatId, writeMoved, fileInboxMessage, foreignGroupNote, runInboxTick, writeInboxStatus, INBOX_MOVED } from "./inbox.ts";
 import { withAlwaysDisallowed } from "./guard";
+import { nightlyIntegrity, seedIntegrityLast, INTEGRITY_LAST_FILE } from "./integrity.ts";
 export { isStopCommand }; // poller.test.ts and external users keep their import path
 
 // ---------------------------------------------------------------------------
@@ -60,9 +64,11 @@ const MODEL_IDS: Record<string, string> = {
   haiku: "claude-haiku-4-5",
 };
 
-const HISTORY_DIR = process.env.HISTORY_DIR ?? join(PROJECT_DIR, "history");
-const UPLOADS_DIR = process.env.UPLOADS_DIR ?? join(PROJECT_DIR, "uploads");
-const MEMORY_FILE = join(PROJECT_DIR, "memory", "MEMORY.md");
+const HISTORY_DIR = process.env.HISTORY_DIR ?? statePath("history");
+const UPLOADS_DIR = process.env.UPLOADS_DIR ?? statePath("uploads");
+const MEMORY_FILE = sharedPath("memory", "MEMORY.md");
+const SKILLS_DIR = sharedPath("skills");
+const APPROVALS_FILE = approvalsPath(); // poller-only: a turn reads it, never writes it
 const OFFSET_FILE = join(HISTORY_DIR, ".offset");
 const ACCESS_FILE =
   process.env.ACCESS_FILE ??
@@ -90,7 +96,8 @@ const UPLOADS_MAX_BYTES = Number(process.env.UPLOADS_MAX_BYTES ?? 500 * 1024 * 1
 let inboxChatId: number | null = resolveInboxChatId(parseInboxChatId(process.env.INBOX_CHAT_ID), inboxDir());
 const foreignGroupsSeen = new Set<string>(); // "<chat>:<yes|no>" already logged as [INBOX?]
 let inboxInFlight: Promise<void> | null = null;
-const inboxWarnErr = { at: -Infinity }; // a failed warning is logged at most once an hour
+const inboxWarnErr = { at: -Infinity }; // the inbox tick's failures (warning, deletions, sweep) are logged at most once an hour
+const inboxStatusErr = { at: -Infinity }; // the status summary's write failures: once an hour, on a clock of their own
 
 // ---------------------------------------------------------------------------
 // Types
@@ -295,9 +302,7 @@ function stopChild(chatId: number): boolean {
   const f = inFlight.get(chatId);
   if (!f) return false;
   f.stopped = true;
-  try {
-    f.proc.kill();
-  } catch {}
+  void killTurnProc(f.proc);
   return true;
 }
 
@@ -348,6 +353,12 @@ export interface FuCallback {
 export function parseFuCallback(data: string): FuCallback | null {
   const m = /^fu:(done|later|s1h|seve|stom|scus):([\w-]+)$/.exec(data ?? "");
   return m ? { action: m[1] as FuCallback["action"], id: m[2] } : null;
+}
+
+/** Where the "which time?" question of a זמן אחר… tap goes: the tap's own chat, and only when the
+ *  follow-up belongs to it (followups.json is a store a turn can write); null = treat as stale. */
+export function scusChat(f: { chatId: number }, tapChat: number): number | null {
+  return f.chatId === tapChat ? tapChat : null;
 }
 
 /** Custom snooze ("זמן אחר…"): chat → the followup awaiting a typed time.
@@ -835,7 +846,8 @@ async function downloadFile(fileId: string, preferredName?: string): Promise<str
   ensureDir(UPLOADS_DIR);
   const safe = safeDiskName(preferredName || basename(remotePath));
   const dest = join(UPLOADS_DIR, `${Date.now()}-${safe}`);
-  await Bun.write(dest, bytes);
+  // Created exclusively: a name that already exists (or a planted link) fails instead of being written through.
+  writeFileSync(dest, new Uint8Array(bytes), { flag: "wx" });
   return dest;
 }
 
@@ -927,6 +939,35 @@ function loadAllowList(): Set<string> {
   return new Set(list.map((id) => String(id)));
 }
 
+/** Whether a send may go to this chat: a chat taken from a store a turn can write goes out only
+ *  when it is on the allowlist. */
+export function isAllowedChat(chatId: number): boolean {
+  return loadAllowList().has(String(chatId));
+}
+
+/** The send rule: a send whose chat comes from a store a turn can write (reminders, follow-up
+ *  nudges, monitors, pending proposals) goes out only to an allowlisted chat; anything else is
+ *  logged and dropped. Applies with every switch unset too. */
+export function sendAllowed(
+  kind: string,
+  id: string | number,
+  chatId: number,
+  allowed: (chatId: number) => boolean = isAllowedChat,
+  log: (line: string) => void = (l) => console.log(redact(l)),
+): boolean {
+  if (allowed(chatId)) return true;
+  // The id comes from a store a turn writes: an odd one is quoted and cut, never logged raw.
+  const shown = /^[\w-]{1,40}$/.test(String(id)) ? String(id) : JSON.stringify(String(id).slice(0, 40));
+  log(`[DROP] ${kind} ${shown}: chat not allowlisted`);
+  return false;
+}
+
+/** The skill gate for every prompt's skills index: no filter unless SKILL_APPROVAL=1, then only
+ *  skills whose current version the owner approved. */
+function promptSkillGate(): ((row: SkillRow) => boolean) | undefined {
+  return process.env.SKILL_APPROVAL === "1" ? skillGate(loadApprovals(APPROVALS_FILE), SKILLS_DIR) : undefined;
+}
+
 /**
  * Long-term memory for the prompt. Cutover (safe switch + backup): prefer the
  * DB-backed active core memory; fall back to the legacy flat MEMORY.md file if
@@ -940,7 +981,7 @@ function loadMemory(): string {
     console.error(`[ERR] memory load (db): ${e?.message ?? e}`);
   }
   try {
-    return readFileSync(MEMORY_FILE, "utf8").trim();
+    return readNoFollow(MEMORY_FILE).trim();
   } catch {
     return "";
   }
@@ -963,7 +1004,7 @@ export const DEV_INTENT_DIRECTIVE = [
   "   - a cancel option (בטל)",
   "   Tapping a button sends that text as the next turn; it routes through model selection and sees this whole conversation in its history.",
   "   WRITE THE FULL INSTRUCTION in the option — it becomes the next turn's entire prompt, so do not abbreviate it. The button caption is derived automatically: the model prefix is stripped and roughly the first 28 characters are shown. So FRONT-LOAD the words that tell the options apart (\"תקן את הבאג של הכפתורים…\" / \"רק תעד את הבאג…\"), and never open two options with the same phrase, or both captions read alike.",
-  "3. Do NOT start building in THIS turn. When the build runs, it goes on a branch and opens a PR (per the self-dev rules), never a live hot-patch on main.",
+  "3. Do NOT start building in THIS turn. When the build runs, build it the way the <server-mode> block says, if there is one; otherwise as before: on a branch with a PR (per the self-dev rules), never a live hot-patch on main.",
   "If this is NOT actually a request to change the codebase, ignore this entirely and just answer normally.",
   "</dev-intent>",
 ].join("\n");
@@ -997,6 +1038,30 @@ export function replyContextLine(
   return `${name} is replying to an earlier message (sent by ${author}): «${content}»`;
 }
 
+/** Turn instructions that hold only after the hardening rollout, each behind its own switch: the
+ *  private self-dev copy (TURN_USER) and the approval cards (AUTO_APPROVAL, SKILL_APPROVAL). Empty
+ *  with every switch unset, so CLAUDE.md can point at the block in neutral words. */
+export function serverModeBlock(env: Record<string, string | undefined> = process.env): string {
+  const lines: string[] = [];
+  if (env.TURN_USER) {
+    lines.push(
+      "Self-development: build changes to this agent's own code in your private copy, ~/dev/claude-telegram-agent, on a branch, starting from a fresh clone at the start of each new development task:",
+      "rm -rf ~/dev/claude-telegram-agent && git clone https://github.com/Maores/claude-telegram-agent.git ~/dev/claude-telegram-agent",
+      "Run every git command in that copy as git -c core.fsmonitor= -c core.hooksPath=/dev/null <command>.",
+      "Hand the work over with: git -c core.fsmonitor= -c core.hooksPath=/dev/null bundle create ~/outbox/<branch>-<YYYYMMDD-HHMM>.bundle main..<branch>",
+      "Never push, and never edit the running copy; tell Maor the bundle's name so he can review it.",
+    );
+  }
+  if (env.AUTO_APPROVAL === "1") {
+    lines.push("A new [AUTO] job waits for Maor's ✓ on a card before its first run; tell him to expect the card.");
+  }
+  if (env.SKILL_APPROVAL === "1") {
+    lines.push("A new or changed skill is offered only after Maor's ✓ on a card; tell him a card is coming.");
+  }
+  if (!lines.length) return "";
+  return ["<server-mode>", ...lines, "</server-mode>"].join("\n");
+}
+
 export function buildPrompt(
   history: HistoryItem[],
   name: string,
@@ -1009,6 +1074,10 @@ export function buildPrompt(
   uploadedFiles = "",
 ): string {
   const lines: string[] = [];
+  const serverMode = serverModeBlock();
+  if (serverMode) {
+    lines.push(serverMode, "");
+  }
   if (memory) {
     lines.push("What you know about the user (long-term memory):");
     lines.push(memory, "");
@@ -1096,6 +1165,19 @@ export class TurnStopped extends Error {
   }
 }
 
+/** Thrown when turns are refused because the startup probe found the turn user's
+ *  environment broken; callers answer with TURNS_UNAVAILABLE_REPLY, not the generic error. */
+export class TurnsUnavailable extends Error {}
+
+/** The one reply a message gets while turns are refused (no retry suggestion: retrying
+ *  cannot help until the server is fixed). */
+export const TURNS_UNAVAILABLE_REPLY = "לא ניתן להפעיל שיחה כרגע: הגדרות השרת לא תקינות. מאור צריך לבדוק מהמחשב.";
+
+/** The reply for a failed turn: the fixed Hebrew line when turns are refused, else the fallback. */
+export function turnFailureReply(e: unknown, fallback: string): string {
+  return e instanceof TurnsUnavailable ? TURNS_UNAVAILABLE_REPLY : fallback;
+}
+
 /** Extra, optional knobs for a single claude -p spawn. Used to put unattended
  *  [AUTO] sessions in least-privilege mode without changing normal messages. */
 export interface SpawnOpts {
@@ -1170,28 +1252,126 @@ async function streamClaudeResilient(
  *  ALWAYS_DISALLOWED_TOOLS (Monitor runs a shell command in the background). They
  *  join an [AUTO] turn's own --disallowedTools list, so there is one flag, and
  *  extraArgs stay at the end (the prompt goes in on stdin, never as a word here). */
-export function claudeTurnArgv(model: string, extraArgs: string[] = []): string[] {
+export function claudeTurnArgv(model: string, extraArgs: string[] = [], env: Record<string, string | undefined> = process.env): string[] {
+  // Under a turn user the turn reads no user-level settings and loads no MCP server (one
+  // --strict-mcp-config, before extraArgs so a variadic flag there cannot swallow it).
+  const sealed = turnUser(env) ? ["--setting-sources", "project,local", ...(extraArgs.includes("--strict-mcp-config") ? [] : ["--strict-mcp-config"])] : [];
   // prettier-ignore
-  return withAlwaysDisallowed([CLAUDE_BIN, "-p", "--model", MODEL_IDS[model] ?? model, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions", ...extraArgs]);
+  return withAlwaysDisallowed([CLAUDE_BIN, "-p", "--model", MODEL_IDS[model] ?? model, "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--dangerously-skip-permissions", ...sealed, ...extraArgs]);
 }
 
-async function streamClaude(
+/** A monitor summary: the [AUTO] least-privilege turn with no tools and no MCP server, like
+ *  the digest's; it reads only the fenced page text it is given. */
+export function monitorSpawnOpts(): SpawnOpts {
+  const auto = autoSessionSpawn();
+  return { ...auto, extraArgs: [...auto.extraArgs, "--tools", "", "--strict-mcp-config"] };
+}
+
+/** A short command the poller itself runs (process listing, kill, sweep, env probe): its
+ *  stdout and exit code. The one Bun.spawn that does not go through turnSpawn. */
+async function runQuiet(argv: string[], env?: Record<string, string>): Promise<{ code: number; out: string }> {
+  const p = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", ...(env ? { env } : {}) });
+  const [out, code] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+  return { code, out };
+}
+
+type Run = (argv: string[], env?: Record<string, string>) => Promise<{ code: number; out: string }>;
+
+/** Stop a turn (or an approved command). TURN_USER unset: proc.kill(), as before. Set: the
+ *  poller's own child is sudo as root, so signal the turn user's processes under it as that
+ *  user: TERM now, KILL on a fresh listing after 10 s unless the child has exited. */
+export async function killTurnProc(proc: { pid: number; exited: Promise<unknown>; kill: () => void }, run: Run = runQuiet, env: Record<string, string | undefined> = process.env, log: (s: string) => void = console.error): Promise<void> {
+  const user = turnUser(env);
+  if (!user) { try { proc.kill(); } catch {} return; }
+  // Every failure is logged: a stop that silently did nothing would leave the turn running.
+  const signal = async (sig: "TERM" | "KILL") => {
+    const l = await run(PROCESS_LIST_ARGV);
+    if (l.code !== 0) { log(`[ERR] stop: process list failed: exit ${l.code}`); return; }
+    const pids = descendantsOf(parseProcessList(l.out), proc.pid, user);
+    if (!pids.length) return;
+    const k = await run(killAsUserArgv(user, sig, pids));
+    if (k.code !== 0) log(`[ERR] stop: kill exit ${k.code}`);
+  };
+  const fail = (e: any) => log(`[ERR] stop: ${e?.message ?? e}`);
+  await signal("TERM").catch(fail);
+  const gone = await Promise.race([proc.exited.then(() => true), Bun.sleep(10_000).then(() => false)]);
+  if (!gone) await signal("KILL").catch(fail);
+}
+
+/** Kill the turn user's processes no live turn owns (reparented to init) and remove turn
+ *  folders older than an hour. Returns how many processes it killed (0 when the kill failed). */
+export async function sweepOrphans(run: Run, user: string, log: (s: string) => void): Promise<number> {
+  const l = await run(PROCESS_LIST_ARGV);
+  if (l.code !== 0) { log(`[ERR] process list failed: exit ${l.code}`); return 0; }
+  const rows = parseProcessList(l.out);
+  // A changed ps format must not turn the sweep into a silent no-op.
+  if (!rows.length) log("[ERR] process list parsed to zero rows");
+  const pids = orphansOf(rows, user);
+  let killed = 0;
+  if (pids.length) {
+    const k = await run(killAsUserArgv(user, "KILL", pids));
+    if (k.code !== 0) log(`[ERR] sweep: kill exit ${k.code}`);
+    else killed = pids.length;
+  }
+  const f = await run(staleTurnDirsArgv(user));
+  if (f.code !== 0) log(`[ERR] sweep: stale folder cleanup exit ${f.code}`);
+  if (killed) log(`[TURN] swept ${killed} leftover process(es) of ${user}`);
+  return killed;
+}
+
+/** Startup probe of sudoers env_keep: the three turn secrets must reach the turn user, the
+ *  bot-only two must not. Sentinel values only; returns names, never the probe's output. */
+export async function checkTurnEnv(run: Run, user: string, _envFileKeys: string[]): Promise<string | null> {
+  const sentinel = { PATH: "/usr/bin:/bin", CLAUDE_CODE_OAUTH_TOKEN: "probe-1", ICLOUD_USER: "probe-2", ICLOUD_APP_PASSWORD: "probe-3", TELEGRAM_BOT_TOKEN: "probe-4", GROQ_API_KEY: "probe-5" };
+  const r = await run(envKeepProbeArgv(user), sentinel);
+  // A refused sudo is not a missing env_keep entry; report the exit code, never the output.
+  if (r.code !== 0) return `sudo probe failed: exit ${r.code}`;
+  const lines = r.out.split("\n");
+  const has = (k: string) => lines.some((l) => l.startsWith(`${k}=probe-`));
+  const missing = TURN_SECRETS.filter((k) => !has(k));
+  const leaked = BOT_ONLY_SECRETS.filter((k) => has(k));
+  if (!missing.length && !leaked.length) return null;
+  return [missing.length ? `missing: ${missing.join(", ")}` : "", leaked.length ? `crossing that must not: ${leaked.join(", ")}` : ""].filter(Boolean).join("; ");
+}
+
+/** The startup verdict for turns under a turn user: null when they may start, else the
+ *  turnEnvBroken text. Never throws: a probe that cannot run refuses turns and leaves the
+ *  rest of the poller (reminders, buttons) running. */
+export async function probeTurnEnv(run: Run, user: string): Promise<string | null> {
+  let bad: string | null;
+  try {
+    bad = await checkTurnEnv(run, user, []);
+  } catch (e: any) {
+    return `turns cannot start: sudo probe failed: ${e?.message ?? e}`;
+  }
+  if (!bad) return null;
+  return bad.startsWith("sudo probe failed") ? `turns cannot start: ${bad}` : `turns cannot start: ${bad} (sudoers env_keep out of date)`;
+}
+
+/** True when STATE_DIR points away from the repo, its shared database is absent, and nobody
+ *  said this is a fresh folder: the poller must not start on empty state. */
+export function stateMissing(env: Record<string, string | undefined> = process.env): boolean {
+  return stateDir(env) !== REPO_DIR && !existsSync(sharedPathIn(env, "memory", "bot.db")) && env.STATE_INIT !== "1";
+}
+
+/** Set at startup when the env_keep probe failed; every turn then refuses to start. */
+let turnEnvBroken: string | null = null;
+
+/** Test seam: set or clear the startup probe's verdict. */
+export function setTurnEnvBroken(v: string | null): void {
+  turnEnvBroken = v;
+}
+
+export async function streamClaude(
   prompt: string,
   chatId: number,
   placeholderId: number | null,
   model: string,
   opts: SpawnOpts = {},
 ): Promise<string> {
-  const proc = Bun.spawn(
-    claudeTurnArgv(model, opts.extraArgs),
-    {
-      cwd: PROJECT_DIR,
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, TELEGRAM_CHAT_ID: String(chatId), ...(opts.env ?? {}) },
-    },
-  );
+  if (turnEnvBroken) throw new TurnsUnavailable(turnEnvBroken);
+  const ts = turnSpawn(claudeTurnArgv(model, opts.extraArgs), { ...process.env, TELEGRAM_CHAT_ID: String(chatId), ...(opts.env ?? {}) });
+  const proc = Bun.spawn(ts.argv, { cwd: PROJECT_DIR, stdin: "pipe", stdout: "pipe", stderr: "pipe", env: ts.env });
   // Track this child so /stop can interrupt it; clear the slot when it exits,
   // however it exits (normal, error, timeout, or killed by /stop).
   const silent = opts.silent === true;
@@ -1209,9 +1389,7 @@ async function streamClaude(
   let timedOut = false;
   const killer = setTimeout(() => {
     timedOut = true;
-    try {
-      proc.kill();
-    } catch {}
+    void killTurnProc(proc);
   }, CLAUDE_TIMEOUT_MS);
 
   // Research-heavy turns can stream no text for minutes while tools run;
@@ -1586,7 +1764,7 @@ async function handleMessage(msg: TgMessage) {
     }
     let skills = "";
     try {
-      skills = skillsIndexBlock(db, userMsg || historyNote);
+      skills = skillsIndexBlock(db, userMsg || historyNote, undefined, promptSkillGate());
     } catch (e: any) {
       console.error(`[ERR] skills: ${e?.message ?? e}`);
     }
@@ -1669,7 +1847,7 @@ async function handleMessage(msg: TgMessage) {
     await sendReply(
       chatId,
       placeholderId,
-      limitMsg ?? "⚠️ Sorry, something went wrong handling that. Please try again.",
+      turnFailureReply(e, limitMsg ?? "⚠️ Sorry, something went wrong handling that. Please try again."),
     ).catch(() => {});
   } finally {
     // Documents and images are kept on disk for future sessions.
@@ -1880,7 +2058,7 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
     }
     let skills = "";
     try {
-      skills = skillsIndexBlock(db, userMsg || historyNote);
+      skills = skillsIndexBlock(db, userMsg || historyNote, undefined, promptSkillGate());
     } catch (e: any) {
       console.error(`[ERR] skills: ${e?.message ?? e}`);
     }
@@ -1948,7 +2126,7 @@ async function handleMessageBatch(allMsgs: TgMessage[]) {
     await sendReply(
       chatId,
       placeholderId,
-      limitMsg ?? "⚠️ Sorry, something went wrong handling that. Please try again.",
+      turnFailureReply(e, limitMsg ?? "⚠️ Sorry, something went wrong handling that. Please try again."),
     ).catch(() => {});
   }
 }
@@ -1964,8 +2142,10 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   const vc = qz || pa || ch || fuu ? null : parseVcCallback(cq.data ?? "");
   const rc = qz || pa || ch || fuu || vc ? null : parseRcCallback(cq.data ?? "");
   const parsed = qz || pa || ch || fuu || vc || rc ? null : parseFuCallback(cq.data ?? "");
+  const aj = qz || pa || ch || fuu || vc || rc || parsed ? null : parseAjCallback(cq.data ?? "");
+  const as = qz || pa || ch || fuu || vc || rc || parsed || aj ? null : parseAsCallback(cq.data ?? "");
   console.log(
-    `[CB] ${qz ? `qz:${qz.kind}:${qz.choice}` : pa ? `pa:${pa.action}:${pa.id}` : ch ? `ch:${ch.id}:${ch.idx}` : fuu ? `undo:${fuu.fuId}` : vc ? `vc:${vc.id}:${vc.ok ? "y" : "n"}` : rc ? `rc:${rc.short}:${rc.n}:${rc.act}` : parsed ? `${parsed.action}:${parsed.id}` : `?:${(cq.data ?? "").slice(0, 24)}`} from ${cq.from.id}`,
+    `[CB] ${qz ? `qz:${qz.kind}:${qz.choice}` : pa ? `pa:${pa.action}:${pa.id}` : ch ? `ch:${ch.id}:${ch.idx}` : fuu ? `undo:${fuu.fuId}` : vc ? `vc:${vc.id}:${vc.ok ? "y" : "n"}` : rc ? `rc:${rc.short}:${rc.n}:${rc.act}` : parsed ? `${parsed.action}:${parsed.id}` : aj ? `aj:${aj.token}:${aj.act}` : as ? `as:${as.token}:${as.act}` : `?:${(cq.data ?? "").slice(0, 24)}`} from ${cq.from.id}`,
   );
   const ack = (text?: string) =>
     tg("answerCallbackQuery", { callback_query_id: cq.id, ...(text ? { text } : {}) }).catch(() => {});
@@ -1975,8 +2155,16 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
   }
   const chatId = cq.message?.chat.id;
   const messageId = cq.message?.message_id;
-  if (chatId == null || messageId == null || (!qz && !pa && !ch && !fuu && !vc && !rc && !parsed)) {
+  if (chatId == null || messageId == null || (!qz && !pa && !ch && !fuu && !vc && !rc && !parsed && !aj && !as)) {
     await ack(); // unknown namespace — ignore
+    return;
+  }
+  if (aj) {
+    await handleAjCallback(aj, chatId, messageId, cq.message?.text ?? "", ack);
+    return;
+  }
+  if (as) {
+    await handleAsCallback(as, chatId, messageId, cq.message?.text ?? "", ack);
     return;
   }
   if (rc) {
@@ -2045,10 +2233,17 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
       await ack("הכפתור הזה כבר טופל");
       return;
     }
+    // followups.json is a store a turn can write: the question goes only to the chat that tapped.
+    const target = scusChat(f, chatId);
+    if (target === null) {
+      console.log(`[DROP] scus ${parsed.id}: chat mismatch`);
+      await ack("הכפתור הזה כבר טופל");
+      return;
+    }
     await ack();
-    pendingCustomSnooze.set(f.chatId, { fuId: f.id, expiresAt: nowS + CUSTOM_SNOOZE_WINDOW_S });
+    pendingCustomSnooze.set(target, { fuId: f.id, expiresAt: nowS + CUSTOM_SNOOZE_WINDOW_S });
     await tg("sendMessage", {
-      chat_id: f.chatId,
+      chat_id: target,
       text: `לאיזה זמן לדחות את «${f.text}»? כתוב חופשי, למשל: 18:30, מחר 9, בעוד שעתיים`,
     }).catch(() => {});
   } else {
@@ -2070,6 +2265,80 @@ async function handleCallback(cq: NonNullable<TgUpdate["callback_query"]>) {
     }).catch(() => {});
     console.log(`[REMIND] snoozed fu ${f.id} to ${fmt(t)} (r=${nr.id})`);
   }
+}
+
+/** A ✓/✗ on an [AUTO] job card. ✓ approves the job (a held due job is run at once); ✗ removes
+ *  it. The button must still match a current job by id and key, so a job changed after its card is
+ *  never approved by that card. */
+async function handleAjCallback(
+  tap: AjCallback,
+  chatId: number,
+  messageId: number,
+  cardText: string,
+  ack: (text?: string) => Promise<unknown>,
+) {
+  let res;
+  try {
+    const list = loadStore();
+    res = mutateApprovals(APPROVALS_FILE, (a) => applyJobTap(a, list, tap));
+  } catch (e: any) {
+    console.error(`[ERR] aj tap ${tap.token}: ${e?.message ?? e}`);
+    await ack();
+    return;
+  }
+  if (res.outcome === "stale") {
+    console.log(`[APPROVALS] stale job tap ${tap.token}`);
+    await ack("הכפתור הזה כבר טופל");
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    return;
+  }
+  const r = res.r;
+  if (res.outcome === "approve") {
+    await ack("אושר ✓");
+    await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: `${cardText}\n\n✓ אושר` }).catch(() => {});
+    console.log(`[APPROVALS] job ${r.id} approved`);
+    if (r.fireAt <= Math.floor(Date.now() / 1000)) void checkReminders(); // a held due job runs now
+    return;
+  }
+  let removed = false;
+  try {
+    removed = cancel(r.chatId, r.id);
+  } catch (e: any) {
+    console.error(`[ERR] aj remove ${r.id}: ${e?.message ?? e}`);
+  }
+  await ack(removed ? "נמחק" : "הכפתור הזה כבר טופל");
+  await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: `${cardText}\n\n✗ נמחק` }).catch(() => {});
+  console.log(`[APPROVALS] job ${r.id} ${removed ? "removed" : "already gone"}`);
+}
+
+/** A ✓/✗ on a skill card: ✓ approves the skill's current version; ✗ rejects that version (it is
+ *  never offered and gets no new card). An edited skill no longer matches its old card. */
+async function handleAsCallback(
+  tap: AsCallback,
+  chatId: number,
+  messageId: number,
+  cardText: string,
+  ack: (text?: string) => Promise<unknown>,
+) {
+  let res;
+  try {
+    const entries = skillEntries(getDb(), SKILLS_DIR);
+    res = mutateApprovals(APPROVALS_FILE, (a) => applySkillTap(a, entries, tap));
+  } catch (e: any) {
+    console.error(`[ERR] as tap ${tap.token}: ${e?.message ?? e}`);
+    await ack();
+    return;
+  }
+  if (res.outcome === "stale") {
+    console.log(`[APPROVALS] stale skill tap ${tap.token}`);
+    await ack("הכפתור הזה כבר טופל");
+    await tg("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+    return;
+  }
+  const ok = res.outcome === "approved";
+  await ack(ok ? "אושר ✓" : "נדחה");
+  await tg("editMessageText", { chat_id: chatId, message_id: messageId, text: `${cardText}\n\n${ok ? "✓ אושר" : "✗ נדחה"}` }).catch(() => {});
+  console.log(`[APPROVALS] skill ${res.name} ${res.outcome}`);
 }
 
 /** Undo a snooze: cancel the reminder the snooze created and restore the original
@@ -2178,13 +2447,12 @@ async function handlePaCallback(
   // job contract keeps every other button instant — see SerialChain). The
   // once-only consumption above already guarantees this runs at most once.
   void (async () => {
-    const proc = Bun.spawn(a.argv, { cwd: PROJECT_DIR, stdout: "pipe", stderr: "pipe" });
+    const ts = turnSpawn(a.argv, process.env);
+    const proc = Bun.spawn(ts.argv, { cwd: PROJECT_DIR, stdout: "pipe", stderr: "pipe", env: ts.env });
     let timedOut = false;
     const killer = setTimeout(() => {
       timedOut = true;
-      try {
-        proc.kill();
-      } catch {}
+      void killTurnProc(proc);
     }, PA_EXEC_TIMEOUT_MS);
     const [out, err, code] = await Promise.all([
       new Response(proc.stdout).text(),
@@ -2314,7 +2582,7 @@ async function answerChoice(chatId: number, choice: Choice, option: string) {
     }
     let skills = "";
     try {
-      skills = skillsIndexBlock(db, chosen);
+      skills = skillsIndexBlock(db, chosen, undefined, promptSkillGate());
     } catch (e: any) {
       console.error(`[ERR] skills: ${e?.message ?? e}`);
     }
@@ -2347,7 +2615,7 @@ async function answerChoice(chatId: number, choice: Choice, option: string) {
     await sendReply(
       chatId,
       placeholderId,
-      "⚠️ Sorry, something went wrong handling that. Please try again.",
+      turnFailureReply(e, "⚠️ Sorry, something went wrong handling that. Please try again."),
     ).catch(() => {});
   }
 }
@@ -2434,7 +2702,7 @@ async function answerConfirmedVoice(chatId: number, pending: PendingVoice) {
     }
     let skills = "";
     try {
-      skills = skillsIndexBlock(db, pending.text);
+      skills = skillsIndexBlock(db, pending.text, undefined, promptSkillGate());
     } catch (e: any) {
       console.error(`[ERR] skills: ${e?.message ?? e}`);
     }
@@ -2464,7 +2732,7 @@ async function answerConfirmedVoice(chatId: number, pending: PendingVoice) {
       return;
     }
     console.error(`[ERR] answerConfirmedVoice for ${chatId}: ${e?.message ?? e}`);
-    await sendReply(chatId, placeholderId, "⚠️ משהו השתבש בטיפול בהקלטה. אפשר לנסות שוב.").catch(() => {});
+    await sendReply(chatId, placeholderId, turnFailureReply(e, "⚠️ משהו השתבש בטיפול בהקלטה. אפשר לנסות שוב.")).catch(() => {});
   }
 }
 
@@ -2545,13 +2813,29 @@ function checkInbox(): Promise<void> {
   return inboxInFlight;
 }
 
+/** The counts-only summary `inbox.ts status` reads inside a turn (INBOX_STATUS_FILE), which cannot
+ *  open ~/inbox once the state lives outside the repo; written at the poller-only top of the state
+ *  folder on the 30-second tick. In the repo layout there is no file and status reads the store. */
+function refreshInboxStatus(): void {
+  if (stateDir() === REPO_DIR) return;
+  try {
+    writeInboxStatus(statePath("inbox-status.json"), inboxDir(), Math.floor(Date.now() / 1000));
+  } catch (e: any) {
+    const n = Math.floor(Date.now() / 1000);
+    if (n - inboxStatusErr.at >= 3600) {
+      inboxStatusErr.at = n;
+      console.error(`[ERR] inbox status: ${redact(String(e?.message ?? e))}`);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Offset persistence (so restarts don't drop or replay messages)
 // ---------------------------------------------------------------------------
 
 function saveOffset(offset: number) {
   try {
-    writeFileSync(OFFSET_FILE, String(offset));
+    writeAtomic(OFFSET_FILE, String(offset));
   } catch (e: any) {
     console.error(`[ERR] could not save offset: ${e?.message ?? e}`);
   }
@@ -2574,7 +2858,7 @@ async function initOffset(): Promise<number> {
 // and qz: buttons drive the rest. A quiz-paused.flag file silences auto-send.
 // ---------------------------------------------------------------------------
 
-const QUIZ_PAUSE_FLAG = join(PROJECT_DIR, "quiz-paused.flag");
+const QUIZ_PAUSE_FLAG = sharedPath("quiz-paused.flag");
 
 /** Auto-send target: the chat that last used /quiz, else the first allowlisted id. */
 function quizTargetChat(state: QuizState): number | null {
@@ -2769,6 +3053,8 @@ function checkDigest(): Promise<void> {
   digestInFlight = runDigest({
     now: () => new Date(),
     dir: digestDir(),
+    controlDir: digestControlDir(),
+    viewDir: digestViewDir(),
     pid: process.pid,
     stopping: () => stopping,
     targetChat: digestTargetChat,
@@ -2800,8 +3086,41 @@ function checkDigest(): Promise<void> {
     })
     .finally(() => {
       digestInFlight = null;
+      refreshDigestView();
     });
   return digestInFlight;
+}
+
+const digestResumeErr = { at: -Infinity }; // applying a turn's resume request: logged at most once an hour
+const digestSnapshotErr = { at: -Infinity }; // writing the status snapshot: once an hour, on a clock of its own
+
+function logHourly(clock: { at: number }, line: string): void {
+  const n = Math.floor(Date.now() / 1000);
+  if (n - clock.at < 3600) return;
+  clock.at = n;
+  console.error(line);
+}
+
+/** Under STATE_DIR a turn cannot open the journal folder: it leaves a resume request in the control
+ *  folder, which is applied here (existence and removal only, never its content), and reads the
+ *  status snapshot written here into the poller-only view folder. In the repo layout the CLI does
+ *  both itself. */
+function refreshDigestView(): void {
+  // Runs in checkDigest's finally: nothing here may throw, or the tick's promise rejects.
+  try {
+    if (stateDir() === REPO_DIR) return;
+    if (takeResumeRequest(digestControlDir())) {
+      console.log(`[DIGEST] resume requested by a turn: ${resumeDigest(digestDir(), new Date(), digestControlDir())}`);
+    }
+  } catch (e: any) {
+    logHourly(digestResumeErr, `[ERR] digest resume request: ${redact(String(e?.message ?? e))}`);
+  }
+  try {
+    if (stateDir() === REPO_DIR) return;
+    writeStatusSnapshot(digestViewDir(), statusReport(new Date(), digestDir(), digestControlDir()));
+  } catch (e: any) {
+    logHourly(digestSnapshotErr, `[ERR] digest status snapshot: ${redact(String(e?.message ?? e))}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2861,9 +3180,11 @@ async function handleRcCallback(
   console.log(`[RC] tap ${tap.short}:${tap.n}:${tap.act}${r.toast ? ` (${r.toast})` : ""}`);
 }
 
-/** After an interactive turn: the ✓/✗ for a new description that turn proposed. */
+/** After an interactive turn: the ✓/✗ for a new description that turn proposed. On the server
+ *  the turn cannot write ~/rchannel, so its proposals wait in the spool and are registered first. */
 async function sendRcProposalsAfter(chatId: number, turnId: string) {
   try {
+    if (stateDir() !== REPO_DIR) await ingestSpool(join(stateDir(), "shared", "rchannel-proposals"), rchannelDir(), Math.floor(Date.now() / 1000), rcLog, async (c, t) => void (await tg("sendMessage", { chat_id: c, text: t })), isAllowedChat, turnId);
     await sendRcProposals({ dir: rchannelDir(), send: rcSend, log: rcLog }, chatId, turnId);
   } catch (e: any) {
     console.error(`[ERR] rc proposals: ${e?.message ?? e}`);
@@ -2898,18 +3219,109 @@ function checkRchannel(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Approval cards (approvals.ts): one ✓/✗ card per new [AUTO] job (AUTO_APPROVAL=1) and per new or
+// changed skill (SKILL_APPROVAL=1), to the owner's allowlisted chat, on the 30 s tick.
+// ---------------------------------------------------------------------------
+
+/** Cards per tick at most, so a burst of new jobs or skills cannot flood the chat at once; the
+ *  rest go out on the next ticks. */
+const APPROVAL_CARDS_PER_TICK = 5;
+let approvalsInFlight: Promise<void> | null = null;
+const approvalsTargetErr = { at: -Infinity };
+const approvalsUnreadableErr = { at: -Infinity };
+/** Card failures already logged, by item: each is logged at most once an hour. */
+const approvalCardFailures = new Map<string, number>();
+/** Held items already logged and noticed, and when the notices went out (approvals.ts CardState). */
+const approvalCardState = newCardState();
+
+export function checkApprovals(): Promise<void> {
+  if (approvalsInFlight) return approvalsInFlight;
+  const jobs = process.env.AUTO_APPROVAL === "1";
+  const skills = process.env.SKILL_APPROVAL === "1";
+  if (!jobs && !skills) return Promise.resolve();
+  if (stopping) return Promise.resolve();
+  approvalsInFlight = sendApprovalCards(jobs, skills)
+    .catch((e: any) => {
+      console.error(`[ERR] approvals: ${e?.message ?? e}`);
+    })
+    .finally(() => {
+      approvalsInFlight = null;
+    });
+  return approvalsInFlight;
+}
+
+async function sendApprovalCards(jobs: boolean, skills: boolean): Promise<void> {
+  // The owner's chat, as for the digest and the routine cards, and only when it is allowlisted;
+  // never a chat taken from a store a turn can write.
+  const target = digestTargetChat();
+  if (target === null || !isAllowedChat(target)) {
+    logHourly(approvalsTargetErr, "[APPROVALS] no allowlisted owner chat for approval cards");
+    return;
+  }
+  // Each item is carded on its own: one that fails is logged (once an hour) and skipped, and is
+  // recorded only after its send succeeded; nothing is sent while approvals.json is unreadable.
+  const store = jobs ? loadStoreChecked() : null;
+  const out = await sendCardRound({
+    path: APPROVALS_FILE,
+    jobs: store ? store.list : null,
+    jobsClean: store ? store.ok : true,
+    skills: skills ? skillEntries(getDb(), SKILLS_DIR) : null,
+    send: (text, keyboard) => tg("sendMessage", { chat_id: target, text, reply_markup: keyboard }),
+    now: () => Math.floor(Date.now() / 1000),
+    log: (line) => (line.startsWith("[ERR]") ? console.error(redact(line)) : console.log(redact(line))),
+    failLogged: approvalCardFailures,
+    cap: APPROVAL_CARDS_PER_TICK,
+    state: approvalCardState,
+  });
+  if (out.unreadable) logHourly(approvalsUnreadableErr, "[APPROVALS] approvals.json unreadable: no cards until it is fixed");
+}
+
+// ---------------------------------------------------------------------------
 // Reminder scheduler (fires due reminders on an interval)
 // ---------------------------------------------------------------------------
+
+/** Held [AUTO] jobs already logged, by why and key, with when: a "waiting" line is written once per
+ *  job version, a "duplicate" line at most once an hour per key. */
+const heldLogged = new Map<string, number>();
+/** When each approved repeating key last passed the hold (approvals.ts approvalHold): a clone or a
+ *  rewound fire time cannot run it again within the hour. Kept for the poller's lifetime. */
+const repeatPassedAt = new Map<string, number>();
 
 async function checkReminders() {
   let due;
   try {
-    due = popDue();
+    // AUTO_APPROVAL=1: a due [AUTO] job without the owner's approval stays in the store untouched
+    // (a one-time job is kept until he decides); the card for it goes out from checkApprovals. An
+    // approved one-time key lets one job through per pop, so planted duplicates stay held; an
+    // approved repeating key passes at most once an hour.
+    const hold =
+      process.env.AUTO_APPROVAL === "1"
+        ? approvalHold(APPROVALS_FILE, (r: Reminder, k: string, why: "waiting" | "duplicate") => {
+            const logKey = `${why}:${k}`;
+            const nowS = Math.floor(Date.now() / 1000);
+            const at = heldLogged.get(logKey);
+            if (at !== undefined && (why === "waiting" || nowS - at < 3600)) return;
+            heldLogged.set(logKey, nowS);
+            const id = cardableJob(r) ? r.id : JSON.stringify(String(r.id).slice(0, 40));
+            console.log(redact(`[AUTO] held ${id} (${why === "duplicate" ? "duplicate of an approved job" : "waiting for approval"})`));
+          }, repeatPassedAt)
+        : undefined;
+    due = popDue(undefined, hold);
   } catch (e: any) {
     console.error(`[ERR] reminders check: ${e?.message ?? e}`);
     return;
   }
+  // Every popped one-time job's approval is used up now, before the first await, whether or not
+  // the job is then sent: an overlapping run (the next tick, a ✓ tap) builds its hold without it.
   for (const r of due) {
+    try {
+      consumeOnceApproval(APPROVALS_FILE, r);
+    } catch (e: any) {
+      console.error(`[ERR] approval use ${r.id}: ${e?.message ?? e}`);
+    }
+  }
+  for (const r of due) {
+    if (!sendAllowed(isAutoJob(r) ? "auto" : "reminder", r.id, r.chatId)) continue;
     try {
       if (r.text.startsWith("[AUTO] ")) {
         // "[AUTO] <prompt>" reminders run the prompt through Claude instead of pinging the text.
@@ -2917,7 +3329,7 @@ async function checkReminders() {
         const ph = await tg("sendMessage", { chat_id: r.chatId, text: "⏳" });
         let skills = "";
         try {
-          skills = skillsIndexBlock(getDb(), autoPrompt);
+          skills = skillsIndexBlock(getDb(), autoPrompt, undefined, promptSkillGate());
         } catch (e: any) {
           console.error(`[ERR] skills: ${e?.message ?? e}`);
         }
@@ -2925,10 +3337,16 @@ async function checkReminders() {
         // Unattended run → least-privilege: can't schedule reminders or file drafts.
         const turnId = newTurnId();
         const auto = autoSessionSpawn();
-        await streamClaudeResilient(fullPrompt, r.chatId, ph.message_id, "sonnet", {
-          ...auto,
-          env: { ...(auto.env ?? {}), TELEGRAM_TURN_ID: turnId },
-        });
+        try {
+          await streamClaudeResilient(fullPrompt, r.chatId, ph.message_id, "sonnet", {
+            ...auto,
+            env: { ...(auto.env ?? {}), TELEGRAM_TURN_ID: turnId },
+          });
+        } catch (e) {
+          // Turns refused: the placeholder says so instead of staying a ⏳ forever.
+          if (e instanceof TurnsUnavailable) await sendReply(r.chatId, ph.message_id, TURNS_UNAVAILABLE_REPLY).catch(() => {});
+          throw e;
+        }
         await sendPendingProposals(r.chatId, turnId);
       } else {
         if (r.repeat) {
@@ -2961,6 +3379,7 @@ async function checkReminders() {
       // Mark BEFORE sending — same state-before-effect ordering as resolveFollowup;
       // a lost nudge beats a double-nudge when an [AUTO] run overlaps the tick.
       markNudged(f.id);
+      if (!sendAllowed("nudge", f.id, f.chatId)) continue; // marked, so it is dropped once, not every tick
       // The nudge message takes over the buttons; strip the original reminder's
       // keyboard first so the same follow-up never has two live button sets
       // (the old one stayed clickable forever after the rebind below).
@@ -2990,6 +3409,7 @@ async function checkReminders() {
   for (const a of dueMorningNudges(nowS, new Date().getHours())) {
     try {
       markActionNudged(a.id); // state before effect — a lost nudge beats a double-nudge
+      if (!sendAllowed("pa-nudge", a.id, a.chatId)) continue;
       // The nudge takes over the buttons: clear the original message's keyboard
       // first, so one action never has two live button sets (PR #15's lesson,
       // learned there for reminder follow-ups).
@@ -3061,6 +3481,7 @@ async function runMonitor(m: Monitor) {
   if (!outcome.ok) {
     recordCheck(db, m.id, { success: false });
     const after = m.consecutive_failures + 1;
+    if (!sendAllowed("monitor", m.id, m.chat_id)) return;
     try {
       if (m.consecutive_failures === 0) {
         await tg("sendMessage", { chat_id: m.chat_id, text: `⚠️ monitor "${m.name}" couldn't fetch: ${outcome.error}` });
@@ -3089,6 +3510,7 @@ async function runMonitor(m: Monitor) {
 }
 
 async function fireMonitor(m: Monitor, outcome: CheckOutcome, threat: string[]) {
+  if (!sendAllowed("monitor", m.id, m.chat_id)) return; // both branches below send to m.chat_id
   // Plain alert when: notify mode, threat-tripped content (never summarize it),
   // a threshold (nothing to summarize), or no body text available.
   const plain = m.on_fire === "notify" || threat.length > 0 || outcome.kind === "threshold" || !outcome.text;
@@ -3117,8 +3539,13 @@ async function fireMonitor(m: Monitor, outcome: CheckOutcome, threat: string[]) 
     `The monitored page "${m.name}" (${m.url}) just changed. Using ONLY the data block below, ` +
     `tell Maor briefly what it now says / what looks new. Plain text, no markdown.\n\n${fenced}`;
   const fullPrompt = buildPrompt([], "Maor", ask, [], loadMemory(), "");
-  const auto = autoSessionSpawn();
-  await streamClaudeResilient(fullPrompt, m.chat_id, ph.message_id, "sonnet", auto);
+  try {
+    await streamClaudeResilient(fullPrompt, m.chat_id, ph.message_id, "sonnet", monitorSpawnOpts());
+  } catch (e) {
+    // Turns refused: the placeholder says so instead of staying a ⏳ forever.
+    if (e instanceof TurnsUnavailable) await sendReply(m.chat_id, ph.message_id, TURNS_UNAVAILABLE_REPLY).catch(() => {});
+    throw e;
+  }
 }
 
 /** Nudge the owner ~CAL_LEAD_MIN before each upcoming iCloud event (deduped). */
@@ -3156,6 +3583,61 @@ async function checkCalendarNudges() {
 }
 
 // ---------------------------------------------------------------------------
+// Nightly integrity check (integrity.ts; spec section 8, wall 3). INTEGRITY_NIGHTLY=1 runs it at
+// 04:15, held over Shabbat and holidays; the attempt date is recorded before the run and seeded
+// from integrity-last.json at startup, so a restart cannot run or message twice the same day (a
+// missing file gets { since }, from which health counts its 96 hours until a run completes).
+// ---------------------------------------------------------------------------
+
+const integrityState: { attempted: string | null } = { attempted: null };
+let integrityInFlight: Promise<void> | null = null;
+
+/** The read-only CLI as the poller's own user, killed at 300 s. The output is the findings JSON;
+ *  a kill, or a grandchild still holding the pipe at the deadline, counts as not completed. */
+async function runIntegrityCheck(): Promise<{ killed: boolean; out: string }> {
+  const p = Bun.spawn([process.execPath, "run", "integrity.ts", "--json"], { cwd: PROJECT_DIR, stdin: "ignore", stdout: "pipe", stderr: "inherit" });
+  let killer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<null>((res) => {
+    killer = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} res(null); }, 300_000);
+  });
+  try {
+    const done = await Promise.race([Promise.all([new Response(p.stdout).text(), p.exited]), deadline]);
+    return done === null ? { killed: true, out: "" } : { killed: false, out: done[0] };
+  } finally {
+    clearTimeout(killer);
+  }
+}
+
+async function sendIntegrity(text: string): Promise<void> {
+  // The owner's chat, as for the digest and the approval cards, and only when it is allowlisted.
+  const target = digestTargetChat();
+  if (target === null || !isAllowedChat(target)) {
+    console.error("[INTEGRITY] no allowlisted owner chat for the integrity message");
+    return;
+  }
+  await tg("sendMessage", { chat_id: target, text });
+}
+
+function checkIntegrity(): Promise<void> {
+  if (process.env.INTEGRITY_NIGHTLY !== "1" || stopping) return Promise.resolve();
+  if (integrityInFlight) return integrityInFlight;
+  integrityInFlight = nightlyIntegrity({
+    now: () => new Date(),
+    quiet: (d) => quietNow(d),
+    lastFile: INTEGRITY_LAST_FILE,
+    state: integrityState,
+    runCheck: runIntegrityCheck,
+    send: sendIntegrity,
+    log: (line) => (line.startsWith("[ERR]") ? console.error(line) : console.log(line)),
+  })
+    .catch((e: any) => console.error(`[ERR] integrity: ${e?.message ?? e}`))
+    .finally(() => {
+      integrityInFlight = null;
+    });
+  return integrityInFlight;
+}
+
+// ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 
@@ -3164,8 +3646,25 @@ async function main() {
     console.error("[FATAL] TELEGRAM_BOT_TOKEN is not set. Source your .env first.");
     process.exit(1);
   }
+  if (stateMissing()) {
+    console.error("[FATAL] STATE_DIR is in use but the shared database is missing; refusing to start on empty state (set STATE_INIT=1 for a fresh folder)");
+    process.exit(1);
+  }
   ensureDir(HISTORY_DIR);
-  ensureDir(join(PROJECT_DIR, "memory"));
+  ensureDir(sharedPath("memory"));
+  const tu = turnUser();
+  if (tu) {
+    // probeTurnEnv never throws: a broken sudo refuses turns, the rest of the poller keeps running.
+    const broken = await probeTurnEnv(runQuiet, tu);
+    if (broken) {
+      turnEnvBroken = broken;
+      console.error(`[FATAL] ${turnEnvBroken}`);
+    }
+    console.log(`[TURN] turns run as ${tu}${broken ? " (BROKEN, see FATAL)" : ""}`);
+    if (process.env.TURN_SWEEP !== "0") {
+      setInterval(() => void sweepOrphans(runQuiet, tu, (s) => (s.startsWith("[ERR]") ? console.error(s) : console.log(s))).catch((e: any) => console.error(`[ERR] sweep: ${e?.message ?? e}`)), 60_000);
+    }
+  } else console.log("[TURN] turns run as the poller's user");
   try {
     const imported = importHistoryJson(getDb(), HISTORY_DIR, Math.floor(Date.now() / 1000));
     if (imported) console.log(`[DB] imported ${imported} legacy history messages`);
@@ -3174,7 +3673,7 @@ async function main() {
   }
   try {
     let md = "";
-    try { md = readFileSync(MEMORY_FILE, "utf8"); } catch {}
+    try { md = readNoFollow(MEMORY_FILE); } catch {}
     const importedMem = importMemoryMd(getDb(), md, Math.floor(Date.now() / 1000));
     if (importedMem) console.log(`[DB] imported ${importedMem} memory entries from MEMORY.md`);
   } catch (e: any) {
@@ -3201,8 +3700,20 @@ async function main() {
   // POLL_TIMEOUT-wide window after every restart where the file does not exist
   // yet and health.ts would read a perfectly healthy boot as a stall.
   try {
-    writeFileSync(HEARTBEAT_FILE, String(Math.floor(Date.now() / 1000)));
+    writeAtomic(HEARTBEAT_FILE, String(Math.floor(Date.now() / 1000)));
   } catch {}
+
+  if (process.env.INTEGRITY_NIGHTLY === "1") {
+    integrityState.attempted = seedIntegrityLast(INTEGRITY_LAST_FILE, Math.floor(Date.now() / 1000));
+    console.log(`[INTEGRITY] nightly on; last attempt ${integrityState.attempted ?? "none"}`);
+  }
+  // A turn can write bot.db: a trigger, view or table it planted is logged and reported to the
+  // owner once per start (the poller keeps running; integrity check 16 repeats it nightly).
+  try {
+    await reportSchemaDrift(getDb(), sendIntegrity, (line) => console.error(redact(line)));
+  } catch (e: any) {
+    console.error(`[ERR] database schema check: ${e?.message ?? e}`);
+  }
 
   setInterval(() => {
     void checkReminders();
@@ -3211,6 +3722,9 @@ async function main() {
     void checkDigest();
     void checkRchannel();
     void checkInbox();
+    void refreshInboxStatus();
+    void checkApprovals();
+    void checkIntegrity();
   }, 30_000);
 
   setInterval(() => {
@@ -3240,7 +3754,7 @@ async function main() {
     // cycle actually completes, so a process that is up but no longer turning
     // goes stale — systemd reports that case as perfectly healthy.
     try {
-      writeFileSync(HEARTBEAT_FILE, String(Math.floor(Date.now() / 1000)));
+      writeAtomic(HEARTBEAT_FILE, String(Math.floor(Date.now() / 1000)));
     } catch {}
 
     for (const u of updates) {
