@@ -1,0 +1,8 @@
+# The poller (claudebot) starts Claude turns as the weaker user agentturn. Becoming agentturn
+# grants claudebot nothing it lacks; agentturn itself has no sudo rights. Only the three secrets
+# a turn needs cross here; every other variable is passed on the env command line.
+Defaults>agentturn env_keep += "CLAUDE_CODE_OAUTH_TOKEN ICLOUD_USER ICLOUD_APP_PASSWORD"
+Defaults>agentturn umask=0007
+Defaults>agentturn umask_override
+Defaults>agentturn !use_pty
+claudebot ALL=(agentturn) NOPASSWD: ALL

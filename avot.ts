@@ -14,8 +14,9 @@
  * fetched. That split means a transient network failure can never be
  * misread as "end of chapter" and silently skip content.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { sharedPath, writeAtomic, readNoFollow } from "./paths.ts";
 import { safeFetch } from "./net.ts";
 
 export interface AvotState {
@@ -30,7 +31,7 @@ export interface AvotState {
 export const MISHNAYOT_PER_PEREK = [18, 16, 18, 22, 23, 11];
 
 function statePath(): string {
-  return process.env.AVOT_STATE_FILE ?? join(import.meta.dir, "data", "avot-state.json");
+  return process.env.AVOT_STATE_FILE ?? sharedPath("data", "avot-state.json");
 }
 
 export function defaultAvotState(): AvotState {
@@ -39,9 +40,12 @@ export function defaultAvotState(): AvotState {
 
 export function loadAvotState(): AvotState {
   try {
-    const raw = JSON.parse(readFileSync(statePath(), "utf8"));
+    const raw = JSON.parse(readNoFollow(statePath()));
     return { ...defaultAvotState(), ...(typeof raw === "object" && raw ? raw : {}) };
-  } catch {
+  } catch (e: any) {
+    // Missing: empty. Corrupt, a link, a FIFO or any non-regular file: logged, treated as empty;
+    // the next save replaces it by rename, never writing through it.
+    if (e?.code !== "ENOENT") console.error(`[STORE] ${statePath()} unreadable, treated as empty: ${e?.message ?? e}`);
     return defaultAvotState();
   }
 }
@@ -50,9 +54,7 @@ export function saveAvotState(state: AvotState): void {
   const path = statePath();
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const tmp = path + ".tmp";
-  writeFileSync(tmp, JSON.stringify(state, null, 2));
-  renameSync(tmp, path); // atomic replace
+  writeAtomic(path, JSON.stringify(state, null, 2)); // atomic replace
 }
 
 // ---------------------------------------------------------------------------

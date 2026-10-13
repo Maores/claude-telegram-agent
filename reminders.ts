@@ -9,8 +9,8 @@
  * reminders) uses the process timezone — start.sh sets TZ=Asia/Jerusalem.
  */
 
-import { readFileSync, writeFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { writeFileSync, rmSync, statSync } from "node:fs";
+import { sharedPath, writeAtomic, readNoFollow } from "./paths.ts";
 
 export interface Repeat {
   hour: number;
@@ -27,7 +27,7 @@ export interface Reminder {
 
 /** Read the store path lazily so tests can override REMINDERS_FILE at runtime. */
 function storePath(): string {
-  return process.env.REMINDERS_FILE ?? join(import.meta.dir, "reminders.json");
+  return process.env.REMINDERS_FILE ?? sharedPath("reminders.json");
 }
 
 /** Cross-process mutation lock. The poller and the remind.ts CLI both
@@ -78,19 +78,27 @@ export function withFileLock<T>(
 }
 
 export function loadStore(): Reminder[] {
+  return loadStoreChecked().list;
+}
+
+/** The store and whether it was read cleanly: missing is clean (empty); corrupt, a link, a FIFO or
+ *  any non-regular file is not (logged, read as empty); a non-list is not either (read as empty,
+ *  without a log line, as loadStore always did). */
+export function loadStoreChecked(): { list: Reminder[]; ok: boolean } {
   try {
-    const data = JSON.parse(readFileSync(storePath(), "utf8"));
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
+    const data = JSON.parse(readNoFollow(storePath()));
+    return Array.isArray(data) ? { list: data, ok: true } : { list: [], ok: false };
+  } catch (e: any) {
+    // Missing: empty. Corrupt, a link, a FIFO or any non-regular file: logged, treated as empty;
+    // the next save replaces it by rename, never writing through it.
+    if (e?.code === "ENOENT") return { list: [], ok: true };
+    console.error(`[STORE] ${storePath()} unreadable, treated as empty: ${e?.message ?? e}`);
+    return { list: [], ok: false };
   }
 }
 
 export function saveStore(list: Reminder[]) {
-  const path = storePath();
-  const tmp = path + ".tmp";
-  writeFileSync(tmp, JSON.stringify(list, null, 2));
-  renameSync(tmp, path); // atomic replace
+  writeAtomic(storePath(), JSON.stringify(list, null, 2)); // atomic replace
 }
 
 function genId(list: Reminder[]): string {
@@ -210,14 +218,19 @@ export function cancel(chatId: number, id: string): boolean {
   });
 }
 
-/** Return reminders due at/before now; remove one-time, reschedule recurring. */
-export function popDue(nowEpoch = Math.floor(Date.now() / 1000)): Reminder[] {
+/** Return reminders due at/before now; remove one-time, reschedule recurring. A due reminder the
+ *  `hold` predicate returns true for (an [AUTO] job still waiting for the owner's approval) stays
+ *  in the store exactly as it is: neither returned, removed nor rescheduled. Runs inside the
+ *  store lock, so `hold` must be synchronous and quick. */
+export function popDue(nowEpoch = Math.floor(Date.now() / 1000), hold?: (r: Reminder) => boolean): Reminder[] {
   return withFileLock(storePath(), () => {
     const list = loadStore();
     const due: Reminder[] = [];
     const keep: Reminder[] = [];
     for (const r of list) {
-      if (r.fireAt <= nowEpoch) {
+      if (r.fireAt <= nowEpoch && hold?.(r)) {
+        keep.push(r);
+      } else if (r.fireAt <= nowEpoch) {
         due.push(r);
         if (r.repeat) {
           keep.push({ ...r, fireAt: nextFire(nowEpoch, r.repeat.hour, r.repeat.minute, r.repeat.days) });
@@ -259,23 +272,23 @@ const NUDGE_AFTER_S = 3600;
 const PRUNE_AFTER_S = 7 * 86_400;
 
 function followupsPath(): string {
-  return process.env.FOLLOWUPS_FILE ?? join(import.meta.dir, "followups.json");
+  return process.env.FOLLOWUPS_FILE ?? sharedPath("followups.json");
 }
 
 export function loadFollowups(): Followup[] {
   try {
-    const data = JSON.parse(readFileSync(followupsPath(), "utf8"));
+    const data = JSON.parse(readNoFollow(followupsPath()));
     return Array.isArray(data) ? data : [];
-  } catch {
+  } catch (e: any) {
+    // Missing: empty. Corrupt, a link, a FIFO or any non-regular file: logged, treated as empty;
+    // the next save replaces it by rename, never writing through it.
+    if (e?.code !== "ENOENT") console.error(`[STORE] ${followupsPath()} unreadable, treated as empty: ${e?.message ?? e}`);
     return [];
   }
 }
 
 export function saveFollowups(list: Followup[]) {
-  const path = followupsPath();
-  const tmp = path + ".tmp";
-  writeFileSync(tmp, JSON.stringify(list, null, 2));
-  renameSync(tmp, path);
+  writeAtomic(followupsPath(), JSON.stringify(list, null, 2));
 }
 
 export function addFollowup(chatId: number, text: string, messageId: number, firedAt: number): Followup {

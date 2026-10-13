@@ -16,8 +16,7 @@
  * Landing dark: nothing here is read by the poller yet — the live prompt
  * still comes from memory/MEMORY.md until the deferred cutover decision.
  */
-import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { sharedPath, readNoFollow } from "./paths";
 import { getDb } from "./db";
 import {
   addMemory, replaceMemory, removeMemory, searchMemory, listMemory, showMemory,
@@ -48,8 +47,8 @@ export function parseFlags(argv: string[]): { _: string[]; [k: string]: string |
   return out;
 }
 
-const MIRROR_DIR = join(import.meta.dir, "memory", "mirror");
-const MEMORY_MD = join(import.meta.dir, "memory", "MEMORY.md");
+const MIRROR_DIR = sharedPath("memory", "mirror");
+const MEMORY_MD = sharedPath("memory", "MEMORY.md");
 
 /** Mutations target either an explicit --id or a unique --old substring.
  *  --id is the only way to single out one of two identical entries. */
@@ -173,7 +172,7 @@ function main() {
       }
       case "import-md": {
         let md = "";
-        try { md = readFileSync(MEMORY_MD, "utf8"); } catch { die(`cannot read ${MEMORY_MD}`); }
+        try { md = readNoFollow(MEMORY_MD); } catch { die(`cannot read ${MEMORY_MD}`); }
         const n = importMemoryMd(db, md, now);
         if (n) exportMirror(db, MIRROR_DIR, now);
         console.log(n ? `imported ${n} entries from MEMORY.md` : "already imported (marker present) — nothing to do");

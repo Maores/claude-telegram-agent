@@ -1,5 +1,5 @@
 import { test, expect, afterAll } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -557,4 +557,39 @@ test("mergeQuestionBanks: stub vs stub — incoming still wins the collision", (
   expect(res.merged[0].lc_description).toBe("fresh statement");
   expect(res.keptOursOverIncoming).toBe(0);
   expect(res.replacedOurs).toBe(1);
+});
+
+// --- CLI: pausing the daily send without knowing where the flag file lives ------
+
+test("quiz.ts pause / status / resume drive the flag under the state folder's shared stores", () => {
+  const state = tmp("quiz-cli-");
+  mkdirSync(join(state, "shared", "stores"), { recursive: true });
+  const flag = join(state, "shared", "stores", "quiz-paused.flag");
+  const cli = (verb: string) =>
+    Bun.spawnSync({
+      cmd: [process.execPath, "run", join(import.meta.dir, "quiz.ts"), verb],
+      env: { ...process.env, STATE_DIR: state },
+      cwd: import.meta.dir,
+    });
+
+  const s0 = cli("status");
+  expect(s0.exitCode).toBe(0);
+  expect(s0.stdout.toString().trim()).toBe("active");
+
+  const p = cli("pause");
+  expect(p.exitCode).toBe(0);
+  expect(existsSync(flag)).toBe(true);
+  expect(cli("status").stdout.toString().trim()).toBe("paused");
+  expect(cli("pause").exitCode).toBe(0); // pausing twice is fine
+  expect(existsSync(flag)).toBe(true);
+
+  const r = cli("resume");
+  expect(r.exitCode).toBe(0);
+  expect(existsSync(flag)).toBe(false);
+  expect(cli("status").stdout.toString().trim()).toBe("active");
+  expect(cli("resume").exitCode).toBe(0); // resuming when not paused is fine
+
+  const bad = cli("bogus");
+  expect(bad.exitCode).not.toBe(0);
+  expect(bad.stderr.toString()).toContain("usage:");
 });

@@ -12,8 +12,7 @@
  * Turn-tagged, once-only consumption, 1-hour expiry, withFileLock. Spec:
  * docs/superpowers/specs/2026-06-15-d3-choice-buttons-design.md
  */
-import { readFileSync, writeFileSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { sharedPath, writeAtomic, readNoFollow } from "./paths.ts";
 import { withFileLock } from "./reminders.ts";
 
 export interface Choice {
@@ -36,23 +35,23 @@ const EXPIRY_S = 3600; // tappable for one hour (Maor's call, 2026-06-15)
 const PRUNE_AFTER_S = 24 * 3600; // resolved/expired entries linger a day for debugging
 
 function choicesPath(): string {
-  return process.env.CHOICES_FILE ?? join(import.meta.dir, "choices.json");
+  return process.env.CHOICES_FILE ?? sharedPath("choices.json");
 }
 
 function loadChoices(): Choice[] {
   try {
-    const data = JSON.parse(readFileSync(choicesPath(), "utf8"));
+    const data = JSON.parse(readNoFollow(choicesPath()));
     return Array.isArray(data) ? data : [];
-  } catch {
+  } catch (e: any) {
+    // Missing: empty. Corrupt, a link, a FIFO or any non-regular file: logged, treated as empty;
+    // the next save replaces it by rename, never writing through it.
+    if (e?.code !== "ENOENT") console.error(`[STORE] ${choicesPath()} unreadable, treated as empty: ${e?.message ?? e}`);
     return [];
   }
 }
 
 function saveChoices(list: Choice[]) {
-  const path = choicesPath();
-  const tmp = path + ".tmp";
-  writeFileSync(tmp, JSON.stringify(list, null, 2));
-  renameSync(tmp, path);
+  writeAtomic(choicesPath(), JSON.stringify(list, null, 2));
 }
 
 /** Register a question. Throws on an out-of-range option count — the bot should

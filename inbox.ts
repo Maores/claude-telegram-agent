@@ -11,12 +11,13 @@
  *   bun run inbox.ts ack <id>...   delete items that landed on the PC, with their files
  *   bun run inbox.ts get <id>      the bytes of one item's stored file
  *   bun run inbox.ts purge         delete what is due (the poller's tick does this too)
- *   bun run inbox.ts status        counts, for the health sweep
+ *   bun run inbox.ts status        counts, for the health sweep (with INBOX_STATUS_FILE set, as in
+ *                                  a turn: the poller's counts-only summary, never the store)
  *   bun run inbox.ts gate          the PC key's forced command: admits only list, ack and get
  *
  * list, ack and get reach the PC only through gate; guard.ts refuses all but status to the agent's turns.
  */
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { redact } from "./redact.ts";
@@ -610,6 +611,104 @@ export async function runInboxTick(d: {
 }
 
 // ---------------------------------------------------------------------------
+// The counts-only summary. With the state outside the repo a turn cannot open ~/inbox, so the
+// poller writes these counts at the poller-only top of the state folder on its tick, and `status`
+// in a turn (INBOX_STATUS_FILE set) reads them instead. Counts only: no ids, names or texts.
+// ---------------------------------------------------------------------------
+
+export interface InboxCounts {
+  v: 1;
+  waiting: number;
+  files: number;
+  bytes: number;
+  oldestReceivedAt: number | null;
+}
+export interface InboxSummary extends InboxCounts {
+  asOf: number; // when the poller counted, epoch seconds
+}
+/** The summary file's size cap: a counts file is under a hundred bytes. */
+const SUMMARY_MAX_BYTES = 64 * 1024;
+
+/** What waits in the store, its files and their bytes. A missing folder gives zeros. (nowS is
+ *  part of the interface; the counts themselves do not depend on it.) */
+export function inboxStatus(dir: string, nowS: number): InboxCounts {
+  void nowS;
+  const items = loadInbox(dir).items;
+  let files = 0;
+  let bytes = 0;
+  try {
+    for (const name of readdirSync(join(dir, "files"))) {
+      files++;
+      bytes += statSync(join(dir, "files", name)).size;
+    }
+  } catch {}
+  const oldestReceivedAt = items.reduce<number | null>((m, i) => (m === null || i.receivedAt < m ? i.receivedAt : m), null);
+  return { v: 1, waiting: items.length, files, bytes, oldestReceivedAt };
+}
+
+/** Write the summary without ever writing through a planted link: a fresh temp with a random
+ *  name, opened exclusively, mode 0640 set on the open handle, then a rename (which replaces a
+ *  link at the target rather than following it). The temp is removed on failure. */
+export function writeInboxStatus(file: string, dir: string, nowS: number): void {
+  const summary: InboxSummary = { ...inboxStatus(dir, nowS), asOf: nowS };
+  const rand = Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(16).padStart(2, "0")).join("");
+  const tmp = `${file}.${process.pid}.${rand}.tmp`;
+  let fd: number | null = null;
+  try {
+    fd = openSync(tmp, "wx");
+    writeSync(fd, Buffer.from(JSON.stringify(summary)));
+    fchmodSync(fd, 0o640);
+    closeSync(fd);
+    fd = null;
+    renameSync(tmp, file);
+  } catch (e) {
+    if (fd !== null) try { closeSync(fd); } catch {}
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+
+const isCount = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
+
+/** The poller's summary, or null when it is missing, not a regular file (a link at its last
+ *  component, a FIFO, a folder), over the cap, or not exactly a counts file. Never follows a link
+ *  and never blocks. Only the counts are returned, whatever else the file holds. */
+function readInboxSummary(file: string): InboxSummary | null {
+  let raw: string;
+  try {
+    const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    try {
+      const st = fstatSync(fd);
+      if (!st.isFile() || st.size > SUMMARY_MAX_BYTES) return null;
+      const buf = Buffer.alloc(st.size);
+      let off = 0;
+      while (off < st.size) {
+        const n = readSync(fd, buf, off, st.size - off, off);
+        if (n <= 0) break;
+        off += n;
+      }
+      raw = buf.subarray(0, off).toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  let s: any;
+  try {
+    s = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!s || typeof s !== "object" || Array.isArray(s) || s.v !== 1) return null;
+  if (!isCount(s.waiting) || !isCount(s.files) || !isCount(s.bytes) || !isCount(s.asOf)) return null;
+  if (s.oldestReceivedAt !== null && !isCount(s.oldestReceivedAt)) return null;
+  return { v: 1, waiting: s.waiting, files: s.files, bytes: s.bytes, oldestReceivedAt: s.oldestReceivedAt, asOf: s.asOf };
+}
+
+export const NO_INBOX_SUMMARY = "no inbox summary yet (the poller writes it on its next tick)";
+
+// ---------------------------------------------------------------------------
 // The CLI. list/ack/get reach the PC only through `gate`, which the PC key's authorized_keys line
 // forces; `status` is for the agent and the health sweep.
 // ---------------------------------------------------------------------------
@@ -693,17 +792,19 @@ export async function runInboxCli(argv: string[], io: InboxCliIo): Promise<numbe
     return 0;
   }
   if (cmd === "status") {
-    const items = loadInbox(dir).items;
-    let files = 0;
-    let bytes = 0;
-    try {
-      for (const name of readdirSync(join(dir, "files"))) {
-        files++;
-        bytes += statSync(join(dir, "files", name)).size;
+    if (io.env.INBOX_STATUS_FILE) {
+      // a turn: the store is closed to it, so the poller's counts-only summary answers instead
+      const s = readInboxSummary(io.env.INBOX_STATUS_FILE);
+      if (!s) {
+        io.err(NO_INBOX_SUMMARY);
+        return 1;
       }
-    } catch {}
-    const oldest = items.reduce<number | null>((m, i) => (m === null || i.receivedAt < m ? i.receivedAt : m), null);
-    await io.out(JSON.stringify({ v: 1, waiting: items.length, files, bytes, oldestAgeS: oldest === null ? null : nowS - oldest }) + "\n");
+      const oldestAgeS = s.oldestReceivedAt === null ? null : nowS - s.oldestReceivedAt;
+      await io.out(JSON.stringify({ v: 1, waiting: s.waiting, files: s.files, bytes: s.bytes, oldestAgeS, asOf: s.asOf }) + "\n");
+      return 0;
+    }
+    const c = inboxStatus(dir, nowS);
+    await io.out(JSON.stringify({ v: 1, waiting: c.waiting, files: c.files, bytes: c.bytes, oldestAgeS: c.oldestReceivedAt === null ? null : nowS - c.oldestReceivedAt }) + "\n");
     return 0;
   }
   io.err(INBOX_USAGE);

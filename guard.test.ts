@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { checkCommand, checkAutoSession, checkFileWrite } from "./guard";
+import { checkCommand, checkAutoSession, checkFileWrite, refusalLogArgv } from "./guard";
 
 // ---------------------------------------------------------------------------
 // checkCommand — hardline catastrophic-command blocklist (fail closed)
@@ -226,6 +226,64 @@ describe("checkCommand redirect spellings", () => {
     ]) {
       expect(checkCommand(cmd).verdict).toBe("allow");
     }
+  });
+});
+
+describe("checkCommand sudo", () => {
+  test("sudo in command position is refused; the word as data is not; specific reasons still win", () => {
+    const SUDO = "refused: a turn has no admin rights on this server; ask Maor to do it from his PC";
+    for (const c of ["sudo ls", "ls; sudo id", "cd x && sudo -u root id", "/usr/bin/sudo id", "(sudo id)"]) expect(checkCommand(c)).toEqual({ verdict: "block", reason: SUDO });
+    for (const c of ["echo sudo", "grep -n sudo DEPLOY.md", "cat sudoers.txt"]) expect(checkCommand(c).verdict).toBe("allow");
+    expect(checkCommand("sudo shutdown now").reason).toContain("shutdown");
+  });
+
+  // The shapes the command-position prefix reaches for every other rule reach sudo too. Shapes that
+  // hide the command behind a wrapper (env, exec, nice, bash -c), an assignment, a backslash, quotes
+  // or backticks are not command position to this guard for any rule; the wall against sudo is that
+  // the turn's user has no sudo rights, and this rule is a fence plus a journal signal.
+  test("sudo after any separator, blank or path the command-position prefix knows is refused", () => {
+    const SUDO = checkCommand("sudo ls").reason;
+    const TAB = String.fromCharCode(9);
+    const NL = String.fromCharCode(10);
+    for (const c of [
+      "sudo" + TAB + "ls",
+      "sudo" + NL + "ls",
+      "ls" + NL + "sudo id",
+      "echo $(sudo id)",
+      "ls | sudo tee /etc/x",
+      "ls || sudo id",
+      "{ sudo id; }",
+      "/bin/../usr/bin/sudo id",
+      "./sudo id",
+      "sudo",
+    ]) {
+      expect([c, checkCommand(c)]).toEqual([c, { verdict: "block", reason: SUDO }]);
+    }
+  });
+
+  test("a sudo-like word that is not sudo, or sudo as an argument, is allowed", () => {
+    for (const c of [
+      "ls /etc/sudoers.d",
+      "cat /usr/bin/sudo",
+      "git log --grep=sudo",
+      "sudoku --new",
+      "echo pseudo",
+      'grep -rn "sudo " docs',
+    ]) {
+      expect([c, checkCommand(c).verdict]).toEqual([c, "allow"]);
+    }
+  });
+});
+
+describe("refusalLogArgv", () => {
+  test("refusalLogArgv tags the journal line and caps its length", () => {
+    const a = refusalLogArgv("x".repeat(900));
+    expect(a.slice(0, 4)).toEqual(["/usr/bin/logger", "-t", "agent-guard", "--"]);
+    expect(a[4].length).toBe(500);
+  });
+
+  test("a short reason goes through whole, after the end-of-options marker", () => {
+    expect(refusalLogArgv("-p evil")).toEqual(["/usr/bin/logger", "-t", "agent-guard", "--", "-p evil"]);
   });
 });
 

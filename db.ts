@@ -8,8 +8,9 @@
  * table powers keyword recall (BM25). No embeddings.
  */
 import { Database } from "bun:sqlite";
-import { join } from "node:path";
-import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { sharedPath } from "./paths";
 
 export interface MessageRow {
   id: number;
@@ -25,7 +26,7 @@ export interface RecallHit {
   ts: number;
 }
 
-const DEFAULT_DB_PATH = join(import.meta.dir, "memory", "bot.db");
+const DEFAULT_DB_PATH = sharedPath("memory", "bot.db");
 
 /** Create tables, FTS index, and sync triggers. Idempotent. */
 export function initSchema(db: Database): void {
@@ -178,13 +179,109 @@ export function initSchema(db: Database): void {
   }
 }
 
+/** A turn can write bot.db's bytes, schema, triggers and FTS shadow tables, and the poller (which
+ *  keeps sudo) opens it: no schema-defined function or virtual table runs with the opener's trust,
+ *  every b-tree cell is bounds-checked as it is read, and nothing is memory-mapped. Every opener
+ *  (the poller, the CLIs, the integrity check) sets these before it reads anything. */
+export function hardenDb(db: Database): void {
+  db.exec("PRAGMA trusted_schema = OFF;");
+  db.exec("PRAGMA cell_size_check = ON;");
+  db.exec("PRAGMA mmap_size = 0;");
+}
+
 /** Open (and migrate) the DB at `path`. Tests pass ":memory:". */
 export function openDb(path: string = DEFAULT_DB_PATH): Database {
+  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path, { create: true });
+  hardenDb(db);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA busy_timeout = 5000;");
   initSchema(db);
   return db;
+}
+
+export interface SchemaObject {
+  type: string;
+  name: string;
+  /** The CREATE statement with every run of whitespace collapsed; "" for an automatic index. */
+  sql: string;
+}
+
+const normalizeSql = (sql: string | null): string => (sql ?? "").replace(/\s+/g, " ").trim();
+
+/** The tables FTS5 creates for itself behind each of db.ts's virtual tables: they are excluded by
+ *  name (only as tables), since their SQL belongs to the FTS5 version, not to this file. */
+const FTS_SHADOW = /^(messages|memory|skills)_fts_(data|idx|content|docsize|config)$/;
+
+function schemaObjects(db: Database): SchemaObject[] {
+  const rows = db.query("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").all() as { type: string; name: string; sql: string | null }[];
+  return rows
+    .filter((r) => !(r.type === "table" && FTS_SHADOW.test(r.name)))
+    .map((r) => ({ type: r.type, name: r.name, sql: normalizeSql(r.sql) }));
+}
+
+let _expected: SchemaObject[] | null = null;
+/** Every table, virtual table, index, trigger and view db.ts itself creates (initSchema plus its
+ *  migrations, run on an empty in-memory database), with its SQL normalized. */
+export function expectedSchema(): SchemaObject[] {
+  if (!_expected) {
+    const db = new Database(":memory:");
+    try {
+      hardenDb(db);
+      initSchema(db);
+      _expected = schemaObjects(db);
+    } finally {
+      db.close();
+    }
+  }
+  return _expected.map((o) => ({ ...o }));
+}
+
+/** A name from sqlite_master as a log may show it: quoted, control characters escaped, clipped. */
+const shownName = (n: string) => JSON.stringify(n.length > 60 ? n.slice(0, 60) + "…" : n);
+
+/** The objects in `db`'s sqlite_master that differ from expectedSchema(): added, missing, or with
+ *  changed SQL (FTS5 shadow tables aside). [] when the schema is exactly db.ts's. */
+export function schemaDrift(db: Database): string[] {
+  const want = new Map(expectedSchema().map((o) => [`${o.type} ${o.name}`, o.sql]));
+  const have = new Map(schemaObjects(db).map((o) => [`${o.type} ${o.name}`, o]));
+  const out: string[] = [];
+  for (const [k, o] of have) {
+    if (!want.has(k)) out.push(`added ${o.type} ${shownName(o.name)}`);
+    else if (want.get(k) !== o.sql) out.push(`changed ${o.type} ${shownName(o.name)}`);
+  }
+  for (const k of want.keys()) {
+    if (!have.has(k)) {
+      const sp = k.indexOf(" ");
+      out.push(`missing ${k.slice(0, sp)} ${shownName(k.slice(sp + 1))}`);
+    }
+  }
+  return out;
+}
+
+/** The owner's notice when the poller finds drift at startup (count only, never a name). */
+export function schemaDriftNotice(n: number): string {
+  return `במסד הנתונים נמצאו ${n} שינויי מבנה לא צפויים`;
+}
+
+/** The poller's startup check: on drift, one [ERR] line naming the objects and one notice to the
+ *  owner (the caller's owner-only send); the poller keeps running either way. Never throws. */
+export async function reportSchemaDrift(db: Database, send: (text: string) => Promise<void>, log: (line: string) => void): Promise<string[]> {
+  let drift: string[];
+  try {
+    drift = schemaDrift(db);
+  } catch (e: any) {
+    log(`[ERR] database schema check failed: ${e?.name ?? "error"}`);
+    return [];
+  }
+  if (!drift.length) return drift;
+  log(`[ERR] database schema drift: ${drift.join(", ")}`);
+  try {
+    await send(schemaDriftNotice(drift.length));
+  } catch (e: any) {
+    log(`[ERR] database schema drift notice failed: ${e?.message ?? e}`);
+  }
+  return drift;
 }
 
 let _db: Database | null = null;

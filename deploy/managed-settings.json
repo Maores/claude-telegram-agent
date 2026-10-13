@@ -1,0 +1,16 @@
+{
+  "allowManagedHooksOnly": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Monitor|Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|create_draft",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /home/claudebot/claude-bot && /usr/bin/env -i PATH=/usr/bin:/bin HOME=/home/claudebot/claude-bot CLAUDE_AUTO_SESSION=\"${CLAUDE_AUTO_SESSION:-}\" /usr/bin/timeout -k 5 30 /home/claudebot/.bun/bin/bun --no-env-file --config=/home/claudebot/claude-bot/deploy/empty-bunfig.toml run hooks/pretooluse-guard.ts; rc=$?; [ \"$rc\" = 0 ] && exit 0; [ \"$rc\" = 2 ] && exit 2; echo \"[guard] hook failed to run (rc=$rc), failing closed\" >&2; exit 2"
+          }
+        ]
+      }
+    ]
+  }
+}

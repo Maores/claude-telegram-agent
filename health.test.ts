@@ -1,6 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-  assessHealth, shouldAlert, formatAlert, HEARTBEAT_STALE_S, healthProbeArgv,
+  assessHealth, shouldAlert, formatAlert, HEARTBEAT_STALE_S, healthProbeArgv, integrityStale, integrityReading,
   type Probe, type AlertState,
 } from "./health";
 
@@ -125,5 +128,65 @@ describe("formatAlert", () => {
     const msg = formatAlert({ healthy: true, faults: [] }, true);
     expect(msg).toMatch(/חזר|בסדר|OK/i);
     expect(msg.length).toBeLessThan(120);
+  });
+});
+
+describe("the nightly integrity check's dead-man rule", () => {
+  const H = 3600;
+  test("fires at 97 h outside a quiet window, not at 95 h, and not inside one", () => {
+    expect(integrityStale(true, NOW - 97 * H, NOW, false)).toBe(true);
+    expect(integrityStale(true, NOW - 95 * H, NOW, false)).toBe(false);
+    expect(integrityStale(true, NOW - 97 * H, NOW, true)).toBe(false);
+  });
+
+  test("a missing record is stale when the nightly run is on; nothing fires when it is off", () => {
+    expect(integrityStale(true, null, NOW, false)).toBe(true);
+    expect(integrityStale(false, null, NOW, false)).toBe(false);
+    expect(integrityStale(false, NOW - 200 * H, NOW, false)).toBe(false);
+  });
+
+  test("while quiet the previous verdict is carried: no recovery note at Shabbat entry, no new alert inside it", () => {
+    expect(integrityStale(true, NOW - 200 * H, NOW, true, true)).toBe(true);
+    expect(integrityStale(true, NOW - 200 * H, NOW, true, false)).toBe(false);
+    expect(integrityStale(false, NOW - 200 * H, NOW, true, true)).toBe(false);
+  });
+
+  describe("integrityReading (what the cron run sees)", () => {
+    const made: string[] = [];
+    afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
+    const lastFile = (body?: object) => {
+      const d = mkdtempSync(join(tmpdir(), "hint-")); made.push(d);
+      const p = join(d, "integrity-last.json");
+      if (body) writeFileSync(p, JSON.stringify(body));
+      return p;
+    };
+
+    test("on by the switch alone: a missing file is stale", () => {
+      expect(integrityReading(true, lastFile(), NOW, false, false)).toBe(true);
+      expect(integrityReading(false, lastFile(), NOW, false, false)).toBe(false);
+    });
+
+    test("on by the file alone (cron did not load the env file): an old completion is stale, a recent one is not", () => {
+      expect(integrityReading(false, lastFile({ attempted: "x", date: "x", at: NOW - 97 * H }), NOW, false, false)).toBe(true);
+      expect(integrityReading(false, lastFile({ attempted: "x", date: "x", at: NOW - 95 * H }), NOW, false, false)).toBe(false);
+    });
+
+    test("before any completion it measures from the poller's `since`", () => {
+      expect(integrityReading(false, lastFile({ since: NOW - 95 * H }), NOW, false, false)).toBe(false);
+      expect(integrityReading(false, lastFile({ since: NOW - 97 * H }), NOW, false, false)).toBe(true);
+      expect(integrityReading(false, lastFile({ since: NOW - 200 * H, at: NOW - 1 * H }), NOW, false, false)).toBe(false);
+    });
+
+    test("quiet carries the previous verdict here too", () => {
+      expect(integrityReading(true, lastFile({ at: NOW - 200 * H }), NOW, true, false)).toBe(false);
+      expect(integrityReading(true, lastFile({ at: NOW - 1 * H }), NOW, true, true)).toBe(true);
+    });
+  });
+
+  test("assessHealth reports it like its other faults", () => {
+    const h = assessHealth({ ...ok, integrityStale: true });
+    expect(h.healthy).toBe(false);
+    expect(h.faults).toEqual(["integrity check has not completed for 96h"]);
+    expect(assessHealth({ ...ok, integrityStale: false }).healthy).toBe(true);
   });
 });

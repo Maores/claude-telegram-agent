@@ -13,6 +13,7 @@
  * the guard hook's least-privilege layer on as defense in depth.
  */
 import { withAlwaysDisallowed } from "./guard";
+import { turnSpawn, turnUser } from "./turnuser";
 
 export const REVIEW_COOLDOWN_S = Number(process.env.REVIEW_COOLDOWN_S ?? 900) || 900;
 
@@ -22,9 +23,11 @@ export const REVIEW_ALLOWED_TOOLS = [
 ];
 
 /** The review's claude argv. It also starts without the tools every turn is denied
- *  (guard.ALWAYS_DISALLOWED_TOOLS: Monitor), as a list of its own after the whitelist. */
-export function reviewSpawnArgs(model = "haiku"): string[] {
-  return withAlwaysDisallowed(["-p", "--model", model, "--allowedTools", ...REVIEW_ALLOWED_TOOLS]);
+ *  (guard.ALWAYS_DISALLOWED_TOOLS: Monitor), as a list of its own after the whitelist.
+ *  Under a turn user it also reads no user-level settings and loads no MCP server. */
+export function reviewSpawnArgs(model = "haiku", env: Record<string, string | undefined> = process.env): string[] {
+  const sealed = turnUser(env) ? ["--setting-sources", "project,local", "--strict-mcp-config"] : [];
+  return withAlwaysDisallowed(["-p", "--model", model, ...sealed, "--allowedTools", ...REVIEW_ALLOWED_TOOLS]);
 }
 
 const lastReviewAt = new Map<number, number>();
@@ -67,12 +70,13 @@ export function runReview(
   opts: { claudeBin: string; cwd: string; env: Record<string, string | undefined> },
 ): void {
   try {
-    const proc = Bun.spawn([opts.claudeBin, ...reviewSpawnArgs()], {
+    const ts = turnSpawn([opts.claudeBin, ...reviewSpawnArgs("haiku", opts.env)], { ...opts.env, CLAUDE_AUTO_SESSION: "1" });
+    const proc = Bun.spawn(ts.argv, {
       cwd: opts.cwd,
       stdin: "pipe",
       stdout: "ignore",
       stderr: "pipe",
-      env: { ...opts.env, CLAUDE_AUTO_SESSION: "1" },
+      env: ts.env,
     });
     proc.stdin!.write(buildReviewPrompt(transcript));
     proc.stdin!.end();

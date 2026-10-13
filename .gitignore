@@ -15,7 +15,11 @@ data/quiz-state.json
 data/avot-state.json
 quiz-paused.flag
 health-state.json
+approvals.json
+integrity-last.json
+inbox-status.json
 heartbeat
+.state-dir
 *.tmp
 *.log
 

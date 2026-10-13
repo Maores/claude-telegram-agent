@@ -19,10 +19,12 @@
  * the box can report its own total absence — that needs an outside pinger such
  * as healthchecks.io, which is the one gap this leaves open on purpose.
  */
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync } from "node:fs";
+import { statePath, writeAtomic, readNoFollow } from "./paths";
 import { isolateLatin } from "./bidi";
 import { withAlwaysDisallowed } from "./guard";
+import { readIntegrityLast, INTEGRITY_LAST_FILE } from "./integrity";
+import { quietNow } from "./rchannel";
 
 /** A poll cycle is ~POLL_TIMEOUT seconds, so a heartbeat older than this means
  *  the loop is not turning even if the process is alive. */
@@ -35,7 +37,37 @@ export interface Probe {
   heartbeatAge: number | null;
   /** null = not probed this run (it runs on a slower cadence than the rest). */
   claudeAuthOk: boolean | null;
+  /** The nightly integrity check has not completed for 96 h (see integrityStale). */
+  integrityStale?: boolean;
 }
+
+/** The nightly integrity run is held over Shabbat and holidays; 96 h covers the longest hold. */
+export const INTEGRITY_STALE_S = 96 * 3600;
+
+/** With the nightly run on and outside a quiet window, a run that has not completed for 96 h (or
+ *  never) is a fault; lastAt is the completion time (or the poller's `since`). Inside a quiet
+ *  window the previous verdict is carried, so a fault neither "recovers" at Shabbat entry nor
+ *  starts inside it. */
+export function integrityStale(enabled: boolean, lastAt: number | null, now: number, quiet: boolean, prev = false): boolean {
+  if (!enabled) return false;
+  if (quiet) return prev;
+  return lastAt === null || now - lastAt > INTEGRITY_STALE_S;
+}
+
+/** The rule as the cron run sees it. It is on when INTEGRITY_NIGHTLY=1 is visible, or when
+ *  integrity-last.json exists (the poller writes it only with the nightly run on), since cron may
+ *  not load the service's environment file. Staleness counts from the last completion, else from
+ *  the poller's `since`. */
+export function integrityReading(envOn: boolean, lastPath: string, now: number, quiet: boolean, prev: boolean): boolean {
+  let exists = false;
+  try {
+    lstatSync(lastPath);
+    exists = true;
+  } catch {}
+  const last = readIntegrityLast(lastPath);
+  return integrityStale(envOn || exists, last?.at ?? last?.since ?? null, now, quiet, prev);
+}
+
 export interface Health { healthy: boolean; faults: string[] }
 
 export function assessHealth(p: Probe): Health {
@@ -47,10 +79,12 @@ export function assessHealth(p: Probe): Health {
   }
   // Only an explicit false is a fault; null means "not checked this run".
   if (p.claudeAuthOk === false) faults.push("claude auth failing (token likely expired)");
+  if (p.integrityStale) faults.push("integrity check has not completed for 96h");
   return { healthy: faults.length === 0, faults };
 }
 
-export interface AlertState { failing: boolean; lastAlertTs: number }
+/** integrityStale: the last integrity verdict, carried through quiet windows. */
+export interface AlertState { failing: boolean; lastAlertTs: number; integrityStale?: boolean }
 export interface AlertDecision { send: boolean; recovered: boolean; nextState: AlertState }
 
 /** Edge-triggered, with a daily nag while still broken. */
@@ -80,28 +114,28 @@ export function formatAlert(h: Health, recovered: boolean): string {
 
 // --- IO ----------------------------------------------------------------------
 
-const STATE_FILE = process.env.HEALTH_STATE_FILE ?? join(import.meta.dir, "health-state.json");
-export const HEARTBEAT_FILE = process.env.HEARTBEAT_FILE ?? join(import.meta.dir, "heartbeat");
+const STATE_FILE = process.env.HEALTH_STATE_FILE ?? statePath("health-state.json");
+export const HEARTBEAT_FILE = process.env.HEARTBEAT_FILE ?? statePath("heartbeat");
 
 function loadState(): AlertState {
   try {
-    const s = JSON.parse(readFileSync(STATE_FILE, "utf8"));
-    return { failing: !!s.failing, lastAlertTs: Number(s.lastAlertTs) || 0 };
-  } catch {
+    const s = JSON.parse(readNoFollow(STATE_FILE));
+    return { failing: !!s.failing, lastAlertTs: Number(s.lastAlertTs) || 0, integrityStale: s.integrityStale === true };
+  } catch (e: any) {
+    if (e?.code !== "ENOENT") console.error(`[HEALTH] ${STATE_FILE} unreadable, treated as empty: ${e?.message ?? e}`);
     return { failing: false, lastAlertTs: 0 };
   }
 }
 function saveState(s: AlertState) {
-  const tmp = STATE_FILE + ".tmp";
-  writeFileSync(tmp, JSON.stringify(s));
-  require("node:fs").renameSync(tmp, STATE_FILE);
+  writeAtomic(STATE_FILE, JSON.stringify(s));
 }
 
 function heartbeatAge(now: number): number | null {
   try {
-    const ts = Number(readFileSync(HEARTBEAT_FILE, "utf8").trim());
+    const ts = Number(readNoFollow(HEARTBEAT_FILE).trim());
     return Number.isFinite(ts) ? now - ts : null;
-  } catch {
+  } catch (e: any) {
+    if (e?.code !== "ENOENT") console.error(`[HEALTH] ${HEARTBEAT_FILE} unreadable: ${e?.message ?? e}`);
     return null;
   }
 }
@@ -165,14 +199,22 @@ async function notify(text: string): Promise<boolean> {
 async function main() {
   const withAuth = process.argv.includes("--auth");
   const now = Math.floor(Date.now() / 1000);
+  const prev = loadState();
 
   const probe: Probe = {
     serviceActive: await serviceActive(),
     heartbeatAge: heartbeatAge(now),
     claudeAuthOk: withAuth ? await claudeAuthOk() : null,
+    integrityStale: integrityReading(
+      process.env.INTEGRITY_NIGHTLY === "1",
+      INTEGRITY_LAST_FILE,
+      now,
+      quietNow(new Date(now * 1000)),
+      prev.integrityStale ?? false,
+    ),
   };
   const h = assessHealth(probe);
-  const decision = shouldAlert(h, loadState(), now);
+  const decision = shouldAlert(h, prev, now);
 
   console.log(
     `[HEALTH] ${h.healthy ? "ok" : "FAULT"}${h.faults.length ? ": " + h.faults.join("; ") : ""}` +
@@ -182,7 +224,7 @@ async function main() {
     const sent = await notify(formatAlert(h, decision.recovered));
     console.log(`[HEALTH] alert ${sent ? "sent" : "FAILED TO SEND"}`);
   }
-  saveState(decision.nextState);
+  saveState({ ...decision.nextState, integrityStale: probe.integrityStale ?? false });
   process.exitCode = h.healthy ? 0 : 1;
 }
 

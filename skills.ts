@@ -20,8 +20,9 @@
  * an orphan file (re-creatable), never a row pointing at a missing body.
  */
 import type { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, renameSync } from "node:fs";
+import { mkdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { writeAtomic, readNoFollow } from "./paths";
 import { sanitizeFtsQuery } from "./db";
 import { scanThreats } from "./threats";
 import type { Provenance } from "./memory";
@@ -52,6 +53,22 @@ export const NAME_MAX = 64;
 export const DESC_MAX = 1024;
 const SOURCES: Provenance[] = ["maor", "derived"];
 const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+const ARCHIVE_SUBDIR = ".archive";
+
+/**
+ * Where a skill's body lives, derived from its NAME and status only: <dir>/<name>.md, or
+ * <dir>/.archive/<name>.md when archived. The row's `path` column is a record, never opened: the
+ * database is writable by a turn, so a planted path could otherwise point a read, patch or move at
+ * any file. A name that fails the create-time slug rule is refused.
+ */
+export function skillBodyPath(dir: string, row: { name: string; status: string }): string {
+  const name = row.name ?? "";
+  if (!name || name.length > NAME_MAX || !NAME_RE.test(name)) {
+    throw new SkillError(`refusing skill name "${name}": not a lowercase-hyphen slug`);
+  }
+  return row.status === "archived" ? join(dir, ARCHIVE_SUBDIR, `${name}.md`) : join(dir, `${name}.md`);
+}
 
 export function getSkill(db: Database, name: string): SkillRow | null {
   return (db.query("SELECT * FROM skills WHERE name = ?").get(name) as SkillRow) ?? null;
@@ -159,11 +176,11 @@ export function createSkill(db: Database, dir: string, a: CreateArgs): CreateRes
     status = "active";
   }
 
-  const path = join(dir, `${parsed.name}.md`);
+  const path = skillBodyPath(dir, { name: parsed.name, status });
   const createdBy = a.createdBy ?? a.source;
   // File first, then the row (the row is the index of record).
   mkdirSync(dir, { recursive: true });
-  writeFileSync(path, renderSkillMd(parsed.name, parsed.description, parsed.body));
+  writeAtomic(path, renderSkillMd(parsed.name, parsed.description, parsed.body));
   const id = Number(
     db.query(
       `INSERT INTO skills (name, description, tags, path, provenance, status, created_by, created_ts, updated_ts)
@@ -180,18 +197,29 @@ export interface ViewResult { row: SkillRow; body: string }
  * last_used_at. Viewing a stale skill revives it (use = proof of life, so the
  * weekly curator's idle clock restarts). Quarantined/archived/missing skills
  * throw — an unconfirmed body can never be pulled into context via view.
+ * With an `allow` gate (the owner's skill approval, approvals.ts), a skill the gate refuses throws
+ * before its body is read or its use is counted.
  */
-export function viewSkill(db: Database, dir: string, name: string, now: number): ViewResult {
+export function viewSkill(db: Database, dir: string, name: string, now: number, allow?: (row: SkillRow, fileText?: string) => boolean): ViewResult {
   const row = getSkill(db, name);
   if (!row) throw new SkillError(`no skill named "${name}"`);
   if (row.status !== "active" && row.status !== "stale") {
     throw new SkillError(`skill "${name}" is not active (it is ${row.status}) — activate it first`);
   }
+  // One read: the gate hashes exactly the bytes whose body is returned, so a file swapped between
+  // the gate and the read cannot be served under the old approval.
+  const path = skillBodyPath(dir, row);
+  let fileText: string | null = null;
+  try {
+    fileText = readNoFollow(path);
+  } catch {}
+  if (allow && (fileText === null || !allow(row, fileText))) throw new SkillError(`skill "${name}" is waiting for Maor's approval`);
   let body: string;
   try {
-    body = parseSkillMd(readFileSync(row.path, "utf8")).body;
+    if (fileText === null) throw new Error("unreadable");
+    body = parseSkillMd(fileText).body;
   } catch {
-    throw new SkillError(`skill "${name}" body is missing or unreadable at ${row.path}`);
+    throw new SkillError(`skill "${name}" body is missing or unreadable at ${path}`);
   }
   db.query("UPDATE skills SET use_count = use_count + 1, last_used_at = ?, status = 'active' WHERE id = ?").run(now, row.id);
   return { row: getSkill(db, name)!, body };
@@ -244,7 +272,9 @@ export function patchSkill(db: Database, dir: string, name: string, a: PatchArgs
   }
   const needle = a.old ?? "";
   if (!needle) throw new SkillError("empty match text");
-  const parsed = parseSkillMd(readFileSync(row.path, "utf8"));
+  const path = skillBodyPath(dir, row);
+  const original = readNoFollow(path);
+  const parsed = parseSkillMd(original);
   const count = parsed.body.split(needle).length - 1;
   if (count === 0) throw new SkillError(`no match for "${needle}" in skill "${name}"`);
   if (count > 1) throw new SkillError(`${count} (multiple) matches for "${needle}" in skill "${name}" — be more specific`);
@@ -258,13 +288,11 @@ export function patchSkill(db: Database, dir: string, name: string, a: PatchArgs
     throw new SkillError(`patch rejected — the patched body trips the threat scan (${threats.join(", ")}); file unchanged`);
   }
   // All gates passed: snapshot, then overwrite the body, then bump the counter.
-  copyFileSync(row.path, `${row.path}.bak.${a.now}`);
-  writeFileSync(row.path, updated);
+  writeAtomic(`${path}.bak.${a.now}`, original);
+  writeAtomic(path, updated);
   db.query("UPDATE skills SET patch_count = patch_count + 1, updated_ts = ? WHERE id = ?").run(a.now, row.id);
   return getSkill(db, name)!;
 }
-
-const ARCHIVE_SUBDIR = ".archive";
 
 function moveAndSetStatus(
   db: Database, name: string, _fromStatus: SkillStatus, toStatus: SkillStatus,
@@ -284,8 +312,9 @@ export function archiveSkill(db: Database, dir: string, name: string, now: numbe
   if (row.status !== "active" && row.status !== "stale") {
     throw new SkillError(`skill "${name}" is not active (it is ${row.status})`);
   }
-  const dest = join(dir, ARCHIVE_SUBDIR, `${name}.md`);
-  return moveAndSetStatus(db, name, row.status, "archived", row.path, dest, now);
+  const from = skillBodyPath(dir, row);
+  const dest = skillBodyPath(dir, { name: row.name, status: "archived" });
+  return moveAndSetStatus(db, name, row.status, "archived", from, dest, now);
 }
 
 /** Reverse an archive: archived → active, body moved back to <dir>/<name>.md. */
@@ -293,8 +322,9 @@ export function restoreSkill(db: Database, dir: string, name: string, now: numbe
   const row = getSkill(db, name);
   if (!row) throw new SkillError(`no skill named "${name}"`);
   if (row.status !== "archived") throw new SkillError(`skill "${name}" is not archived (it is ${row.status})`);
-  const dest = join(dir, `${name}.md`);
-  return moveAndSetStatus(db, name, "archived", "active", row.path, dest, now);
+  const from = skillBodyPath(dir, row);
+  const dest = skillBodyPath(dir, { name: row.name, status: "active" });
+  return moveAndSetStatus(db, name, "archived", "active", from, dest, now);
 }
 
 /**
@@ -306,7 +336,7 @@ export function activateSkill(db: Database, dir: string, name: string, now: numb
   const row = getSkill(db, name);
   if (!row) throw new SkillError(`no skill named "${name}"`);
   if (row.status !== "quarantined") throw new SkillError(`skill "${name}" is not quarantined (it is ${row.status})`);
-  const parsed = parseSkillMd(readFileSync(row.path, "utf8"));
+  const parsed = parseSkillMd(readNoFollow(skillBodyPath(dir, row)));
   const threats = scanThreats(`${parsed.name} ${parsed.description} ${row.tags} ${parsed.body}`, "strict");
   if (threats.length) {
     throw new SkillError(
@@ -397,11 +427,11 @@ export const SKILLS_TOP_N = Number(process.env.SKILLS_TOP_N ?? 5);
 /**
  * Render the FTS-ranked top-N ACTIVE skills as a fenced <available-skills>
  * block of `- name — description` lines. Returns "" when nothing matches.
- * Built and unit-tested now; the poller injection is wired at the cutover
- * (this phase lands dark — nothing calls this yet).
+ * With an `allow` gate (the owner's skill approval), 4 * n candidates are fetched and filtered
+ * BEFORE the cut to n, so an approved skill still shows when unapproved ones rank above it.
  */
-export function skillsIndexBlock(db: Database, query: string, n: number = SKILLS_TOP_N): string {
-  const hits = searchSkills(db, query, n);
+export function skillsIndexBlock(db: Database, query: string, n: number = SKILLS_TOP_N, allow?: (row: SkillRow) => boolean): string {
+  const hits = allow ? searchSkills(db, query, 4 * n).filter((r) => allow(r)).slice(0, n) : searchSkills(db, query, n);
   if (hits.length === 0) return "";
   const lines = [
     "<available-skills>",

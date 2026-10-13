@@ -7,8 +7,7 @@
  * allowlist + guard blocklist), no shell anywhere, once-only consumption,
  * 24h expiry. Spec: docs/superpowers/specs/2026-06-12-confirm-buttons-design.md
  */
-import { readFileSync, writeFileSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { sharedPath, writeAtomic, readNoFollow } from "./paths.ts";
 import { withFileLock } from "./reminders.ts";
 import { checkCommand } from "./guard.ts";
 
@@ -37,23 +36,23 @@ const EXPIRY_S = 24 * 3600; // tappable for 24h (Maor's call, 2026-06-12)
 const PRUNE_AFTER_S = 7 * 24 * 3600; // resolved entries linger a week for debugging
 
 function pendingPath(): string {
-  return process.env.PENDING_FILE ?? join(import.meta.dir, "pending.json");
+  return process.env.PENDING_FILE ?? sharedPath("pending.json");
 }
 
 function loadActions(): PendingAction[] {
   try {
-    const data = JSON.parse(readFileSync(pendingPath(), "utf8"));
+    const data = JSON.parse(readNoFollow(pendingPath()));
     return Array.isArray(data) ? data : [];
-  } catch {
+  } catch (e: any) {
+    // Missing: empty. Corrupt, a link, a FIFO or any non-regular file: logged, treated as empty;
+    // the next save replaces it by rename, never writing through it.
+    if (e?.code !== "ENOENT") console.error(`[STORE] ${pendingPath()} unreadable, treated as empty: ${e?.message ?? e}`);
     return [];
   }
 }
 
 function saveActions(list: PendingAction[]) {
-  const path = pendingPath();
-  const tmp = path + ".tmp";
-  writeFileSync(tmp, JSON.stringify(list, null, 2));
-  renameSync(tmp, path);
+  writeAtomic(pendingPath(), JSON.stringify(list, null, 2));
 }
 
 /** Only these exact (script, subcommand) pairs may ever execute. Email drafts

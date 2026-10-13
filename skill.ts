@@ -14,9 +14,10 @@
  *   bun run skill.ts curate                   (lifecycle pass: 30d idle → stale, 90d idle → archived)
  *   bun run skill.ts absorb   <narrow> --into <umbrella>   (dedup: archive narrow, record absorbed_into)
  */
-import { join } from "node:path";
+import { sharedPath, statePath } from "./paths";
 import { readFileSync } from "node:fs";
 import { getDb } from "./db";
+import { loadApprovals, skillGate } from "./approvals";
 import {
   createSkill, viewSkill, searchSkills, listSkills, patchSkill,
   archiveSkill, restoreSkill, activateSkill, SkillError,
@@ -45,7 +46,15 @@ export function parseFlags(argv: string[]): { _: string[]; [k: string]: string |
   return out;
 }
 
-const SKILLS_DIR = join(import.meta.dir, "skills");
+const SKILLS_DIR = sharedPath("skills");
+
+/** With SKILL_APPROVAL=1 (as a turn runs this CLI on the server), `view`, `search` and `list`
+ *  surface only skills whose current version the owner approved. The approvals file is read from
+ *  the poller-only state folder; a missing or unreadable file approves nothing (fail closed). */
+function approvalGate(): ((row: SkillRow, fileText?: string) => boolean) | undefined {
+  if (process.env.SKILL_APPROVAL !== "1") return undefined;
+  return skillGate(loadApprovals(statePath("approvals.json")), SKILLS_DIR);
+}
 
 function fmt(r: SkillRow): string {
   const tags = r.tags ? ` [${r.tags}]` : "";
@@ -86,18 +95,22 @@ function main() {
       case "view": {
         const name = f._[0];
         if (!name) die("usage: view <name>");
-        const v = viewSkill(db, SKILLS_DIR, name, now);
+        const v = viewSkill(db, SKILLS_DIR, name, now, approvalGate());
         console.log(v.body);
         break;
       }
       case "search": {
-        const hits = searchSkills(db, f._.join(" "), 8);
+        const gate = approvalGate();
+        // Gated: fetch more candidates and filter before the cut, so approved ones still show.
+        const hits = gate ? searchSkills(db, f._.join(" "), 32).filter((r) => gate(r)).slice(0, 8) : searchSkills(db, f._.join(" "), 8);
         if (!hits.length) { console.log("(no matches)"); break; }
         for (const h of hits) console.log(fmt(h));
         break;
       }
       case "list": {
-        const rows = listSkills(db, { status: typeof f.status === "string" ? (f.status as SkillStatus) : undefined });
+        const gate = approvalGate();
+        const all = listSkills(db, { status: typeof f.status === "string" ? (f.status as SkillStatus) : undefined });
+        const rows = gate ? all.filter((r) => gate(r)) : all;
         if (!rows.length) { console.log("(no skills)"); break; }
         for (const r of rows) console.log(fmt(r));
         break;

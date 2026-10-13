@@ -86,6 +86,10 @@ describe("withAlwaysDisallowed", () => {
 const HOOK = join(import.meta.dir, "hooks", "pretooluse-guard.ts");
 
 async function runHook(payload: unknown, env: Record<string, string> = {}): Promise<{ code: number; err: string }> {
+  return runHookRaw(JSON.stringify(payload), env);
+}
+
+async function runHookRaw(raw: string, env: Record<string, string> = {}): Promise<{ code: number; err: string }> {
   const base: Record<string, string | undefined> = { ...process.env };
   delete base.CLAUDE_AUTO_SESSION;
   const proc = Bun.spawn([process.execPath, HOOK], {
@@ -94,7 +98,7 @@ async function runHook(payload: unknown, env: Record<string, string> = {}): Prom
     stderr: "pipe",
     env: { ...base, ...env },
   });
-  proc.stdin!.write(JSON.stringify(payload));
+  proc.stdin!.write(raw);
   proc.stdin!.end();
   const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
   return { code, err };
@@ -139,6 +143,23 @@ describe("the PreToolUse hook checks a command from any tool", () => {
   test("a tool without a command field is unaffected", async () => {
     const r = await runHook(call("Read", { file_path: "/home/u/claude-bot/README.md" }));
     expect(r.code).toBe(0);
+  });
+
+  // On Linux the hook also writes the refusal to the system journal first; that write never decides
+  // the verdict, which is still exit 2 with the reason on stderr.
+  test("Bash running sudo is refused with the sudo reason", async () => {
+    const r = await runHook(call("Bash", { command: "cd x && sudo -u root id" }));
+    expect(r.code).toBe(2);
+    expect(r.err).toContain(checkCommand("sudo ls").reason!);
+    expect(r.err).toContain("no admin rights");
+  });
+
+  test("a payload that is not valid JSON is refused (fail closed), never passed through", async () => {
+    for (const raw of ["", "not json", "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"rm -rf /\"}"]) {
+      const r = await runHookRaw(raw);
+      expect(r.code).toBe(2);
+      expect(r.err).toContain("[guard] unparseable hook payload (failing closed)");
+    }
   });
 
   test("in an [AUTO] session a Monitor command may not schedule a reminder", async () => {

@@ -15,8 +15,8 @@
  * database, so it survives restarts without touching bot.db.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { statePath, writeAtomic, readNoFollow } from "./paths.ts";
 
 /** How long a pending transcript stays tappable. Past this the audio is long
  *  gone from Maor's attention and answering it would be a surprise. */
@@ -45,7 +45,7 @@ export interface PendingVoice {
 }
 
 function pendingPath(): string {
-  return process.env.VOICE_PENDING_FILE || join(import.meta.dir, "voice-pending.json");
+  return process.env.VOICE_PENDING_FILE || statePath("voice-pending.json");
 }
 
 /** Exported for tests and for answering "what is still waiting on a tap?". */
@@ -53,17 +53,19 @@ export function loadPending(): PendingVoice[] {
   try {
     const p = pendingPath();
     if (!existsSync(p)) return [];
-    const raw = JSON.parse(readFileSync(p, "utf8"));
+    const raw = JSON.parse(readNoFollow(p));
     return Array.isArray(raw) ? raw : [];
-  } catch {
-    // A corrupt store must not wedge voice notes — start over rather than throw.
+  } catch (e: any) {
+    // A corrupt store must not wedge voice notes — start over rather than throw. A link, a FIFO
+    // or any non-regular file is handled the same way, and logged.
+    console.error(`[STORE] ${pendingPath()} unreadable, treated as empty: ${e?.message ?? e}`);
     return [];
   }
 }
 
 function save(list: PendingVoice[]): void {
   try {
-    writeFileSync(pendingPath(), JSON.stringify(list, null, 2));
+    writeAtomic(pendingPath(), JSON.stringify(list, null, 2));
   } catch {
     // A transcript that cannot be persisted just means its buttons go stale.
     // Never worth failing the turn over.
