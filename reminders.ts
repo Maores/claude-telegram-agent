@@ -10,6 +10,7 @@
  */
 
 import { writeFileSync, rmSync, statSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { sharedPath, writeAtomic, readNoFollow } from "./paths.ts";
 
 export interface Repeat {
@@ -295,8 +296,10 @@ export function addFollowup(chatId: number, text: string, messageId: number, fir
   return withFileLock(followupsPath(), () => {
     const list = loadFollowups();
     const ids = new Set(list.map((f) => f.id));
-    let id = "f" + Date.now();
-    while (ids.has(id)) id += "x"; // same-ms safety bump
+    // A random part, not just the time: a same-ms id freed by prune must never come back
+    // (a reused id would let an old button act on a new follow-up).
+    let id = `f${Date.now()}-${randomBytes(4).toString("hex")}`;
+    while (ids.has(id)) id = `f${Date.now()}-${randomBytes(4).toString("hex")}`;
     const f: Followup = { id, chatId, text, messageId, firedAt, status: "pending", nudged: false };
     list.push(f);
     saveFollowups(list);
