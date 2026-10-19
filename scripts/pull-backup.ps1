@@ -10,11 +10,42 @@ param(
     [string]$Dest = "$env:USERPROFILE\OneDrive\Backups\telegram-agent",
     [int]$Keep = 14,
     # Retry budget for the network half. Small on purpose: the scheduled task is capped at
-    # PT5M, and 3 attempts of a ~30s abort plus a 30s wait stays comfortably inside that.
+    # PT15M (it was PT5M when this was written), and the time limits below keep all three
+    # attempts inside that.
     [int]$Attempts = 3,
-    [int]$RetryDelaySeconds = 30
+    [int]$RetryDelaySeconds = 30,
+    # Hard wall-clock limit per ssh and per scp call. Worst case 3 x (45 + 120) + 2 x 30 = 555 s,
+    # inside the task's PT15M limit, so a stuck attempt is killed and retried by the script
+    # itself (with a log line) instead of the whole run being killed silently by Task Scheduler.
+    [int]$SshTimeoutSeconds = 45,
+    [int]$ScpTimeoutSeconds = 120
 )
 $ErrorActionPreference = "Stop"
+
+# Runs ssh or scp with a hard time limit and returns its stdout. ConnectTimeout and the
+# keepalives bound a dead network session, but not a call that never gets that far. On
+# 2026-10-18 a run started 11:39 as the laptop went to sleep, logged its attempt-1 failure
+# and nothing after it; the next copy came only at 14:36, after a reboot. A sleep counts
+# against this limit, so a call that slept through it is killed on wake and retried.
+function Invoke-Bounded([string]$Tool, [string[]]$ToolArgs, [int]$Seconds) {
+    $exe = (Get-Command $Tool -CommandType Application | Select-Object -First 1).Source
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($exe)
+    foreach ($a in $ToolArgs) { $psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $out = $p.StandardOutput.ReadToEndAsync()
+    $err = $p.StandardError.ReadToEndAsync()
+    if (-not $p.WaitForExit($Seconds * 1000)) {
+        try { $p.Kill($true) } catch { }
+        throw "$Tool did not finish within ${Seconds}s (killed)"
+    }
+    $p.WaitForExit()
+    $script:BoundedExit = $p.ExitCode
+    if ($p.ExitCode -ne 0 -and $err.Result) { $script:BoundedErr = $err.Result.Trim() } else { $script:BoundedErr = '' }
+    $out.Result
+}
 
 if ($RemoteUserHost -like "*<YOUR_SERVER_IP>*") {
     throw "no target configured: pass -RemoteUserHost user@ip or set AGENT_BACKUP_SSH"
@@ -47,8 +78,8 @@ for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
         # Resolve the newest archive's real name (latest.tar.gz is a symlink to it).
         # Keepalives matter: ConnectTimeout only covers the connect phase, and a session
         # that goes dead after that would otherwise hang forever.
-        $name = ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -i $KeyPath $RemoteUserHost 'basename "$(readlink -f ~/backups/latest.tar.gz)"'
-        if ($LASTEXITCODE -ne 0) { throw "ssh to $RemoteUserHost failed (exit $LASTEXITCODE)" }
+        $name = Invoke-Bounded 'ssh' @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3', '-i', $KeyPath, $RemoteUserHost, 'basename "$(readlink -f ~/backups/latest.tar.gz)"') $SshTimeoutSeconds
+        if ($script:BoundedExit -ne 0) { throw "ssh to $RemoteUserHost failed (exit $($script:BoundedExit)) $($script:BoundedErr)" }
         $name = "$name".Trim()
         if ($name -notmatch '^agent-backup-\d{8}-\d{6}\.tar\.gz$') {
             throw "could not resolve remote latest archive (got: '$name')"
@@ -61,10 +92,15 @@ for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
             # Download to a .part name first so an interrupted transfer is never
             # mistaken for a complete archive on the next run.
             $part = "$target.part"
-            scp -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -i $KeyPath "${RemoteUserHost}:backups/$name" $part
-            if ($LASTEXITCODE -ne 0) {
+            try {
+                Invoke-Bounded 'scp' @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3', '-i', $KeyPath, "${RemoteUserHost}:backups/$name", $part) $ScpTimeoutSeconds | Out-Null
+            } catch {
                 Remove-Item -Force $part -ErrorAction SilentlyContinue
-                throw "scp failed for $name (exit $LASTEXITCODE)"
+                throw
+            }
+            if ($script:BoundedExit -ne 0) {
+                Remove-Item -Force $part -ErrorAction SilentlyContinue
+                throw "scp failed for $name (exit $($script:BoundedExit)) $($script:BoundedErr)"
             }
             Move-Item -Force $part $target
             $outcome = "pulled $name ($([math]::Round((Get-Item $target).Length / 1KB)) KB)"
