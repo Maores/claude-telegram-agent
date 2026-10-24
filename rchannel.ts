@@ -60,6 +60,7 @@ export interface StoredRequest {
   kind: RequestKind;
   text: string;
   supersedes: boolean;
+  urgent?: boolean;
   cards: StoredCard[];
   status: RequestStatus;
   chatId: number | null;
@@ -228,6 +229,7 @@ function storedFrom(s: Store, r: RcRequest, nowS: number): StoredRequest {
     kind: r.kind,
     text: r.text,
     supersedes: r.supersedes,
+    ...(r.urgent ? { urgent: true as const } : {}),
     cards: r.cards.map((c) => ({ ...c, state: "open" as CardState })),
     status: "queued",
     chatId: null,
@@ -920,8 +922,12 @@ export async function runRchannelTick(d: TickDeps): Promise<void> {
       prune(s, nowS);
       closeLapsedOther(s, nowS);
       const expired = [...expireProposals(s, nowS), ...retireProposals(s)];
-      const queued = s.requests.filter((r) => r.status === "queued").map((r) => r.id);
-      return { expired, due: quiet || chatId === null ? [] : queued, queued: queued.length };
+      const queuedReqs = s.requests.filter((r) => r.status === "queued");
+      // An urgent notice is itself time-sensitive (e.g. a Shabbat-entry warning) — holding it
+      // through quiet time would make it arrive true-but-stale. Cards still wait regardless of
+      // urgent, since they ask for a decision and quiet time exists to not press him for one.
+      const due = chatId === null ? [] : queuedReqs.filter((r) => !quiet || (r.urgent && r.kind === "notice")).map((r) => r.id);
+      return { expired, due, queued: queuedReqs.length };
     },
     d.log,
   );

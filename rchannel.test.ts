@@ -644,6 +644,19 @@ test("in quiet time nothing new is sent, and it goes out at 21:00", async () => 
   expect(saturday.sends.length).toBe(1);
 });
 
+test("an urgent notice is sent even in quiet time, but an urgent cards request still waits", async () => {
+  const dir = scratch();
+  mutateStore(dir, (s) =>
+    applySync(s, payload({ requests: [{ ...notice("audit-1"), urgent: true }, { ...req("map-1"), urgent: true }] }), NOW),
+  );
+  const friday = fakeTelegram(dir, "2026-10-09T12:00:00Z"); // Friday 15:00
+  await runRchannelTick(friday.deps);
+  expect(friday.sends.map((x) => x.view.text.split("\n")[0])).toEqual(["תזכורת חודשית: הגיע הזמן לבדיקה."]);
+  const saturday = fakeTelegram(dir, "2026-10-10T18:00:00Z"); // Saturday 21:00
+  await runRchannelTick(saturday.deps);
+  expect(saturday.sends.length).toBe(1);
+});
+
 test("a failed send is tried again next tick; a passing edit failure is retried every tick until it lands", async () => {
   const dir = scratch();
   const tg = fakeTelegram(dir);

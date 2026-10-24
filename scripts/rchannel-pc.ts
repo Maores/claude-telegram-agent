@@ -904,10 +904,10 @@ export async function runAnswer(d: AnswerDeps, a: AnswerArgs): Promise<number> {
   }
 }
 
-export function writeNotice(home: string, a: { routine: string; title: string; text: string }, now: Date): { id: string } | { error: string } {
+export function writeNotice(home: string, a: { routine: string; title: string; text: string; urgent?: boolean }, now: Date): { id: string } | { error: string } {
   if (!ROUTINE_RE.test(a.routine)) return { error: "routine must be 1 to 40 of a-z, 0-9 and -" };
   const id =`${a.routine}-${stamp(now).compact.slice(0, 12)}-${Math.floor(Math.random() * 1e4).toString().padStart(4, "0")}`;
-  const v = validateRequest({ v: 1, id, routine: a.routine, title: a.title, kind: "notice", text: a.text, supersedes: false, cards: [] });
+  const v = validateRequest({ v: 1, id, routine: a.routine, title: a.title, kind: "notice", text: a.text, supersedes: false, cards: [], ...(a.urgent ? { urgent: true } : {}) });
   if (!v.ok) return { error: v.reason };
   mkdirSync(at(home).outbox, { recursive: true });
   const file = join(at(home).outbox, `${id}.json`);
@@ -925,8 +925,8 @@ export function parseFlags(args: string[]): { flags: Map<string, string>; switch
   const switches = new Set<string>();
   for (let i = 0; i < args.length; i++) {
     const x = args[i];
-    if (x === "--all") {
-      switches.add("all");
+    if (x === "--all" || x === "--urgent") {
+      switches.add(x.slice(2));
       continue;
     }
     if (x.startsWith("--") && args[i + 1] !== undefined) {
@@ -939,7 +939,7 @@ export function parseFlags(args: string[]): { flags: Map<string, string>; switch
 }
 
 const USAGE =
-  "usage: rchannel-pc.ts sync | open | answer --request <id> (--card <n> | --all) --verdict approve|reject|correct [--text-file <path>] | notice --routine <name> --title <title> --text <text>";
+  "usage: rchannel-pc.ts sync | open | answer --request <id> (--card <n> | --all) --verdict approve|reject|correct [--text-file <path>] | notice --routine <name> --title <title> --text <text> [--urgent]";
 
 if (import.meta.main) {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -962,7 +962,11 @@ if (import.meta.main) {
       if (error) {
         console.error(`${error}\n${USAGE}`);
       } else if (cmd === "notice") {
-        const r = writeNotice(home, { routine: flags.get("routine") ?? "", title: flags.get("title") ?? "", text: flags.get("text") ?? "" }, new Date());
+        const r = writeNotice(
+          home,
+          { routine: flags.get("routine") ?? "", title: flags.get("title") ?? "", text: flags.get("text") ?? "", ...(switches.has("urgent") ? { urgent: true } : {}) },
+          new Date(),
+        );
         console.log("error" in r ? `refused: ${r.error}` : `notice=${r.id}`);
         code = "error" in r ? 2 : 0;
       } else {
