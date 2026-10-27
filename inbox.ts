@@ -36,7 +36,8 @@ export interface InboxEntity {
 }
 export interface InboxItem {
   id: string;
-  messageId: number; // Telegram's message id: a message delivered twice is stored once
+  chatId?: number; // Telegram's chat id; absent on items stored before it was kept
+  messageId: number; // Telegram's message id, counted per chat: chat plus message id is stored once
   mediaGroupId?: string; // Telegram's album id: the PC joins an album's pictures
   receivedAt: number; // the message's own Telegram date, epoch seconds
   kind: InboxKind;
@@ -312,6 +313,13 @@ export interface InboxDeps {
   maxBytes: number;
   rand?: () => string;
 }
+/** Whether a stored item is this Telegram message. Message ids repeat across chats (a group that
+ *  moves starts counting again), so the chat counts too; an item from before chat ids were kept
+ *  matches on its message id alone, as it did then. */
+export function sameMessage(i: InboxItem, chatId: number, messageId: number): boolean {
+  return i.messageId === messageId && (i.chatId === undefined || i.chatId === chatId);
+}
+
 export type InboxOutcome = "moved" | "skipped" | "ignored" | "unsupported" | "duplicate" | "stored" | "stored-with-error" | "failed";
 
 /** Store one message from the inbox group as an item, then 👍 it (or say in one Hebrew line why
@@ -333,8 +341,8 @@ export async function fileInboxMessage(msg: InboxMessage, d: InboxDeps): Promise
     return "unsupported";
   }
   const store = loadInbox(d.dir);
-  if (store.items.some((i) => i.messageId === msg.message_id)) {
-    d.log(`[INBOX] message ${msg.message_id} is already stored`);
+  if (store.items.some((i) => sameMessage(i, msg.chat.id, msg.message_id))) {
+    d.log(`[INBOX] message ${msg.message_id} of chat ${msg.chat.id} is already stored`);
     return "duplicate";
   }
 
@@ -342,7 +350,7 @@ export async function fileInboxMessage(msg: InboxMessage, d: InboxDeps): Promise
   const receivedAt = msg.date ?? nowS;
   const taken = new Set([...store.items.map((i) => i.id), ...(store.issued ?? []).map((x) => x.id)]);
   const id = newItemId(new Date(receivedAt * 1000), taken, d.rand);
-  const item: InboxItem = { id, messageId: msg.message_id, receivedAt, kind: draft.kind };
+  const item: InboxItem = { id, chatId: msg.chat.id, messageId: msg.message_id, receivedAt, kind: draft.kind };
   if (draft.mediaGroupId) item.mediaGroupId = draft.mediaGroupId;
   if (draft.text !== undefined) item.text = draft.text;
   if (draft.entities) item.entities = draft.entities;
@@ -384,7 +392,7 @@ export async function fileInboxMessage(msg: InboxMessage, d: InboxDeps): Promise
     added = mutateInbox(
       d.dir,
       (s) => {
-        if (s.items.some((i) => i.messageId === item.messageId)) return false; // a second delivery raced in
+        if (s.items.some((i) => sameMessage(i, msg.chat.id, msg.message_id))) return false; // a second delivery raced in
         s.items.push(item);
         s.issued = [...(s.issued ?? []).filter((x) => nowS - x.at < ISSUED_KEEP_S), { id, at: nowS }];
         return true;
