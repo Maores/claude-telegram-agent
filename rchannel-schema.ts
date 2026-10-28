@@ -42,7 +42,7 @@ export interface RcRequest {
   text: string;
   supersedes: boolean;
   cards: RcCard[];
-  urgent?: boolean; // sent even through Shabbat/Yom Tov quiet time: for a request that is itself time-sensitive
+  urgentUntil?: number; // a notice only: may go out on the eve of Shabbat/Yom Tov until then (epoch s), and never after
 }
 
 export type Verdict = "approve" | "reject" | "correct";
@@ -135,7 +135,11 @@ export function validateRequest(raw: unknown): Checked<RcRequest> {
     checkText(text, "text", LIMITS.text, kind === "notice" ? 1 : 0, true);
   if (e) return bad(`${id}: ${e}`);
   if (raw.supersedes !== undefined && typeof raw.supersedes !== "boolean") return bad(`${id}: supersedes must be true or false`);
-  if (raw.urgent !== undefined && typeof raw.urgent !== "boolean") return bad(`${id}: urgent must be true or false`);
+  const until = raw.urgentUntil;
+  if (until !== undefined) {
+    if (typeof until !== "number" || !Number.isSafeInteger(until) || until <= 0) return bad(`${id}: urgentUntil must be a time in whole seconds`);
+    if (kind !== "notice") return bad(`${id}: only a notice can be urgent`);
+  }
   const list = raw.cards ?? [];
   if (!Array.isArray(list)) return bad(`${id}: cards must be a list`);
   if (kind === "notice" && list.length) return bad(`${id}: a notice has no cards`);
@@ -170,7 +174,7 @@ export function validateRequest(raw: unknown): Checked<RcRequest> {
       text: text as string,
       supersedes: raw.supersedes === true,
       cards,
-      ...(raw.urgent === true ? { urgent: true } : {}),
+      ...(until !== undefined ? { urgentUntil: until as number } : {}),
     },
   };
 }

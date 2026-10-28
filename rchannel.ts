@@ -60,7 +60,7 @@ export interface StoredRequest {
   kind: RequestKind;
   text: string;
   supersedes: boolean;
-  urgent?: boolean;
+  urgentUntil?: number; // a notice may go out on the eve until then (epoch s); dropped after it
   cards: StoredCard[];
   status: RequestStatus;
   chatId: number | null;
@@ -193,17 +193,19 @@ export function mutateStore<T>(dir: string, fn: (s: Store) => T, log: (line: str
 
 /** Quiet on Shabbat or a Yom Tov before 21:00, and on the day before one from 14:00. An
  *  unreadable Hebrew calendar counts as quiet (a message on a holiday is the worse failure), and
- *  says so, so the tick can log why it holds. */
+ *  says so, so the tick can log why it holds. `eve` is the quiet part of an ordinary day before
+ *  one: the only quiet time an urgent notice may go out in, before its own deadline. */
 export function quietState(
   now: Date,
   readHebrew: (date: string) => HebrewDate | null = hebrewDate,
-): { quiet: boolean; calendarOk: boolean } {
+): { quiet: boolean; eve: boolean; calendarOk: boolean } {
   const { date, minutes } = localParts(now);
   const today = sacredDay(date, readHebrew);
   const tomorrow = sacredDay(addDays(date, 1), readHebrew);
-  if (!today.calendarOk || !tomorrow.calendarOk) return { quiet: true, calendarOk: false };
+  if (!today.calendarOk || !tomorrow.calendarOk) return { quiet: true, eve: false, calendarOk: false };
+  const eve = !today.sacred && tomorrow.sacred && minutes >= QUIET_FROM_MIN;
   const quiet = (today.sacred && minutes < QUIET_UNTIL_MIN) || (tomorrow.sacred && minutes >= QUIET_FROM_MIN);
-  return { quiet, calendarOk: true };
+  return { quiet, eve, calendarOk: true };
 }
 
 export function quietNow(now: Date, readHebrew: (date: string) => HebrewDate | null = hebrewDate): boolean {
@@ -229,7 +231,7 @@ function storedFrom(s: Store, r: RcRequest, nowS: number): StoredRequest {
     kind: r.kind,
     text: r.text,
     supersedes: r.supersedes,
-    ...(r.urgent ? { urgent: true as const } : {}),
+    ...(r.urgentUntil !== undefined ? { urgentUntil: r.urgentUntil } : {}),
     cards: r.cards.map((c) => ({ ...c, state: "open" as CardState })),
     status: "queued",
     chatId: null,
@@ -914,23 +916,31 @@ export async function runRchannelTick(d: TickDeps): Promise<void> {
   const now = d.now();
   const nowS = Math.floor(now.getTime() / 1000);
   const chatId = d.targetChat();
-  const { quiet, calendarOk } = quietState(now, d.readHebrew ?? hebrewDate);
+  const { quiet, eve, calendarOk } = quietState(now, d.readHebrew ?? hebrewDate);
   const tried = new Set<string>();
-  const { expired, due, queued } = mutateStore(
+  const { expired, due, queued, lapsed } = mutateStore(
     d.dir,
     (s) => {
       prune(s, nowS);
       closeLapsedOther(s, nowS);
       const expired = [...expireProposals(s, nowS), ...retireProposals(s)];
+      // An urgent notice (a Shabbat-entry warning) is true only until its deadline: before it, it
+      // may go out on the eve; after it, it is dropped rather than sent stale once quiet time ends.
+      // Never on the sacred day itself, and never on an unreadable calendar (eve is false then).
+      const lapsed: string[] = [];
+      for (const r of s.requests) {
+        if (r.status !== "queued" || r.urgentUntil === undefined || nowS < r.urgentUntil) continue;
+        r.status = "done";
+        r.endedAt = nowS;
+        lapsed.push(r.id);
+      }
       const queuedReqs = s.requests.filter((r) => r.status === "queued");
-      // An urgent notice is itself time-sensitive (e.g. a Shabbat-entry warning) — holding it
-      // through quiet time would make it arrive true-but-stale. Cards still wait regardless of
-      // urgent, since they ask for a decision and quiet time exists to not press him for one.
-      const due = chatId === null ? [] : queuedReqs.filter((r) => !quiet || (r.urgent && r.kind === "notice")).map((r) => r.id);
-      return { expired, due, queued: queuedReqs.length };
+      const due = chatId === null ? [] : queuedReqs.filter((r) => !quiet || (eve && r.kind === "notice" && r.urgentUntil !== undefined)).map((r) => r.id);
+      return { expired, due, queued: queuedReqs.length, lapsed };
     },
     d.log,
   );
+  for (const id of lapsed) d.log(`[RC] ${id}: an urgent notice past its deadline, not sent`);
   const why = !queued ? null : !calendarOk ? "the Hebrew calendar is unreadable" : chatId === null ? "there is no target chat" : null;
   const today = localParts(now).date;
   if (why && heldLoggedOn.get(d.dir) !== today) {

@@ -58,6 +58,17 @@ test("a notice needs text and carries no cards", () => {
   expect(reason(validateRequest(notice({ cards: [card("a")] })))).toContain("a notice has no cards");
 });
 
+test("only a notice can be urgent, and its deadline is a whole number of seconds", () => {
+  const n = validateRequest(notice({ urgentUntil: 1791554400 }));
+  expect(n.ok && n.value.urgentUntil).toBe(1791554400);
+  expect(reason(validateRequest(notice({ urgentUntil: "17:00" })))).toContain("urgentUntil must be a time in whole seconds");
+  expect(reason(validateRequest(notice({ urgentUntil: 1.5 })))).toContain("urgentUntil must be a time in whole seconds");
+  expect(reason(validateRequest(notice({ urgentUntil: 0 })))).toContain("urgentUntil must be a time in whole seconds");
+  expect(reason(validateRequest(cardsReq({ urgentUntil: 1791554400 })))).toContain("only a notice can be urgent");
+  const bare = validateRequest(notice({ urgent: true })); // a flag with no deadline is not a field
+  expect(bare.ok && Object.keys(bare.value)).not.toContain("urgent");
+});
+
 test("controls, direction marks and broken characters are refused; a newline only where allowed", () => {
   const nl = String.fromCharCode(10);
   expect(checkText(`שורה${nl}שנייה`, "body", 600, 1, true)).toBeNull();

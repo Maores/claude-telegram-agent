@@ -634,7 +634,11 @@ or cards he answers one at a time with ✓ מאשר, ✗ דוחה, מאשר הכ
 task hands them to the server every 5 minutes over the existing ssh key and takes
 his answers back; a handler registered on the PC carries them out. New messages
 wait through Shabbat and holidays (from 14:00 the day before until 21:00 on the
-day). Design: `docs/superpowers/specs/2026-09-27-routine-channel-design.md`.
+day). One exception: a notice written with `--urgent-until HH:MM` (today, Israel
+time; the PC refuses a time already gone) may go out on the day before until that
+time, never on the day itself or when the Hebrew calendar cannot be read, and is
+dropped unsent once the time passes (`[RC] <id>: an urgent notice past its
+deadline, not sent`). Design: `docs/superpowers/specs/2026-09-27-routine-channel-design.md`.
 
 **(server)** nothing to install beyond the code; the store is
 `~/rchannel/store.json`, outside the repo and outside the nightly backup (the PC

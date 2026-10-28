@@ -23,6 +23,7 @@ import {
   saveState,
   scanOutbox,
   takeLock,
+  urgentDeadline,
   writeNotice,
   type RunHandler,
   type SshCall,
@@ -519,6 +520,24 @@ test("the real handler runner passes the work file, returns stdout and the exit 
 test("parseFlags takes --all as a switch and refuses a stray word", () => {
   expect(parseFlags(["--request", "map-1", "--all", "--verdict", "approve"])).toEqual({ flags: new Map([["request", "map-1"], ["verdict", "approve"]]), switches: new Set(["all"]) });
   expect(parseFlags(["map-1"]).error).toBe("unexpected argument: map-1");
+  expect(parseFlags(["--title", "x", "--urgent"]).error).toBe("unexpected argument: --urgent"); // the deadline is a value, never a bare switch
+});
+
+test("urgentDeadline reads HH:MM as today's Israel time, in summer and winter, and refuses a time already gone", () => {
+  // NOW is Sunday 2026-10-04 10:00, summer time (UTC+3)
+  expect(urgentDeadline("17:20", NOW)).toBe(Date.parse("2026-10-04T14:20:00Z") / 1000);
+  expect(urgentDeadline("16:30", new Date("2026-12-04T08:00:00Z"))).toBe(Date.parse("2026-12-04T14:30:00Z") / 1000); // winter, UTC+2
+  expect(urgentDeadline("09:59", NOW)).toEqual({ error: "urgent-until 09:59 has already passed" });
+  expect(urgentDeadline("10:00", NOW)).toEqual({ error: "urgent-until 10:00 has already passed" });
+  expect(urgentDeadline("7:20", NOW)).toEqual({ error: "urgent-until must be HH:MM" });
+  expect(urgentDeadline("24:00", NOW)).toEqual({ error: "urgent-until must be HH:MM" });
+});
+
+test("an urgent notice carries its deadline through the outbox", () => {
+  const h = home();
+  const r = writeNotice(h, { routine: "main-session", title: "שבת", text: "שבת נכנסת בעוד שעה וחצי.", urgentUntil: 1791554400 }, NOW);
+  expect("id" in r).toBe(true);
+  expect(scanOutbox(h, {}).valid.map((v) => v.request.urgentUntil)).toEqual([1791554400]);
 });
 
 test("the ssh call forwards nothing, reads at most 1 MB, and logs only printable ssh words", async () => {
