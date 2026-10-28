@@ -256,6 +256,23 @@ test("the same message delivered twice is stored once, fetched once, and 👍'd 
   expect(calls.reacts).toEqual(["👍"]);
 });
 
+test("an item keeps its chat's id; the same message id from another chat is a new message", async () => {
+  const { d, calls } = fakeDeps();
+  expect(await fileInboxMessage({ ...base, text: "a" }, d)).toBe("stored");
+  // Telegram counts message ids per chat: after the group moves, a new message can reuse an old id
+  expect(await fileInboxMessage({ ...base, chat: { id: -100777, type: "supergroup" }, text: "b" }, d)).toBe("stored");
+  expect(loadInbox(dir).items.map((i) => [i.chatId, i.messageId, i.text])).toEqual([[-1001, 10, "a"], [-100777, 10, "b"]]);
+  expect(calls.reacts).toEqual(["👍", "👍"]);
+});
+
+test("an item stored before chat ids were kept still makes its message id a duplicate", async () => {
+  mutateInbox(dir, (s) => void s.items.push({ id: "261005-a1b2", messageId: 10, receivedAt: DATE, kind: "text", text: "old" }));
+  const { d, calls } = fakeDeps();
+  expect(await fileInboxMessage({ ...base, chat: { id: -100777, type: "supergroup" }, text: "b" }, d)).toBe("duplicate");
+  expect(loadInbox(dir).items).toHaveLength(1);
+  expect(calls.reacts).toEqual([]);
+});
+
 test("a sender not on the allowlist is ignored: nothing stored, no reaction", async () => {
   const { d, calls } = fakeDeps();
   expect(await fileInboxMessage({ ...base, from: { id: 99 }, text: "hi" }, d)).toBe("skipped");
@@ -363,6 +380,17 @@ test("two deliveries of one message racing through the download store one item a
   expect(loadInbox(dir).items).toHaveLength(1);
   expect(readdirSync(join(dir, "files"))).toEqual([loadInbox(dir).items[0].file!.slice("files/".length)]);
   expect(calls.reacts).toEqual(["👍"]);
+});
+
+test("two messages from two chats racing with one message id are both stored", async () => {
+  const { d, calls } = fakeDeps();
+  const a = { ...base, photo: [{ file_id: "p5" }] };
+  const b = { ...base, chat: { id: -100777, type: "supergroup" }, photo: [{ file_id: "p6" }] };
+  // both pass the early check before either reaches the store; the check under the lock must tell them apart
+  expect((await Promise.all([fileInboxMessage(a, d), fileInboxMessage(b, d)])).sort()).toEqual(["stored", "stored"]);
+  expect(loadInbox(dir).items.map((i) => i.chatId).sort((x, y) => x! - y!)).toEqual([-100777, -1001]);
+  expect(readdirSync(join(dir, "files"))).toHaveLength(2);
+  expect(calls.reacts).toEqual(["👍", "👍"]);
 });
 
 test("a followed move is remembered across a restart until the setting is updated", () => {
