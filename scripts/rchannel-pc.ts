@@ -904,10 +904,26 @@ export async function runAnswer(d: AnswerDeps, a: AnswerArgs): Promise<number> {
   }
 }
 
-export function writeNotice(home: string, a: { routine: string; title: string; text: string }, now: Date): { id: string } | { error: string } {
+/** `--urgent-until HH:MM`: that wall-clock time today in Israel, as epoch seconds. A time already
+ *  gone is refused, so a late warning is never queued with a deadline it cannot meet. */
+export function urgentDeadline(hhmm: string, now: Date): number | { error: string } {
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(hhmm);
+  if (!m) return { error: "urgent-until must be HH:MM" };
+  const today = stamp(now).date;
+  const [y, mo, d] = today.split("-").map(Number);
+  for (const offsetH of [2, 3]) { // Israel is UTC+2 in winter, UTC+3 in summer
+    const t = new Date(Date.UTC(y, mo - 1, d, Number(m[1]) - offsetH, Number(m[2])));
+    const s = stamp(t);
+    if (s.date !== today || s.hhmm !== hhmm) continue;
+    return t.getTime() <= now.getTime() ? { error: `urgent-until ${hhmm} has already passed` } : t.getTime() / 1000;
+  }
+  return { error: `urgent-until ${hhmm} does not exist today` };
+}
+
+export function writeNotice(home: string, a: { routine: string; title: string; text: string; urgentUntil?: number }, now: Date): { id: string } | { error: string } {
   if (!ROUTINE_RE.test(a.routine)) return { error: "routine must be 1 to 40 of a-z, 0-9 and -" };
   const id =`${a.routine}-${stamp(now).compact.slice(0, 12)}-${Math.floor(Math.random() * 1e4).toString().padStart(4, "0")}`;
-  const v = validateRequest({ v: 1, id, routine: a.routine, title: a.title, kind: "notice", text: a.text, supersedes: false, cards: [] });
+  const v = validateRequest({ v: 1, id, routine: a.routine, title: a.title, kind: "notice", text: a.text, supersedes: false, cards: [], urgentUntil: a.urgentUntil });
   if (!v.ok) return { error: v.reason };
   mkdirSync(at(home).outbox, { recursive: true });
   const file = join(at(home).outbox, `${id}.json`);
@@ -939,7 +955,7 @@ export function parseFlags(args: string[]): { flags: Map<string, string>; switch
 }
 
 const USAGE =
-  "usage: rchannel-pc.ts sync | open | answer --request <id> (--card <n> | --all) --verdict approve|reject|correct [--text-file <path>] | notice --routine <name> --title <title> --text <text>";
+  "usage: rchannel-pc.ts sync | open | answer --request <id> (--card <n> | --all) --verdict approve|reject|correct [--text-file <path>] | notice --routine <name> --title <title> --text <text> [--urgent-until HH:MM]";
 
 if (import.meta.main) {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -962,7 +978,12 @@ if (import.meta.main) {
       if (error) {
         console.error(`${error}\n${USAGE}`);
       } else if (cmd === "notice") {
-        const r = writeNotice(home, { routine: flags.get("routine") ?? "", title: flags.get("title") ?? "", text: flags.get("text") ?? "" }, new Date());
+        const now = new Date();
+        const until = flags.has("urgent-until") ? urgentDeadline(flags.get("urgent-until")!, now) : undefined;
+        const r =
+          typeof until === "object"
+            ? until
+            : writeNotice(home, { routine: flags.get("routine") ?? "", title: flags.get("title") ?? "", text: flags.get("text") ?? "", urgentUntil: until }, now);
         console.log("error" in r ? `refused: ${r.error}` : `notice=${r.id}`);
         code = "error" in r ? 2 : 0;
       } else {

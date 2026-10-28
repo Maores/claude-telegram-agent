@@ -644,6 +644,49 @@ test("in quiet time nothing new is sent, and it goes out at 21:00", async () => 
   expect(saturday.sends.length).toBe(1);
 });
 
+const FRIDAY_1700 = Math.floor(Date.parse("2026-10-09T14:00:00Z") / 1000); // the eve, 17:00 local
+const urgentNotice = (id: string, until = FRIDAY_1700): RcRequest => ({ ...notice(id), urgentUntil: until });
+
+test("an urgent notice goes out on the eve before its deadline; the plain one beside it waits", async () => {
+  const dir = scratch();
+  mutateStore(dir, (s) => applySync(s, payload({ requests: [urgentNotice("audit-1"), notice("audit-2")] }), NOW));
+  const friday = fakeTelegram(dir, "2026-10-09T12:00:00Z"); // Friday 15:00
+  await runRchannelTick(friday.deps);
+  expect(friday.sends.length).toBe(1);
+  expect(loadStore(dir).requests.map((r) => [r.id, r.status])).toEqual([["audit-1", "done"], ["audit-2", "queued"]]);
+  const saturday = fakeTelegram(dir, "2026-10-10T18:00:00Z"); // Saturday 21:00
+  await runRchannelTick(saturday.deps);
+  expect(saturday.sends.length).toBe(1); // only the plain one, now
+});
+
+test("an urgent notice past its deadline is never sent, not even after quiet time", async () => {
+  const dir = scratch();
+  mutateStore(dir, (s) => applySync(s, payload({ requests: [urgentNotice("audit-1")] }), NOW));
+  const late = fakeTelegram(dir, "2026-10-09T14:30:00Z"); // Friday 17:30, after candle lighting
+  await runRchannelTick(late.deps);
+  expect(late.sends).toEqual([]);
+  expect(late.logs).toContain("[RC] audit-1: an urgent notice past its deadline, not sent");
+  expect(loadStore(dir).requests[0].status).toBe("done");
+  const saturday = fakeTelegram(dir, "2026-10-10T18:00:00Z"); // Saturday 21:00
+  await runRchannelTick(saturday.deps);
+  expect(saturday.sends).toEqual([]);
+});
+
+test("an urgent notice waits on the sacred day itself and when the calendar cannot be read", async () => {
+  const dir = scratch();
+  const saturdayEvening = Math.floor(Date.parse("2026-10-10T17:00:00Z") / 1000); // Saturday 20:00
+  mutateStore(dir, (s) => applySync(s, payload({ requests: [urgentNotice("audit-1", saturdayEvening)] }), NOW));
+  const saturday = fakeTelegram(dir, "2026-10-10T07:00:00Z"); // Saturday 10:00
+  await runRchannelTick(saturday.deps);
+  expect(saturday.sends).toEqual([]);
+  const dir2 = scratch();
+  mutateStore(dir2, (s) => applySync(s, payload({ requests: [urgentNotice("audit-2")] }), NOW));
+  const blind = fakeTelegram(dir2, "2026-10-09T12:00:00Z"); // Friday 15:00
+  await runRchannelTick({ ...blind.deps, readHebrew: () => null });
+  expect(blind.sends).toEqual([]);
+  expect(blind.logs).toContain("[ERR] rchannel: the Hebrew calendar is unreadable, holding 1 request(s)");
+});
+
 test("a failed send is tried again next tick; a passing edit failure is retried every tick until it lands", async () => {
   const dir = scratch();
   const tg = fakeTelegram(dir);
