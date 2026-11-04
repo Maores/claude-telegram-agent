@@ -46,3 +46,7 @@ authenticate Claude, drop in the token + allowlist, and enable the
 bun install                 # optional, only for editor types
 TELEGRAM_BOT_TOKEN=... ACCESS_FILE=./access.json bun run poller.ts
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).
