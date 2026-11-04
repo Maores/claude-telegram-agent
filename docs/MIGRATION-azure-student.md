@@ -15,7 +15,7 @@ exactly** — same `claudebot` user, same paths — so no code/docs change.
 
 Reference baseline (from the live droplet, 2026-06-13): Bun 1.3.14, Node v20.20.2,
 Claude Code 2.1.162; env keys `TELEGRAM_BOT_TOKEN`, `ICLOUD_USER`, `ICLOUD_APP_PASSWORD`,
-`GROQ_API_KEY`; allowlist chat id `282408422`.
+`GROQ_API_KEY`; allowlist chat id (in `access.json` on the server).
 
 ---
 
