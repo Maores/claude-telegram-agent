@@ -5,7 +5,7 @@
  * there, so privacy mode lets it see every message). The poller stores each message as an item
  * under ~/inbox/ and reacts 👍: no Claude turn, no history row, no link fetch, no transcription.
  * A PC session pulls the items over ssh when he asks; `ack` deletes what landed, and the
- * poller's tick deletes what nobody pulled after a week, warning in the group the day before.
+ * poller's tick deletes what nobody pulled after a month, warning in the group the day before.
  *
  *   bun run inbox.ts list          print every item (JSON); only reads
  *   bun run inbox.ts ack <id>...   delete items that landed on the PC, with their files
@@ -56,7 +56,7 @@ export interface InboxItem {
 export interface InboxStore {
   v: 1;
   items: InboxItem[];
-  issued?: { id: string; at: number }[]; // ids handed out in the last 10 days, live or gone: never reissued
+  issued?: { id: string; at: number }[]; // ids handed out in the last 33 days, live or gone: never reissued
 }
 /** The slice of a Telegram file object the inbox reads. */
 export interface InboxFileRef {
@@ -299,8 +299,9 @@ export const INBOX_UNSUPPORTED = "סוג הודעה כזה לא נשמר בתי�
 export const INBOX_STORE_FAILED = "לא הצלחתי לשמור את זה בתיבה.";
 export const INBOX_MOVED = "הקבוצה קיבלה מספר זיהוי חדש. התיבה ממשיכה לעבוד, אבל צריך לעדכן את ההגדרה בשרת.";
 
-/** How long a handed-out id stays reserved after it was issued (its item may be long gone). */
-export const ISSUED_KEEP_S = 10 * 24 * 3600;
+/** How long a handed-out id stays reserved after it was issued (its item may be long gone):
+ *  at least as long as an item can live (HARD_CAP_S, 33 days). */
+export const ISSUED_KEEP_S = 33 * 24 * 3600;
 
 export interface InboxDeps {
   dir: string;
@@ -433,21 +434,21 @@ export function foreignGroupNote(msg: InboxMessage, seen: Set<string>, allowed: 
 }
 
 // ---------------------------------------------------------------------------
-// Lifetime (owner's choice, 2026-10-05): deleted once it landed on the PC (ack), or after a week,
-// never sooner than a day after a warning in the group, and never later than ten days. The
-// poller's tick drives it.
+// Lifetime (owner's choice, 2026-10-05; a week became a month on 2026-11-03): deleted once it
+// landed on the PC (ack), or after a month, never sooner than a day after a warning in the group,
+// and never later than 33 days. The poller's tick drives it.
 // ---------------------------------------------------------------------------
 
-export const WARN_AFTER_S = 6 * 24 * 3600;
-export const KEEP_S = 7 * 24 * 3600;
+export const KEEP_S = 30 * 24 * 3600;
 export const WARN_STANDS_S = 24 * 3600;
-export const HARD_CAP_S = 10 * 24 * 3600;
+export const WARN_AFTER_S = KEEP_S - WARN_STANDS_S;
+export const HARD_CAP_S = 33 * 24 * 3600;
 export const ORPHAN_AFTER_S = 3600;
 export const CORRUPT_KEEP_S = 7 * 24 * 3600;
 /** The poller's MAX_FILE_BYTES default: Telegram's getFile cap for bots. */
 export const MAX_GET_BYTES = 20 * 1024 * 1024;
 
-/** A warning is due when an unwarned item turns 6 days old; it then also covers every unwarned
+/** A warning is due when an unwarned item turns 29 days old; it then also covers every unwarned
  *  item within 6 hours of that age, so a burst sent together gets one message. */
 export const WARN_BATCH_S = 6 * 3600;
 export function dueWarnings(s: InboxStore, nowS: number): InboxItem[] {
@@ -456,7 +457,7 @@ export function dueWarnings(s: InboxStore, nowS: number): InboxItem[] {
   return unwarned.filter((i) => nowS - i.receivedAt >= WARN_AFTER_S - WARN_BATCH_S);
 }
 
-/** Items due for deletion: past the hard cap always; past the week only after a warning that
+/** Items due for deletion: past the hard cap always; past the month only after a warning that
  *  stood a day, and never inside quiet time. */
 export function expiredItems(s: InboxStore, nowS: number, quiet: boolean): InboxItem[] {
   return s.items.filter((i) => {
@@ -576,7 +577,7 @@ export async function runInboxTick(d: {
   // cannot be written must not stop the warning step or the sweep, nor reject the tick.
   try {
     const n = removeExpired(d.dir, d.nowS, quiet, d.log);
-    if (n) d.log(`[INBOX] deleted ${n} item(s) after their week`);
+    if (n) d.log(`[INBOX] deleted ${n} item(s) after their month`);
   } catch (e: any) {
     logOnce(`[INBOX] could not delete the items due: ${redact(String(e?.message ?? e))}`);
   }
