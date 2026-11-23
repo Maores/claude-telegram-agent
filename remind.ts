@@ -7,9 +7,10 @@
  *   bun run remind.ts edit       <chatId> <id> [--at <epoch>] [--time HH:MM] [--days <csv>] [--text "..."]
  *   bun run remind.ts cancel     <chatId> <id>          (ids look like r7, not 7)
  *   bun run remind.ts followups                          (open follow-ups: fired, not yet done or snoozed)
+ *   bun run remind.ts close-followup --id <fuId>[,<fuId>...] [--as done|dismissed]   (Maor's word only)
  */
 
-import { addOnce, addRepeat, listFor, cancel, editReminder, fmt, type ReminderEdit, snoozeFollowup, loadFollowups } from "./reminders.ts";
+import { addOnce, addRepeat, listFor, cancel, editReminder, fmt, type ReminderEdit, snoozeFollowup, loadFollowups, resolveFollowup } from "./reminders.ts";
 
 function die(msg: string): never {
   console.error(msg);
@@ -19,11 +20,11 @@ function die(msg: string): never {
 const [cmd, chatIdRaw, ...rest] = process.argv.slice(2);
 const chatId = Number(chatIdRaw);
 
-if (!cmd) die("usage: remind.ts <add-once|add-repeat|list|cancel|edit|snooze-followup|followups> ...");
-// snooze-followup addresses a follow-up by its own id and carries no chatId —
-// the chat comes from the stored follow-up — and followups lists every open one.
-// Every other subcommand still requires one in the same position as before.
-const NEEDS_CHAT_ID = cmd !== "snooze-followup" && cmd !== "followups";
+if (!cmd) die("usage: remind.ts <add-once|add-repeat|list|cancel|edit|snooze-followup|followups|close-followup> ...");
+// snooze-followup and close-followup address a follow-up by its own id and carry
+// no chatId (the chat comes from the stored follow-up), and followups lists every
+// open one. Every other subcommand still requires one in the same position as before.
+const NEEDS_CHAT_ID = cmd !== "snooze-followup" && cmd !== "followups" && cmd !== "close-followup";
 if (NEEDS_CHAT_ID && !Number.isFinite(chatId)) die(`invalid chatId: ${chatIdRaw}`);
 
 const nowSec = Math.floor(Date.now() / 1000);
@@ -95,6 +96,33 @@ switch (cmd) {
     for (const f of open) {
       console.log(`${f.id}  fired ${fmt(f.firedAt)}${f.nudged ? "  (nudged)" : ""}  ${f.text}`);
     }
+    break;
+  }
+  // Closes open follow-ups the way the ✓ button does, for when Maor says in chat
+  // which errands are done or no longer relevant (2026-11-22: he asked to close
+  // all of them and a turn had no way to). Never from an unattended [AUTO] run:
+  // only Maor's own word closes an errand.
+  case "close-followup": {
+    if (process.env.CLAUDE_AUTO_SESSION === "1") die("refused: [AUTO] sessions may not close follow-ups; only Maor's own message can");
+    const argv = chatIdRaw === undefined ? rest : [chatIdRaw, ...rest];
+    const f = new Map<string, string>();
+    for (let i = 0; i < argv.length; i++) {
+      if (argv[i].startsWith("--") && argv[i + 1] != null) { f.set(argv[i].slice(2), argv[i + 1]); i++; }
+    }
+    const usage = "usage: close-followup --id <fuId>[,<fuId>...] [--as done|dismissed]";
+    const ids = (f.get("id") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const as = f.get("as") ?? "done";
+    if (!ids.length || (as !== "done" && as !== "dismissed")) die(usage);
+    let failed = 0;
+    for (const id of ids) {
+      const r = resolveFollowup(id, as);
+      if (r) console.log(`OK closed «${r.text}» as ${as}`);
+      else {
+        failed++;
+        console.error(`no open follow-up with id ${id} (already closed, snoozed, or unknown)`);
+      }
+    }
+    if (failed) process.exit(1);
     break;
   }
   case "cancel": {

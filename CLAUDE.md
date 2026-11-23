@@ -214,26 +214,32 @@ what to improve, start from the gaps around these, not from scratch:
 - Reminder follow-ups: every one-time reminder that fires gets בוצע/דחה buttons
   automatically, plus a single nudge an hour later. For the open items, run
   `bun run remind.ts followups` (to answer "מה עוד פתוח אצלי?"). The poller owns
-  the buttons; you never manage them yourself.
+  the buttons. When Maor tells you in chat that errands are done or no longer
+  relevant (including "close everything open"), close them yourself:
+  `bun run remind.ts close-followup --id <fuId>[,<fuId>...] [--as done|dismissed]`
+  with the ids from `remind.ts followups`. Use `--as done` for what he says he
+  did, `--as dismissed` for what he says is no longer relevant or when he closes
+  them all without saying which; then tell him what you closed. Only his own
+  message closes an errand: never on your own judgment, and an [AUTO] run cannot.
 - Scheduled [AUTO] jobs (live list: `bun run remind.ts list "$TELEGRAM_CHAT_ID"`):
-  nightly Hebrew daily summary (20:35), weekly skill curation (Sunday 09:00),
-  weekly parashat-hashavua summary (Friday 10:00), daily @AIPOST channel digest
-  (08:00). Add or change jobs through remind.ts, never by editing poller.ts.
-- Nightly Pirkei Avot study (the 21:00 [AUTO] job whose prompt runs
-  `bun run avot.ts next`): one mishnah per evening in order, text fetched from
-  Sefaria; its position is kept by avot.ts. `next` ADVANCES the pointer, so
-  never run it outside that job; to answer "where are we in Avot" use
-  `bun run avot.ts status` (reference only) or `bun run avot.ts current`
-  (re-prints tonight's mishnah without moving).
+  morning brief (08:00), daily @AIPOST channel digest (08:10), evening summary
+  (20:35, which also carries up to four lines of the day's Claude Code work),
+  weekly housekeeping (Sunday 09:00). Add or change jobs through remind.ts,
+  never by editing poller.ts.
+- Removed on Maor's word, 2026-11-23: the nightly Pirkei Avot job and the Friday
+  parasha summary. Do not bring them back unless he asks. The Avot position is
+  still kept by avot.ts: for "where did we stop in Avot" use
+  `bun run avot.ts status`; never run `avot.ts next`, which advances it.
+- Daily interview quiz: paused on Maor's word, 2026-11-23 (see "Daily quiz"
+  below); resume only when he asks.
 - Evening Claude Code digest (21:30, built into the poller, NOT an [AUTO] job,
-  so never recreate it with remind.ts): Maor's PC pushes his Claude Code work
-  log to ~/cc-journal every hour, and at 21:30 the poller sends a Hebrew
-  summary of what is new, silent on Shabbat and holiday nights and when nothing
-  is new. The chat history keeps only a marker line; for "what was in tonight's
-  summary?" run `bun run ccdigest.ts last`, and for "did it go out?" run
-  `bun run ccdigest.ts status`. Pause or resume it only when he asks
-  (`bun run ccdigest.ts pause` / `resume`). Never edit files in ~/cc-journal
-  by hand; only ccdigest.ts commands touch it.
+  so never recreate it with remind.ts): PAUSED on Maor's word, 2026-11-23; its
+  content moved into the 20:35 evening summary, which reads the day's lines with
+  `bun run ccdigest.ts preview`. Maor's PC still pushes his Claude Code work log
+  to ~/cc-journal every hour. For "what was in the last digest?" run
+  `bun run ccdigest.ts last`, for its state `bun run ccdigest.ts status`.
+  Resume it only when he asks (`bun run ccdigest.ts resume`). Never edit files
+  in ~/cc-journal by hand; only ccdigest.ts commands touch it.
 - Routine cards from the PC (built into the poller, NOT an [AUTO] job): Claude
   Desktop routines on Maor's PC hand their requests to ~/rchannel through
   `bun run rchannel.ts sync` over ssh. The poller sends each one as a single
@@ -307,7 +313,9 @@ what to improve, start from the gaps around these, not from scratch:
   running. In your reply, state the proposal (title, date + LOCAL time, duration, calendar) so the
   buttons have context. If a LATER message approves in TEXT ("כן" / "אשר"): run `bun run confirm.ts list`, find the proposal whose summary matches what you proposed, then `bun run confirm.ts approve <id>` — never the raw command (one execution path; the buttons then show "כבר טופל"). "לא" / ביטול → `bun run confirm.ts cancel <id>`. Open proposals:
   `bun run confirm.ts list`. Proposals expire after 24h; one still untapped at 09:00 gets a
-  single automatic re-ping with fresh buttons — the poller sends it, never you. After an approved write executes, the
+  single automatic re-ping with fresh buttons — the poller sends it, never you. One that expires
+  untapped gets a single "this was not carried out" notice from the poller, and its buttons are
+  removed; if he then asks again, propose it afresh. After an approved write executes, the
   button message becomes the receipt.
 
 ## Tasks (Apple Reminders)
@@ -399,6 +407,7 @@ still open), not from a score.
 ## Daily quiz (interview prep)
 A daily interview-practice question goes out automatically (Sun-Thu at 18:00,
 Fri-Sat at 10:00) with tap-to-start buttons; questions live in data/questions.json.
+The daily send has been paused since 2026-11-23 on Maor's word; `/quiz` still works by hand.
 - The commands /quiz, /hint, /reveal, /skip, /quiz_reset are handled by the
   poller in code BEFORE a Claude session spawns — you will never see them as
   messages, so never try to implement or answer them yourself.

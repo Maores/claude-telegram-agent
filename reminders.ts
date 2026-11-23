@@ -258,7 +258,8 @@ export function fmt(epoch: number): string {
 // live disk; reshaping it buys nothing). Same atomic-write pattern.
 // ---------------------------------------------------------------------------
 
-export type FollowupStatus = "pending" | "done" | "snoozed";
+// dismissed: closed on Maor's word as no longer relevant (remind.ts close-followup --as dismissed).
+export type FollowupStatus = "pending" | "done" | "snoozed" | "dismissed";
 export interface Followup {
   id: string;
   chatId: number;
@@ -335,18 +336,19 @@ export function snoozeFollowup(id: string, fireAt: number): { followup: Followup
   return { followup: f, reminder: addOnce(f.chatId, fireAt, f.text) };
 }
 
-export function resolveFollowup(id: string, status: "done" | "snoozed"): Followup | null {
+export function resolveFollowup(id: string, status: "done" | "snoozed" | "dismissed"): Followup | null {
   return withFileLock(followupsPath(), () => {
     const list = loadFollowups();
     const f = list.find((x) => x.id === id);
     if (!f || f.status !== "pending") return null;
     f.status = status;
-    if (status === "done") {
+    // Closing an errand (done or dismissed) closes its other pending fires the same way.
+    if (status !== "snoozed") {
       for (const other of list) {
         if (other === f) continue;
         if (other.status !== "pending") continue;
         if (other.chatId !== f.chatId || other.text !== f.text) continue;
-        other.status = "done";
+        other.status = status;
       }
     }
     saveFollowups(list);

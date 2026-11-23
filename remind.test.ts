@@ -89,6 +89,52 @@ test("followups leaves out a done follow-up and marks a nudged one", () => {
   expect(plainLine).not.toContain("(nudged)");
 });
 
+// 2026-11-22: asked to close everything open, a turn had no verb for it (only the
+// buttons could), so 19 fired reminders stayed open for a month.
+test("close-followup closes several open follow-ups at once, done by default, with no chatId", () => {
+  const a = addFollowup(2824, "errand-a", 9, 1000).id;
+  const b = addFollowup(2824, "errand-b", 10, 1000).id;
+  const left = addFollowup(2824, "errand-left", 11, 1000).id;
+  const r = cli("close-followup", "--id", `${a},${b}`);
+  expect(out(r)).not.toContain("invalid chatId");
+  expect(r.exitCode).toBe(0);
+  expect(out(r)).toContain("errand-a");
+  const byId = Object.fromEntries(JSON.parse(readFileSync(F, "utf8")).map((f: any) => [f.id, f.status]));
+  expect(byId[a]).toBe("done");
+  expect(byId[b]).toBe("done");
+  expect(byId[left]).toBe("pending");
+});
+
+test("close-followup --as dismissed closes without counting it as done", () => {
+  const a = addFollowup(2824, "no-longer-relevant", 9, 1000).id;
+  const r = cli("close-followup", "--id", a, "--as", "dismissed");
+  expect(r.exitCode).toBe(0);
+  expect(JSON.parse(readFileSync(F, "utf8"))[0].status).toBe("dismissed");
+  expect(cli("followups").stdout.toString()).not.toContain("no-longer-relevant");
+});
+
+test("close-followup names an id that is not open, still closes the rest, and exits non-zero", () => {
+  const a = addFollowup(2824, "errand-a", 9, 1000).id;
+  const r = cli("close-followup", "--id", `f-nope,${a}`);
+  expect(r.exitCode).toBe(1);
+  expect(out(r)).toContain("no open follow-up with id f-nope");
+  expect(JSON.parse(readFileSync(F, "utf8"))[0].status).toBe("done");
+});
+
+test("close-followup refuses a bad --as, a missing id, and an [AUTO] session", () => {
+  const a = addFollowup(2824, "errand-a", 9, 1000).id;
+  expect(out(cli("close-followup", "--id", a, "--as", "snoozed"))).toContain("usage:");
+  expect(out(cli("close-followup"))).toContain("usage:");
+  const auto = Bun.spawnSync({
+    cmd: [process.execPath, "run", join(import.meta.dir, "remind.ts"), "close-followup", "--id", a],
+    env: { ...process.env, REMINDERS_FILE: R, FOLLOWUPS_FILE: F, CLAUDE_AUTO_SESSION: "1" },
+    cwd: import.meta.dir,
+  });
+  expect(auto.exitCode).toBe(1);
+  expect(auto.stdout.toString() + auto.stderr.toString()).toContain("[AUTO]");
+  expect(JSON.parse(readFileSync(F, "utf8"))[0].status).toBe("pending");
+});
+
 test("followups says so when nothing is open", () => {
   const r = cli("followups");
   expect(r.exitCode).toBe(0);

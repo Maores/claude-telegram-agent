@@ -157,17 +157,24 @@ export function consumeAction(id: string, to: "approved" | "cancelled", nowS: nu
 }
 
 /** Housekeeping: expire overdue pendings, drop resolved/expired entries older
- *  than a week. Piggybacks the reminder tick. */
-export function pruneActions(nowS: number) {
-  withFileLock(pendingPath(), () => {
+ *  than a week. Piggybacks the reminder tick. Returns the proposals this call
+ *  expired (each exactly once), so the poller can tell Maor the write never
+ *  happened (2026-11-16: an untapped calendar add expired without a word). */
+export function pruneActions(nowS: number): PendingAction[] {
+  return withFileLock(pendingPath(), () => {
     const list = loadActions();
+    const expiredNow: PendingAction[] = [];
     for (const a of list) {
-      if (a.status === "pending" && nowS - a.createdAt > EXPIRY_S) a.status = "expired";
+      if (a.status === "pending" && nowS - a.createdAt > EXPIRY_S) {
+        a.status = "expired";
+        expiredNow.push(a);
+      }
     }
     const keep = list.filter(
       (a) => a.status === "pending" || nowS - a.createdAt <= PRUNE_AFTER_S,
     );
     saveActions(keep);
+    return expiredNow;
   });
 }
 
