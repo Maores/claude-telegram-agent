@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  HARD_CAP_S, KEEP_S, MAX_GET_BYTES, WARN_AFTER_S, WARN_STANDS_S,
+  HARD_CAP_S, ISSUED_KEEP_S, KEEP_S, MAX_GET_BYTES, WARN_AFTER_S, WARN_STANDS_S,
   inboxStatus, inboxWarningText, loadInbox, mutateInbox, runInboxCli, runInboxTick, sweepLeftovers, writeInboxStatus, type InboxItem,
 } from "./inbox.ts";
 
@@ -110,7 +110,7 @@ test("the gate admits exactly list, ack with ids, and get with one id", async ()
   expect(loadInbox(dir).items.map((i) => i.id)).toEqual(["261012-aaaa"]);
 });
 
-test("list never deletes; purge takes a warned item after its week, and an unwarned one waits", async () => {
+test("list never deletes; purge takes a warned item after its month, and an unwarned one waits", async () => {
   seed([
     item("261005-aaaa", KEEP_S + 1, { kind: "photo", file: "files/261005-aaaa.jpg", warnedAt: nowS - WARN_STANDS_S - 1 }),
     item("261005-bbbb", KEEP_S + 1, { warnedAt: nowS - 3600 }), // warned an hour ago: waits
@@ -124,7 +124,7 @@ test("list never deletes; purge takes a warned item after its week, and an unwar
   expect(loadInbox(dir).items.map((i) => i.id)).toEqual(["261005-bbbb", "261005-cccc", "261011-dddd"]);
 });
 
-test("a file path outside files/ is never deleted, by ack or by the week", async () => {
+test("a file path outside files/ is never deleted, by ack or by the month", async () => {
   const victim = join(outside, "keep.txt");
   writeFileSync(victim, "keep");
   const escape = `files/../../${basename(outside)}/keep.txt`; // resolves to the victim without the check
@@ -356,7 +356,7 @@ test("an unreadable store never turns stored files into leftovers, nor does the 
   expect(existsSync(join(dir, "files", "261012-aaaa.jpg"))).toBe(true);
 });
 
-test("after ten days an item goes whatever happened: never warned, quiet time, a dead group", async () => {
+test("after 33 days an item goes whatever happened: never warned, quiet time, a dead group", async () => {
   seed([item("261002-aaaa", HARD_CAP_S + 1), item("261003-bbbb", HARD_CAP_S - 3600)]);
   await runInboxTick({ dir, nowS, quietAt: () => true, send: async () => { throw new Error("x"); }, log: () => {}, errClock: { at: -Infinity } });
   expect(loadInbox(dir).items.map((i) => i.id)).toEqual(["261003-bbbb"]);
@@ -386,4 +386,16 @@ test("the warning is pure Hebrew and says how many", () => {
   expect(inboxWarningText(1)).toBe("בתיבה יש פריט אחד שעוד לא נמשך למחשב. מחר הוא יימחק מהשרת, והמקור נשאר כאן בקבוצה.");
   expect(inboxWarningText(3)).toBe("בתיבה יש 3 פריטים שעוד לא נמשכו למחשב. מחר הם יימחקו מהשרת, והמקור נשאר כאן בקבוצה.");
   expect(/[A-Za-z]/.test(inboxWarningText(3))).toBe(false);
+});
+
+// Owner's pick 2026-11-03: an item nobody pulled stays a month, not a week (a week was too
+// short across a blocked network, Shabbat and holidays). The warning still comes a day before.
+test("the lifetime is a month: warned a day before, gone by 33 days whatever happens", () => {
+  const DAY = 24 * 3600;
+  expect(KEEP_S).toBe(30 * DAY);
+  expect(WARN_AFTER_S).toBe(KEEP_S - DAY);
+  expect(WARN_STANDS_S).toBe(DAY);
+  expect(HARD_CAP_S).toBe(33 * DAY);
+  // an id stays reserved at least as long as its item can live
+  expect(ISSUED_KEEP_S).toBeGreaterThanOrEqual(HARD_CAP_S);
 });
