@@ -12,6 +12,8 @@ import {
   MAX_FILE_BYTES,
   autoSessionSpawn,
   AUTO_DISALLOWED_TOOLS,
+  tgRetryDelayMs,
+  paExpiredText,
   isStopCommand,
   outcomeReaction,
   parseFuCallback,
@@ -437,6 +439,7 @@ test("autoSessionSpawn disallows reminder scheduling at the tool layer", () => {
   expect(s.extraArgs[0]).toBe("--disallowedTools");
   expect(s.extraArgs).toContain("Bash(bun run remind.ts add-once *)");
   expect(s.extraArgs).toContain("Bash(bun run remind.ts add-repeat *)");
+  expect(s.extraArgs).toContain("Bash(bun run remind.ts close-followup *)"); // only Maor's word closes an errand
   expect(AUTO_DISALLOWED_TOOLS.length).toBeGreaterThan(0);
 });
 
@@ -1205,6 +1208,10 @@ test("send rule: every store-sourced send checks the chat before its first send 
   const pa = rem.slice(rem.indexOf("for (const a of dueMorningNudges("), rem.indexOf("pruneFollowups(nowS)"));
   expect(pa).toContain('sendAllowed("pa-nudge", a.id, a.chatId)');
   expect(pa.indexOf("sendAllowed(")).toBeLessThan(firstSend(pa));
+  const expired = rem.slice(rem.indexOf("for (const a of expiredNow)"));
+  expect(rem).toContain("expiredNow = pruneActions(nowS)");
+  expect(expired).toContain('sendAllowed("pa-expired", a.id, a.chatId)');
+  expect(expired.indexOf("sendAllowed(")).toBeLessThan(firstSend(expired));
   const fire = between(src, "async function fireMonitor(", "async function checkCalendarNudges(");
   expect(fire).toContain('sendAllowed("monitor", m.id, m.chat_id)');
   expect(fire.indexOf("sendAllowed(")).toBeLessThan(firstSend(fire));
@@ -1377,4 +1384,30 @@ test("the card round keeps its held-item state across ticks, and startup reports
   expect(src).toContain("const approvalCardState = newCardState();");
   const start = between(src, "async function main()", "setInterval(() => {\n    void checkReminders();");
   expect(start).toContain("await reportSchemaDrift(getDb(), sendIntegrity,");
+});
+
+// 2026-11-16 21:00: one 502 from Telegram on the ⏳ placeholder dropped that night's
+// [AUTO] run with a single [ERR] line; a one-time reminder would have vanished the same way.
+test("tgRetryDelayMs retries a Telegram 5xx with a growing pause, like a network error", () => {
+  expect(tgRetryDelayMs(502, 0, {})).toBe(2000);
+  expect(tgRetryDelayMs(502, 1, {})).toBe(4000);
+  expect(tgRetryDelayMs(500, 0, {})).toBe(2000);
+  expect(tgRetryDelayMs(503, 0, {})).toBe(2000);
+  expect(tgRetryDelayMs(504, 0, {})).toBe(2000);
+});
+
+test("tgRetryDelayMs keeps 429 on retry_after and 409 on 5 s, and never retries a 4xx", () => {
+  expect(tgRetryDelayMs(429, 0, { parameters: { retry_after: 7 } })).toBe(7000);
+  expect(tgRetryDelayMs(429, 0, {})).toBe(1000);
+  expect(tgRetryDelayMs(409, 0, {})).toBe(5000);
+  expect(tgRetryDelayMs(400, 0, {})).toBeNull();
+  expect(tgRetryDelayMs(403, 0, {})).toBeNull();
+  expect(tgRetryDelayMs(undefined, 0, {})).toBeNull();
+});
+
+test("paExpiredText says the proposal was not carried out and names it", () => {
+  const t = paExpiredText("להוסיף ליומן: פגישה ב-01/01 בשעה 10:00");
+  expect(t).toContain("פגה");
+  expect(t).toContain("לא בוצעה");
+  expect(t).toContain("להוסיף ליומן: פגישה ב-01/01 בשעה 10:00");
 });

@@ -218,7 +218,18 @@ export function sanitizeOutgoing(
   return out;
 }
 
-/** Call a Telegram Bot API method. Retries transient errors (429/409/network). */
+/** How long tg() waits before retrying a failed Telegram reply, or null to give up at once.
+ *  429 waits out retry_after; 409 (another poller) backs off 5 s; a 5xx is Telegram's own
+ *  passing fault and gets 2 s, then 4 s, like a network error. 2026-11-16 21:00: a single
+ *  502 on the ⏳ placeholder dropped that night's [AUTO] run, since 5xx was thrown at once. */
+export function tgRetryDelayMs(code: number | undefined, attempt: number, data: any): number | null {
+  if (code === 429) return (data?.parameters?.retry_after ?? 1) * 1000;
+  if (code === 409) return 5000;
+  if (typeof code === "number" && code >= 500 && code <= 599) return 2000 * (attempt + 1);
+  return null;
+}
+
+/** Call a Telegram Bot API method. Retries transient errors (429/409/5xx/network). */
 async function tg(method: string, params: Record<string, unknown> = {}, opts: { signal?: AbortSignal } = {}): Promise<any> {
   params = sanitizeOutgoing(method, params);
   const url = `https://api.telegram.org/bot${TOKEN}/${method}`;
@@ -243,20 +254,13 @@ async function tg(method: string, params: Record<string, unknown> = {}, opts: { 
     if (data.ok) return data.result;
 
     const code = data.error_code;
-    if (code === 429) {
-      const retry = (data.parameters?.retry_after ?? 1) * 1000;
-      console.error(`[TG] 429 rate limited on ${method}, waiting ${retry}ms`);
-      await sleep(retry);
-      continue;
-    }
-    if (code === 409) {
-      console.error(
-        `[TG] 409 conflict on ${method} — another process is polling this token. Backing off 5s.`,
-      );
-      await sleep(5000);
-      continue;
-    }
-    throw new Error(`Telegram ${method} failed: ${code} ${data.description}`);
+    const wait = attempt < 2 ? tgRetryDelayMs(code, attempt, data) : null;
+    if (wait === null) throw new Error(`Telegram ${method} failed: ${code} ${data.description}`);
+    if (code === 429) console.error(`[TG] 429 rate limited on ${method}, waiting ${wait}ms`);
+    else if (code === 409) {
+      console.error(`[TG] 409 conflict on ${method} — another process is polling this token. Backing off 5s.`);
+    } else console.error(`[TG] ${code} on ${method}, retrying in ${wait}ms`);
+    await sleep(wait);
   }
   throw new Error(`Telegram ${method} failed after retries`);
 }
@@ -562,6 +566,11 @@ export function paResultText(summary: string, code: number, timedOut: boolean, f
   if (code === 0) return `✓ ${summary}\n${firstLine}`;
   if (timedOut) return `⏱ ${summary}\nלא הצלחתי לוודא שזה הסתיים בזמן — כנראה בוצע, כדאי לבדוק ברשימה`;
   return `⚠️ נכשל — ${summary}\n${firstLine}`;
+}
+
+/** The one notice when a proposal expires untapped: the write never happened. */
+export function paExpiredText(summary: string): string {
+  return `⌛ ההצעה הזו פגה בלי אישור, ולא בוצעה:\n🔘 ${summary}\nאם זה עדיין רלוונטי, תכתוב לי שוב.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1505,6 +1514,7 @@ export async function streamClaude(
 export const AUTO_DISALLOWED_TOOLS = [
   "Bash(bun run remind.ts add-once *)",
   "Bash(bun run remind.ts add-repeat *)",
+  "Bash(bun run remind.ts close-followup *)",
   "Bash(bun run monitor.ts add *)",
   "Bash(bun run ask.ts *)",
 ];
@@ -3436,10 +3446,29 @@ async function checkReminders() {
   } catch (e: any) {
     console.error(`[ERR] prune: ${e?.message ?? e}`);
   }
+  let expiredNow: PendingAction[] = [];
   try {
-    pruneActions(nowS);
+    expiredNow = pruneActions(nowS);
   } catch (e: any) {
     console.error(`[ERR] pending prune: ${e?.message ?? e}`);
+  }
+  // A proposal nobody tapped used to vanish without a word (2026-11-16, a calendar add).
+  // Say once that it was not carried out, and take its dead buttons away.
+  for (const a of expiredNow) {
+    try {
+      if (!sendAllowed("pa-expired", a.id, a.chatId)) continue;
+      if (a.messageId) {
+        await tg("editMessageReplyMarkup", {
+          chat_id: a.chatId,
+          message_id: a.messageId,
+          reply_markup: { inline_keyboard: [] },
+        }).catch((e: any) => console.error(`[ERR] pa clear keyboard ${a.id}: ${e?.message ?? e}`));
+      }
+      await tg("sendMessage", { chat_id: a.chatId, text: paExpiredText(a.summary) });
+      console.log(redact(`[PA] expired untapped ${a.id}: ${a.summary}`));
+    } catch (e: any) {
+      console.error(`[ERR] pa expired notice ${a.id}: ${e?.message ?? e}`);
+    }
   }
   try {
     pruneChoices(nowS);

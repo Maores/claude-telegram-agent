@@ -113,6 +113,21 @@ test("pruneActions: drops old resolved entries, expires old pendings, keeps fres
   expect(consumeAction(done.id, "approved", nowS).outcome).toBe("stale"); // dropped entirely
 });
 
+// 2026-11-16: a calendar proposal nobody tapped expired the next day with no word to
+// Maor. pruneActions hands back exactly the ones it expires, once, so the poller can say so.
+test("pruneActions returns the proposals it expires now, and only once", () => {
+  const nowS = 1000 + 3 * 24 * 3600;
+  const stale = proposeAction(5, "להוסיף ליומן: פגישה", CAL_ADD, newTurnId(), nowS - 25 * 3600);
+  const fresh = proposeAction(5, "fresh", CAL_ADD, newTurnId(), nowS - 3600);
+  const tapped = proposeAction(5, "tapped", CAL_ADD, newTurnId(), nowS - 25 * 3600);
+  consumeAction(tapped.id, "approved", nowS - 24 * 3600); // approved inside its 24h
+  const first = pruneActions(nowS);
+  expect(first.map((a) => a.id)).toEqual([stale.id]);
+  expect(first[0].summary).toBe("להוסיף ליומן: פגישה");
+  expect(pruneActions(nowS + 60)).toEqual([]); // already expired: never reported twice
+  expect(takePending(5, fresh.turnId).map((a) => a.id)).toEqual([fresh.id]);
+});
+
 test("newTurnId returns unique-ish ids", () => {
   expect(newTurnId()).not.toBe(newTurnId());
 });

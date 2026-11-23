@@ -243,6 +243,17 @@ test("marking one done closes same-errand pending duplicates (2026-08-04)", () =
   expect(getFollowup(otherChat.id)!.status).toBe("pending");
 });
 
+test("dismissing one closes same-errand pending duplicates as dismissed, never as done", () => {
+  freshFollowupFile();
+  const stale = addFollowup(7, "לקנות חלב", 10, T0);
+  const latest = addFollowup(7, "לקנות חלב", 11, T0 + 200_000);
+  const otherErrand = addFollowup(7, "להגיש משרות", 12, T0);
+  expect(resolveFollowup(latest.id, "dismissed")!.status).toBe("dismissed");
+  expect(getFollowup(stale.id)!.status).toBe("dismissed");
+  expect(getFollowup(otherErrand.id)!.status).toBe("pending");
+  expect(resolveFollowup(latest.id, "done")).toBeNull(); // already resolved
+});
+
 test("snoozing does not cascade to duplicates", () => {
   freshFollowupFile();
   const a = addFollowup(7, "להגיש משרות", 10, T0);
